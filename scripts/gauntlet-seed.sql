@@ -150,6 +150,13 @@ VALUES ('GS-024', 'archive-node-far-behind-restart',
   'gs024-gap-held,gs024-no-snap,gs024-reaches-tip,gs024-no-missing-height,gs024-commitment-matches-seed,gs024-archive-files-present,gs024-clean-exit', json('{"nodes": 1, "min_gap": 500, "max_gap": 20000, "throttle_window_s": 600}'), 'gauntlet-gs024.sh', 'active', 0)
 ON CONFLICT(scenario_id) DO UPDATE SET incident_ids=excluded.incident_ids, description=excluded.description, assertions=excluded.assertions, scale_params=excluded.scale_params, runner=excluded.runner, expect_fail=excluded.expect_fail, status='active';
 
+INSERT INTO gauntlet_scenarios (scenario_id, name, description, incident_ids, assertions, scale_params, runner, status, expect_fail)
+VALUES ('GS-025', 'archive-integrity-no-phantom-loop',
+  'Guards the periodic chain integrity scan of an --archive-to node (INC-I-253: a store holding height key 0 made the scan report a phantom missing block, so every scan re-read the whole archive in a full backfill pass that imported 0). STANDALONE ONLY, not part of the default gauntlet.sh flow. INJECTS: scripts/gauntlet-gs025.sh copies the OLDEST local seed RocksDB checkpoint (~200-250 blocks behind, so >= 3 scans run during catch-up) and the seed archive into a scratch dir (APFS clone, store unmodified) and starts the binary under test there as a non-producer node on free ports. Part A ASSERTS >= 3 complete scans, no missing scan and no archive repair pass. Part B punches one archived mid-history block out of a fresh store copy with the node stopped (bins/node/examples/integrity_hole_punch, which refuses any testnet path, a store without CURRENT and a held LOCK) and ASSERTS exactly one targeted repair importing 1 block, that the repair line names the hole, a complete scan after it, and no repeat repair, back-off or missing scan after it. It never touches a running node, kills only its own PID and deletes the scratch dir. Missing inputs, a busy port or a running build SKIP (rc 2).',
+  json('["INC-I-253"]'),
+  'gs025-a-three-scans,gs025-a-no-missing,gs025-a-no-repair,gs025-b-repaired-once,gs025-b-names-hole,gs025-b-complete-after,gs025-b-no-loop', json('{"nodes": 1, "min_scans": 3, "part_max_s": 1500}'), 'gauntlet-gs025.sh', 'active', 0)
+ON CONFLICT(scenario_id) DO UPDATE SET incident_ids=excluded.incident_ids, description=excluded.description, assertions=excluded.assertions, scale_params=excluded.scale_params, runner=excluded.runner, expect_fail=excluded.expect_fail, status='active';
+
 COMMIT;
 
 -- ── DELIBERATELY UNMAPPED (out of system-dynamics scope) ─────────────────────

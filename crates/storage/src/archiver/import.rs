@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use super::manifest::{read_manifest_genesis_hash, read_manifest_height_from};
 use super::write::blake3_hex;
@@ -50,6 +50,194 @@ pub fn force_backfill_from_archive(
     import_archive_blocks(archive_dir, block_store, expected_genesis_hash, true, true)
 }
 
+/// Outcome of [`backfill_heights_from_archive`]: one counter per per-height result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TargetedBackfillReport {
+    pub imported: u64,
+    pub already_present: u64,
+    pub missing_files: u64,
+    pub rejected: u64,
+    pub heights_visited: u64,
+    pub files_read: u64,
+}
+
+/// Backfill exactly `heights` from the archive; a bad height is counted and skipped.
+/// `Err` only when the manifest is absent or names another genesis.
+pub fn backfill_heights_from_archive(
+    archive_dir: &Path,
+    block_store: &crate::BlockStore,
+    expected_genesis_hash: &crypto::Hash,
+    heights: &[u64],
+) -> Result<TargetedBackfillReport, String> {
+    check_manifest(archive_dir, Some(expected_genesis_hash))?;
+    let mut r = TargetedBackfillReport::default();
+    for &h in heights {
+        r.heights_visited += 1;
+        if h == 0 {
+            r.rejected += 1;
+            error!("[ARCHIVER] Targeted backfill rejected h=0: virtual genesis");
+            continue;
+        }
+        if matches!(block_store.get_block_by_height(h), Ok(Some(_))) {
+            r.already_present += 1;
+            continue;
+        }
+        let block = match read_archived_block(archive_dir, h, Some(expected_genesis_hash)) {
+            Ok(b) => b,
+            Err(ArchiveRead::Missing) => {
+                r.missing_files += 1;
+                if r.missing_files <= 10 {
+                    warn!("[ARCHIVER] Archive file missing at height {} — skipping", h);
+                }
+                continue;
+            }
+            Err(e) => {
+                if matches!(e, ArchiveRead::Invalid(_)) {
+                    r.files_read += 1;
+                }
+                r.rejected += 1;
+                error!(
+                    "[ARCHIVER] Targeted backfill rejected h={}: {}",
+                    h,
+                    e.message()
+                );
+                continue;
+            }
+        };
+        r.files_read += 1;
+        let stored = check_links(block_store, h, &block).and_then(|()| {
+            block_store
+                .put_block_canonical(&block, h)
+                .map_err(|e| format!("Failed to store block {}: {}", h, e))
+        });
+        match stored {
+            Ok(()) => r.imported += 1,
+            Err(e) => {
+                r.rejected += 1;
+                error!("[ARCHIVER] Targeted backfill rejected h={}: {}", h, e);
+            }
+        }
+    }
+    info!(
+        "[ARCHIVER] Targeted backfill: {} heights, {} imported, {} present, {} files missing, {} rejected",
+        r.heights_visited, r.imported, r.already_present, r.missing_files, r.rejected
+    );
+    Ok(r)
+}
+
+enum ArchiveRead {
+    Missing,
+    Unreadable(String),
+    Invalid(String),
+}
+
+impl ArchiveRead {
+    fn message(self) -> String {
+        match self {
+            Self::Missing => "archive file missing".to_string(),
+            Self::Unreadable(e) | Self::Invalid(e) => e,
+        }
+    }
+}
+
+fn prefix16(s: &str) -> &str {
+    s.get(..16).unwrap_or(s)
+}
+
+/// Returns the manifest height after the optional manifest genesis check.
+fn check_manifest(archive_dir: &Path, expected: Option<&crypto::Hash>) -> Result<u64, String> {
+    let manifest_height = read_manifest_height_from(archive_dir)
+        .ok_or_else(|| "No manifest.json found in archive directory".to_string())?;
+    if let (Some(expected), Some(archive_genesis)) =
+        (expected, read_manifest_genesis_hash(archive_dir))
+    {
+        let expected_str = expected.to_string();
+        if archive_genesis != expected_str {
+            return Err(format!(
+                "Genesis hash mismatch: archive={}, expected={}. Wrong chain!",
+                prefix16(&archive_genesis),
+                prefix16(&expected_str)
+            ));
+        }
+    }
+    Ok(manifest_height)
+}
+
+/// Read `{h:010}.block`, verify its `.blake3` sidecar, decode, check the genesis.
+fn read_archived_block(
+    archive_dir: &Path,
+    h: u64,
+    expected_genesis_hash: Option<&crypto::Hash>,
+) -> Result<doli_core::Block, ArchiveRead> {
+    let block_path = archive_dir.join(format!("{:010}.block", h));
+    let data = match std::fs::read(&block_path) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ArchiveRead::Missing),
+        Err(e) => {
+            return Err(ArchiveRead::Unreadable(format!(
+                "Failed to read block file at height {}: {}",
+                h, e
+            )))
+        }
+    };
+
+    let checksum_path = archive_dir.join(format!("{:010}.blake3", h));
+    if checksum_path.exists() {
+        let expected_checksum = std::fs::read_to_string(&checksum_path).map_err(|e| {
+            ArchiveRead::Invalid(format!("Failed to read checksum at height {}: {}", h, e))
+        })?;
+        let actual_checksum = blake3_hex(&data);
+        if actual_checksum.trim() != expected_checksum.trim() {
+            return Err(ArchiveRead::Invalid(format!(
+                "Checksum mismatch at height {}: expected={}, got={}",
+                h,
+                prefix16(expected_checksum.trim()),
+                prefix16(&actual_checksum)
+            )));
+        }
+    }
+
+    let block =
+        doli_core::transaction::legacy::deserialize_block_compat(&data).ok_or_else(|| {
+            ArchiveRead::Invalid(format!(
+                "Failed to deserialize block at height {} (tried current and legacy formats)",
+                h
+            ))
+        })?;
+
+    if let Some(expected) = expected_genesis_hash {
+        if block.header.genesis_hash != *expected {
+            return Err(ArchiveRead::Invalid(format!(
+                "Block {} has wrong genesis_hash (wrong chain)",
+                h
+            )));
+        }
+    }
+    Ok(block)
+}
+
+/// SEC-002: the block must link to the stored parent and the stored child.
+fn check_links(
+    block_store: &crate::BlockStore,
+    h: u64,
+    block: &doli_core::Block,
+) -> Result<(), String> {
+    if let Ok(Some(parent)) = block_store.get_hash_by_height(h - 1) {
+        if block.header.prev_hash != parent {
+            return Err(format!("prev_hash does not link to stored h={}", h - 1));
+        }
+    }
+    if let Ok(Some(child)) = block_store.get_block_by_height(h.saturating_add(1)) {
+        if child.header.prev_hash != block.hash() {
+            return Err(format!(
+                "stored h={} does not link to this block",
+                h.saturating_add(1)
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn import_archive_blocks(
     archive_dir: &Path,
     block_store: &crate::BlockStore,
@@ -57,22 +245,7 @@ fn import_archive_blocks(
     skip_existing: bool,
     force_replace: bool,
 ) -> Result<u64, String> {
-    let manifest_height = read_manifest_height_from(archive_dir)
-        .ok_or_else(|| "No manifest.json found in archive directory".to_string())?;
-
-    // Validate genesis_hash from manifest if caller provided expected value
-    if let Some(expected) = expected_genesis_hash {
-        if let Some(archive_genesis) = read_manifest_genesis_hash(archive_dir) {
-            let expected_str = expected.to_string();
-            if archive_genesis != expected_str {
-                return Err(format!(
-                    "Genesis hash mismatch: archive={}, expected={}. Wrong chain!",
-                    &archive_genesis[..16],
-                    &expected_str[..16]
-                ));
-            }
-        }
-    }
+    let manifest_height = check_manifest(archive_dir, expected_genesis_hash)?;
 
     let mode = if skip_existing {
         "Backfilling"
@@ -126,51 +299,17 @@ fn import_archive_blocks(
             }
         }
 
-        let block_path = archive_dir.join(format!("{:010}.block", h));
-        let data = match std::fs::read(&block_path) {
-            Ok(d) => d,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        let block = match read_archived_block(archive_dir, h, expected_genesis_hash) {
+            Ok(b) => b,
+            Err(ArchiveRead::Missing) => {
                 missing_files += 1;
                 if missing_files <= 10 {
                     warn!("[ARCHIVER] Archive file missing at height {} — skipping", h);
                 }
                 continue;
             }
-            Err(e) => {
-                return Err(format!("Failed to read block file at height {}: {}", h, e));
-            }
+            Err(e) => return Err(e.message()),
         };
-
-        // Verify BLAKE3 checksum if sidecar exists
-        let checksum_path = archive_dir.join(format!("{:010}.blake3", h));
-        if checksum_path.exists() {
-            let expected_checksum = std::fs::read_to_string(&checksum_path)
-                .map_err(|e| format!("Failed to read checksum at height {}: {}", h, e))?;
-            let actual_checksum = blake3_hex(&data);
-            if actual_checksum.trim() != expected_checksum.trim() {
-                return Err(format!(
-                    "Checksum mismatch at height {}: expected={}, got={}",
-                    h,
-                    &expected_checksum.trim()[..16],
-                    &actual_checksum[..16]
-                ));
-            }
-        }
-
-        let block: doli_core::Block =
-            doli_core::transaction::legacy::deserialize_block_compat(&data).ok_or_else(|| {
-                format!(
-                    "Failed to deserialize block at height {} (tried current and legacy formats)",
-                    h
-                )
-            })?;
-
-        // Validate genesis_hash consistency within the archive
-        if let Some(expected) = expected_genesis_hash {
-            if block.header.genesis_hash != *expected {
-                return Err(format!("Block {} has wrong genesis_hash (wrong chain)", h));
-            }
-        }
 
         let hash_str = block.hash().to_string();
         block_store

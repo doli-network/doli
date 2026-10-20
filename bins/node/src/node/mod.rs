@@ -37,6 +37,7 @@ mod holdings;
 use holdings::holdings_of_every_producer;
 mod fork_cache;
 mod init;
+mod integrity;
 mod maintainer_probe_routing;
 pub mod maintainer_quorum;
 mod maintainer_rewind;
@@ -320,6 +321,12 @@ pub struct Node {
     /// `None` before first scan. Updated after each scan (Ok or Err).
     /// Phase 1 observability-only (INC-I-034 / M-Choice2).
     pub last_integrity_check_tip: Option<u64>,
+
+    /// Single-flight flag for the 100-block integrity scan task.
+    pub(crate) integrity_in_flight: Arc<AtomicBool>,
+
+    /// Repair back-off carried across 100-block integrity scans.
+    pub(crate) integrity_backoff: Arc<std::sync::Mutex<integrity::RepairBackoff>>,
 
     /// Recovery mode: when true, apply_block() and apply_snap_snapshot() silently
     /// drop all inbound state mutations (anti-poisoning gate for seed recovery).
