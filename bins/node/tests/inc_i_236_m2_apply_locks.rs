@@ -45,7 +45,26 @@ fn keys(n: usize) -> Vec<KeyPair> {
     (0..n).map(|_| KeyPair::generate()).collect()
 }
 
+// Keep the equivocation-WARN callsite "interested" for the whole binary. Tests run
+// in parallel: a sibling node that emits at that callsite with no subscriber active
+// would cache its interest as `never`, and the thread-local capture subscriber in
+// req_auth_022_detector_forged_conflict_emits_no_equivocation_warn would then never
+// see the WARN (its own NON-VACUITY guard would fail). Installing one always-
+// interested global default before any node is built keeps every callsite hot; the
+// capture test still overrides it per-thread with set_default to read its own buffer.
+// The global sink discards into a throwaway buffer, so it causes no cross-test talk.
+fn ensure_callsites_hot() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let sink = DetectorWarns::default();
+        let _ = tracing::subscriber::set_global_default(
+            tracing_subscriber::registry().with(sink),
+        );
+    });
+}
+
 async fn make_node(producers: &[KeyPair]) -> (Node, TempDir) {
+    ensure_callsites_hot();
     let temp = TempDir::new().unwrap();
     let node = Node::new_for_test(temp.path().to_path_buf(), producers.to_vec())
         .await
