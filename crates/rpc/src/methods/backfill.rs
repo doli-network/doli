@@ -4,9 +4,10 @@ use std::net::IpAddr;
 use std::sync::atomic::Ordering;
 
 use serde_json::Value;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crypto::{Hash, Hasher};
+use doli_core::validation::verify_block_signature_at;
 
 use crate::error::RpcError;
 use crate::types::*;
@@ -308,6 +309,7 @@ impl RpcContext {
         let block_store = self.block_store.clone();
         let state = self.backfill_state.clone();
         let rpc_url = params.rpc_url.clone();
+        let sig_ah = self.inc_i_236_block_signature_activation_height;
 
         tokio::spawn(async move {
             info!(
@@ -415,6 +417,11 @@ impl RpcContext {
                         }
                     };
 
+                if let Err(e) = verify_block_signature_at(&block.header, h, sig_ah) {
+                    error!("Backfill: rejected block at height {}: {}", h, e);
+                    skipped += 1;
+                    continue;
+                }
                 if let Err(e) = block_store.put_block_canonical(&block, h) {
                     let msg = format!("Store error at height {}: {}", h, e);
                     warn!("Backfill failed: {}", msg);
@@ -438,7 +445,7 @@ impl RpcContext {
 
             if skipped > 0 {
                 warn!(
-                    "Backfill done: {} imported, {} skipped (peer missing). Run again with a different peer to fill remaining gaps.",
+                    "Backfill done: {} imported, {} skipped (peer missing or rejected). Run again with a different peer to fill remaining gaps.",
                     imported, skipped
                 );
             } else {

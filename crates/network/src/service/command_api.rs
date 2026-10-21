@@ -21,7 +21,13 @@ impl NetworkService {
     /// Read by the network rate limiter to exempt candidate-next blocks
     /// from per-peer rate limiting.
     pub fn update_best_slot(&self, slot: u32) {
-        self.best_slot.store(slot, Ordering::Relaxed);
+        self.local_tip.slot.store(slot, Ordering::Relaxed);
+    }
+
+    /// INC-I-236: the local tip height; the gossip block gate checks the
+    /// signature at prospective height `height + 1`.
+    pub fn update_best_height(&self, height: u64) {
+        self.local_tip.height.store(height, Ordering::Relaxed);
     }
 
     /// INC-I-114: Access gossip block load-shedding metrics.

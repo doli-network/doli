@@ -241,7 +241,7 @@ fn inc_i_253_real_hole_repaired_once_then_zero() {
         "observed first-scan missing = {first}; only h=150 is absent"
     );
 
-    let imported = backfill_from_archive(archive.path(), &fx.store, Some(&fx.g));
+    let imported = backfill_from_archive(archive.path(), &fx.store, Some(&fx.g), u64::MAX);
     assert_eq!(imported, Ok(1), "observed backfill = {imported:?}");
     fx.assert_served(1..=300);
 
@@ -336,7 +336,7 @@ fn inc_i_253_outcome_probe() {
         let missing = super::integrity_scan(&fx.store, 300, true).missing_count;
         first_scan_missing.get_or_insert(missing);
         if missing > 0 {
-            let _ = backfill_from_archive(archive.path(), &fx.store, Some(&fx.g));
+            let _ = backfill_from_archive(archive.path(), &fx.store, Some(&fx.g), u64::MAX);
             passes += 1;
             let _ = super::integrity_scan(&fx.store, 300, true);
         }
@@ -548,7 +548,7 @@ mod target_api {
         let first = integrity::integrity_scan(&fx.store, 300, true);
         assert_eq!((first.missing_count, first.missing.clone()), (1, vec![150]));
         assert_eq!(
-            backfill_from_archive(archive.path(), &fx.store, Some(&fx.g)),
+            backfill_from_archive(archive.path(), &fx.store, Some(&fx.g), u64::MAX),
             Ok(1)
         );
         let after = integrity::integrity_scan(&fx.store, 300, true);

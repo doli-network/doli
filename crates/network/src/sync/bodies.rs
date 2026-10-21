@@ -14,6 +14,9 @@ use doli_core::Block;
 
 use crate::protocols::SyncRequest;
 
+#[path = "body_intake.rs"]
+mod intake;
+
 /// Request state for body downloads
 #[derive(Debug)]
 struct BodyRequest {
@@ -236,63 +239,9 @@ impl BodyDownloader {
         Some((peer, SyncRequest::GetBodies { hashes }))
     }
 
-    /// Process received bodies
+    /// Process received bodies (see [`Self::process_response_refusing`]).
     pub fn process_response(&mut self, peer: PeerId, bodies: Vec<Block>) -> Vec<Block> {
-        // Get the request info
-        let request = match self.active_requests.remove(&peer) {
-            Some(r) => r,
-            None => {
-                warn!("Received bodies from {} but no active request", peer);
-                return bodies;
-            }
-        };
-
-        let mut received_hashes = HashSet::new();
-
-        // Process received bodies
-        for block in &bodies {
-            let hash = block.hash();
-            received_hashes.insert(hash);
-            self.in_flight.remove(&hash);
-            self.downloaded.insert(hash, block.clone());
-            self.total_downloaded += 1;
-        }
-
-        // Mark missing hashes as failed — track per-hash failure count
-        for hash in &request.hashes {
-            if !received_hashes.contains(hash) {
-                self.in_flight.remove(hash);
-
-                // Track which peer failed for this hash
-                self.failed_peers.entry(*hash).or_default().insert(peer);
-
-                let count = self.failure_count.entry(*hash).or_insert(0);
-                *count += 1;
-
-                if *count >= 3 {
-                    warn!(
-                        "Giving up on body {} after {} failures — marking permanently failed (60s expiry)",
-                        hash, count
-                    );
-                    self.permanently_failed.insert(*hash, Instant::now());
-                } else {
-                    warn!(
-                        "Missing body {} from peer {} (attempt {}/3)",
-                        hash, peer, count
-                    );
-                    self.failed.push_back(*hash);
-                }
-            }
-        }
-
-        debug!(
-            "Received {} bodies from {}, total downloaded: {}",
-            bodies.len(),
-            peer,
-            self.total_downloaded
-        );
-
-        bodies
+        self.process_response_refusing(peer, bodies, |_, _| false)
     }
 
     /// Handle a request timeout

@@ -150,7 +150,7 @@ impl Ax {
     }
 
     fn run(&self, heights: &[u64]) -> Result<TargetedBackfillReport, String> {
-        backfill_heights_from_archive(self.dir(), &self.store, &self.g, heights)
+        backfill_heights_from_archive(self.dir(), &self.store, &self.g, heights, u64::MAX)
     }
 }
 
@@ -231,12 +231,12 @@ fn inc_i_253_targeted_manifest_absent_or_wrong_genesis_is_err() {
     ax.hole(150);
     let other = crypto::hash::hash(b"inc-i-253-other-chain");
 
-    let wrong = backfill_heights_from_archive(ax.dir(), &ax.store, &other, &[150]);
+    let wrong = backfill_heights_from_archive(ax.dir(), &ax.store, &other, &[150], u64::MAX);
     assert!(wrong.is_err(), "observed {wrong:?}");
     assert_eq!(ax.served(150), None);
 
     let empty = TempDir::new().unwrap();
-    let absent = backfill_heights_from_archive(empty.path(), &ax.store, &ax.g, &[150]);
+    let absent = backfill_heights_from_archive(empty.path(), &ax.store, &ax.g, &[150], u64::MAX);
     assert!(absent.is_err(), "observed {absent:?}");
     assert_eq!(ax.served(150), None);
 }
@@ -344,7 +344,7 @@ fn inc_i_253_full_range_bad_sidecar_still_aborts() {
     )
     .unwrap();
 
-    let err = backfill_from_archive(ax.dir(), &ax.store, Some(&ax.g))
+    let err = backfill_from_archive(ax.dir(), &ax.store, Some(&ax.g), u64::MAX)
         .expect_err("full-range pass aborts on a bad sidecar");
 
     assert!(
@@ -361,12 +361,12 @@ fn inc_i_253_full_range_complete_archive_unchanged() {
     ax.hole(150);
 
     assert_eq!(
-        backfill_from_archive(ax.dir(), &ax.store, Some(&ax.g)),
+        backfill_from_archive(ax.dir(), &ax.store, Some(&ax.g), u64::MAX),
         Ok(1)
     );
     ax.assert_original(150);
     assert_eq!(
-        backfill_from_archive(ax.dir(), &ax.store, Some(&ax.g)),
+        backfill_from_archive(ax.dir(), &ax.store, Some(&ax.g), u64::MAX),
         Ok(0)
     );
 }
@@ -382,7 +382,7 @@ fn inc_i_253_force_backfill_still_replaces_divergent_fork() {
     assert_eq!(ax.served(149), Some(f149.hash()), "precondition: fork");
     assert_eq!(ax.served(150), Some(f150.hash()), "precondition: fork");
 
-    let got = force_backfill_from_archive(ax.dir(), &ax.store, Some(&ax.g));
+    let got = force_backfill_from_archive(ax.dir(), &ax.store, Some(&ax.g), u64::MAX);
 
     assert_eq!(got, Ok(2), "observed {got:?}");
     ax.assert_original(149);

@@ -74,6 +74,11 @@ impl HeaderDownloader {
         self.block_signature_activation_height = ah;
     }
 
+    /// Height of the next continuation header, while a continuation is set.
+    pub fn next_height(&self) -> Option<u64> {
+        self.expected_prev_hash.map(|_| self.next_height)
+    }
+
     /// Create a header request starting from the given hash
     /// Uses expected_prev_hash if set (for continuation), otherwise uses provided start_hash
     pub fn create_request(&self, start_hash: Hash) -> Option<SyncRequest> {

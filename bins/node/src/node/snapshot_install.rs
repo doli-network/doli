@@ -34,13 +34,16 @@ impl Node {
         &self,
         snapshot: &network::VerifiedSnapshot,
     ) -> Result<SnapshotPrelude> {
-        let Some(marker) = snapshot.utxo_staged.as_ref() else {
+        let outcome = if !self.snap_anchor_authenticated(snapshot) {
+            Ok(SnapshotPrelude::Refused)
+        } else if let Some(marker) = snapshot.utxo_staged.as_ref() {
+            self.install_staged_utxos(snapshot, marker).await
+        } else {
             return self.install_decoded_utxos(snapshot).await;
         };
-        let outcome = self.install_staged_utxos(snapshot, marker).await;
         // Quarantine: rows a refused install left behind would be concatenated
         // onto the next peer's stream and match neither manifest.
-        if matches!(outcome, Ok(SnapshotPrelude::Refused)) {
+        if snapshot.utxo_staged.is_some() && matches!(outcome, Ok(SnapshotPrelude::Refused)) {
             if let Err(e) = self.state_db.clear_staged_utxos() {
                 warn!(
                     "[SNAP_SYNC] Failed to clear staging after a refused install: {}",

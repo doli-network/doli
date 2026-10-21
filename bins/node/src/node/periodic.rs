@@ -280,6 +280,8 @@ impl Node {
                         let state_db = self.state_db.clone();
                         let archive_dir = self.archive_dir.clone();
                         let backoff = self.integrity_backoff.clone();
+                        let net = self.config.network.params();
+                        let sig_ah = net.inc_i_236_block_signature_activation_height;
                         tokio::task::spawn(async move {
                             let _guard = guard;
                             let result = tokio::task::spawn_blocking(move || {
@@ -290,6 +292,7 @@ impl Node {
                                     scan_tip,
                                     archive_dir.as_deref(),
                                     &mut state,
+                                    sig_ah,
                                 );
                                 *lock() = state;
                                 out
@@ -1296,6 +1299,8 @@ impl Node {
         let block_store = self.block_store.clone();
         let archive_dir = self.archive_dir.clone();
         let archive_configured = self.archive_dir.is_some();
+        let net = self.config.network.params();
+        let sig_ah = net.inc_i_236_block_signature_activation_height;
         let result = tokio::task::spawn_blocking(move || {
             // INC-I-055: heights below the history floor (snap/prune) are not gaps.
             let floor = scan_floor(&block_store, archive_configured);
@@ -1320,7 +1325,7 @@ impl Node {
             let report = integrity_scan(&block_store, current_tip, archive_configured);
             let repair = expected_genesis(&block_store)
                 .ok_or_else(|| "no stored block names the genesis".to_string())
-                .and_then(|g| targeted_repair(&block_store, archive_path, &g, &report));
+                .and_then(|g| targeted_repair(&block_store, archive_path, &g, &report, sig_ah));
             match repair {
                 Ok(r) => {
                     tracing::info!(

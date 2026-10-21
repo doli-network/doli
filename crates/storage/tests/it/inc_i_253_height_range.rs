@@ -162,7 +162,7 @@ fn inc_i_253_backfill_complete_key0_store_imports_zero() {
     }
     assert!(archive.path().join("manifest.json").exists());
 
-    let imported = backfill_from_archive(archive.path(), &store, Some(&g));
+    let imported = backfill_from_archive(archive.path(), &store, Some(&g), u64::MAX);
     assert_eq!(imported, Ok(0), "observed backfill = {imported:?}");
 
     for h in 1..=300u64 {

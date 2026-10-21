@@ -27,8 +27,9 @@ use tempfile::TempDir;
 fn backfill_the_hole(node: &Node, temp: &TempDir) {
     let dir = temp.path().join("archive");
     archive::build_legacy_archive(&dir, m2::S, Hash::ZERO);
-    let imported = storage::archiver::backfill_from_archive(&dir, &node.block_store, None)
-        .expect("fixture: backfill_from_archive");
+    let imported =
+        storage::archiver::backfill_from_archive(&dir, &node.block_store, None, u64::MAX)
+            .expect("fixture: backfill_from_archive");
     assert_eq!(imported, m2::S - 1, "fixture: backfill imports 2..=S only");
     assert!(
         m2::has_block(node, 2) && m2::has_block(node, m2::S) && m2::has_block(node, m2::S + 1),

@@ -56,6 +56,8 @@ fn swarm_report(topic: &str, data: &[u8]) -> (&'static str, bool) {
         genesis_time: v::GENESIS_TIME,
         slot_duration: v::SLOT_DURATION,
         best_slot: 1_000,
+        best_height: 0,
+        block_signature_activation_height: u64::MAX,
     };
     let d = relay_decision(RelayTopic::from_topic_str(topic), data, &ctx);
     let variant = format!("{d:?}");

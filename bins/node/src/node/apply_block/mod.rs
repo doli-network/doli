@@ -295,6 +295,7 @@ impl Node {
         // per-peer rate limiting (blocks with slot >= best_slot skip per-peer check).
         if let Some(ref network) = self.network {
             network.update_best_slot(block.header.slot);
+            network.update_best_height(height);
         }
 
         // Store the block AFTER all transaction validation has passed.

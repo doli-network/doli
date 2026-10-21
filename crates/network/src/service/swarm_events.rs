@@ -42,7 +42,7 @@ pub(super) async fn handle_swarm_event(
     eviction_cooldown: &mut HashMap<PeerId, Instant>,
     bootstrap_peers: &mut HashMap<PeerId, Instant>,
     stale_peer_ids: &mut HashMap<PeerId, Instant>,
-    best_slot: &Arc<std::sync::atomic::AtomicU32>,
+    local_tip: &Arc<super::gossip_intake::LocalTip>,
     shed_metrics: &std::sync::Arc<super::backpressure::GossipShedMetrics>,
     memory_shed_flag: &Arc<AtomicBool>,
 ) {
@@ -259,7 +259,7 @@ pub(super) async fn handle_swarm_event(
                 rate_limiter,
                 genesis_mismatch_cooldown,
                 stale_peer_ids,
-                best_slot,
+                local_tip,
                 shed_metrics,
                 memory_shed_flag,
             )

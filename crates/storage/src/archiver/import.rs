@@ -13,6 +13,7 @@ pub fn restore_from_archive(
     archive_dir: &Path,
     block_store: &crate::BlockStore,
     expected_genesis_hash: Option<&crypto::Hash>,
+    activation_height: u64,
 ) -> Result<u64, String> {
     import_archive_blocks(
         archive_dir,
@@ -20,6 +21,7 @@ pub fn restore_from_archive(
         expected_genesis_hash,
         false,
         false,
+        activation_height,
     )
 }
 
@@ -31,8 +33,16 @@ pub fn backfill_from_archive(
     archive_dir: &Path,
     block_store: &crate::BlockStore,
     expected_genesis_hash: Option<&crypto::Hash>,
+    activation_height: u64,
 ) -> Result<u64, String> {
-    import_archive_blocks(archive_dir, block_store, expected_genesis_hash, true, false)
+    import_archive_blocks(
+        archive_dir,
+        block_store,
+        expected_genesis_hash,
+        true,
+        false,
+        activation_height,
+    )
 }
 
 /// Force-backfill: like backfill, but also replaces existing blocks that differ
@@ -46,8 +56,16 @@ pub fn force_backfill_from_archive(
     archive_dir: &Path,
     block_store: &crate::BlockStore,
     expected_genesis_hash: Option<&crypto::Hash>,
+    activation_height: u64,
 ) -> Result<u64, String> {
-    import_archive_blocks(archive_dir, block_store, expected_genesis_hash, true, true)
+    import_archive_blocks(
+        archive_dir,
+        block_store,
+        expected_genesis_hash,
+        true,
+        true,
+        activation_height,
+    )
 }
 
 /// Outcome of [`backfill_heights_from_archive`]: one counter per per-height result.
@@ -68,6 +86,7 @@ pub fn backfill_heights_from_archive(
     block_store: &crate::BlockStore,
     expected_genesis_hash: &crypto::Hash,
     heights: &[u64],
+    activation_height: u64,
 ) -> Result<TargetedBackfillReport, String> {
     check_manifest(archive_dir, Some(expected_genesis_hash))?;
     let mut r = TargetedBackfillReport::default();
@@ -105,11 +124,13 @@ pub fn backfill_heights_from_archive(
             }
         };
         r.files_read += 1;
-        let stored = check_links(block_store, h, &block).and_then(|()| {
-            block_store
-                .put_block_canonical(&block, h)
-                .map_err(|e| format!("Failed to store block {}: {}", h, e))
-        });
+        let stored = check_links(block_store, h, &block)
+            .and_then(|()| check_signature(h, &block, activation_height))
+            .and_then(|()| {
+                block_store
+                    .put_block_canonical(&block, h)
+                    .map_err(|e| format!("Failed to store block {}: {}", h, e))
+            });
         match stored {
             Ok(()) => r.imported += 1,
             Err(e) => {
@@ -238,12 +259,18 @@ fn check_links(
     Ok(())
 }
 
+fn check_signature(h: u64, block: &doli_core::Block, activation_height: u64) -> Result<(), String> {
+    doli_core::validation::verify_block_signature_at(&block.header, h, activation_height)
+        .map_err(|e| format!("block signature rejected: {}", e))
+}
+
 fn import_archive_blocks(
     archive_dir: &Path,
     block_store: &crate::BlockStore,
     expected_genesis_hash: Option<&crypto::Hash>,
     skip_existing: bool,
     force_replace: bool,
+    activation_height: u64,
 ) -> Result<u64, String> {
     let manifest_height = check_manifest(archive_dir, expected_genesis_hash)?;
 
@@ -261,7 +288,9 @@ fn import_archive_blocks(
     let mut replaced = 0u64;
     let mut skipped = 0u64;
     let mut missing_files = 0u64;
+    let mut rejected = 0u64;
     for h in 1..=manifest_height {
+        let mut replacing = false;
         // Skip or compare blocks that already exist in the BlockStore
         if skip_existing {
             if let Ok(Some(existing)) = block_store.get_block_by_height(h) {
@@ -282,7 +311,7 @@ fn import_archive_blocks(
                                 "[ARCHIVER] Force-replacing divergent block at h={} (local={:.16} archive={:.16})",
                                 h, existing_checksum, archive_checksum.trim()
                             );
-                            replaced += 1;
+                            replacing = true;
                             // Fall through to import from archive
                         } else {
                             skipped += 1;
@@ -311,12 +340,19 @@ fn import_archive_blocks(
             Err(e) => return Err(e.message()),
         };
 
+        if let Err(e) = check_signature(h, &block, activation_height) {
+            rejected += 1;
+            error!("[ARCHIVER] Archive block rejected at h={}: {}", h, e);
+            continue;
+        }
+
         let hash_str = block.hash().to_string();
         block_store
             .put_block_canonical(&block, h)
             .map_err(|e| format!("Failed to store block {}: {}", h, e))?;
 
         imported += 1;
+        replaced += u64::from(replacing);
         if imported.is_multiple_of(100) {
             info!(
                 "[ARCHIVER] {} {}/{} blocks (hash={}...)",
@@ -332,6 +368,12 @@ fn import_archive_blocks(
         warn!(
             "[ARCHIVER] {} archive files were missing and skipped",
             missing_files
+        );
+    }
+    if rejected > 0 {
+        error!(
+            "[ARCHIVER] {} archive blocks were rejected and not imported",
+            rejected
         );
     }
 

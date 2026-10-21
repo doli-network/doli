@@ -34,3 +34,10 @@ crypto = { workspace = true }
 storage = { workspace = true }
 mempool = { workspace = true }
 vdf = { workspace = true }
+
+# INC-I-236 M2 — its OWN test binary on purpose: it pins the process-wide devnet
+# NetworkParams (signature activation height via env) before first load, which
+# must not leak into the shared `tests/it/` binary.
+[[test]]
+name = "inc_i_236_m2_backfill"
+path = "tests/inc_i_236_m2_backfill.rs"

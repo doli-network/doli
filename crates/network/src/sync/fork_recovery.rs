@@ -211,6 +211,11 @@ impl ForkRecoveryTracker {
         }
     }
 
+    /// Does `blk` answer the walk's pending fetch from `peer`?
+    pub fn is_pending_answer(&self, peer: PeerId, blk: &Block) -> bool {
+        matches!(&self.active, Some(r) if r.pending && r.peer == peer && blk.hash() == r.next_parent)
+    }
+
     /// Check if the chain connected to our store.
     /// Node calls this with the result of block_store.has_block(current_parent).
     /// Returns completed recovery if chain is connected.

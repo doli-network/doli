@@ -115,6 +115,19 @@ pub fn verify_block_signature(header: &BlockHeader) -> Result<(), ValidationErro
     .map_err(|e| fail(format!("verification failed: {e}")))
 }
 
+/// [`verify_block_signature`] for a block at `height`; below `activation_height`
+/// it returns `Ok` without reading `pi`.
+pub fn verify_block_signature_at(
+    header: &BlockHeader,
+    height: u64,
+    activation_height: u64,
+) -> Result<(), ValidationError> {
+    if height < activation_height {
+        return Ok(());
+    }
+    verify_block_signature(header)
+}
+
 /// Validate a block with a specified validation mode.
 ///
 /// In `Full` mode, this is identical to `validate_block()` -- all checks including

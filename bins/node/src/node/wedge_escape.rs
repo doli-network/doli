@@ -105,6 +105,10 @@ impl Node {
             .ok()
             .flatten()
             .map_or(height, |h| h.saturating_add(1));
+        if let Err(e) = self.verify_fork_signed(std::slice::from_ref(&block), sibling_height) {
+            debug!("[WEDGE_ESCAPE] Dropping fork block: {}", e);
+            return Ok(());
+        }
         self.sync_manager.write().await.record_fork_block_weight(
             fork_tip_hash,
             block.header.prev_hash,

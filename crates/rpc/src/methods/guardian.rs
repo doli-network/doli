@@ -323,6 +323,7 @@ impl RpcContext {
             .ok_or_else(|| RpcError::internal_error("state_db not available".to_string()))?;
 
         let block_store = self.block_store.clone();
+        let sig_ah = self.inc_i_236_block_signature_activation_height;
 
         // The bridge is synchronous (file I/O) — run in blocking thread
         let result = tokio::task::spawn_blocking(move || -> Result<(u64, bool), String> {
@@ -358,12 +359,14 @@ impl RpcContext {
                     &archive_dir,
                     &block_store,
                     genesis_hash.as_ref(),
+                    sig_ah,
                 )?
             } else {
                 storage::archiver::backfill_from_archive(
                     &archive_dir,
                     &block_store,
                     genesis_hash.as_ref(),
+                    sig_ah,
                 )?
             };
 

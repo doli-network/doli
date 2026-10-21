@@ -29,6 +29,7 @@ impl Node {
             .ok()
             .flatten()
             .unwrap_or(current_height);
+        self.verify_fork_signed(&recovery.blocks, fork_base_height.saturating_add(1))?;
         let mut last_block_weight = 1u64;
         {
             let producers = self.producer_set.read().await;

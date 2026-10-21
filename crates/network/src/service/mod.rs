@@ -37,7 +37,7 @@ pub use types::{NetworkCommand, NetworkError, NetworkEvent};
 pub use verdict::{send_gossip_verdict, Verdict, DROPPED_VERDICTS, LATE_VERDICTS};
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -56,6 +56,7 @@ use crate::watchdog::MemoryWatchdog;
 
 use backpressure::GossipShedMetrics;
 use event_lanes::EventLanes;
+use gossip_intake::LocalTip;
 use helpers::{load_keypair, plan_startup_dials, save_keypair};
 use swarm_loop::run_swarm;
 
@@ -75,8 +76,8 @@ pub struct NetworkService {
     command_tx: mpsc::Sender<NetworkCommand>,
     /// Local peer ID
     local_peer_id: PeerId,
-    /// INC-I-049: best slot, exempts candidate-next blocks from rate limiting.
-    best_slot: Arc<AtomicU32>,
+    /// INC-I-049 best slot (rate-limit exemption) + INC-I-236 best height (signature gate).
+    local_tip: Arc<LocalTip>,
     /// INC-I-114: Load-shedding metrics for gossip block events.
     gossip_shed_metrics: Arc<GossipShedMetrics>,
     memory_shed_flag: Arc<AtomicBool>,
@@ -381,14 +382,14 @@ impl NetworkService {
             (None, None)
         };
 
-        // INC-I-049: Shared best slot for rate limiter height+1 exemption
-        let best_slot = Arc::new(AtomicU32::new(0));
+        // Node-written tip: slot for the INC-I-049 exemption, height for the INC-I-236 gate
+        let local_tip = Arc::new(LocalTip::default());
 
         // Spawn the swarm event loop
         let peers_clone = peers.clone();
         let config_clone = config.clone();
         let peer_cache_path = config.peer_cache_path.clone();
-        let best_slot_clone = best_slot.clone();
+        let local_tip_clone = local_tip.clone();
         let shed_metrics_clone = gossip_shed_metrics.clone();
         let watchdog_threshold = config.memory_watchdog_threshold_bytes;
         let watchdog =
@@ -410,7 +411,7 @@ impl NetworkService {
                 peer_cache_path,
                 discv5_events,
                 discv5_svc,
-                best_slot_clone,
+                local_tip_clone,
                 shed_metrics_clone,
                 watchdog,
                 shed_flag_clone,
@@ -428,7 +429,7 @@ impl NetworkService {
             retention,
             command_tx,
             local_peer_id,
-            best_slot,
+            local_tip,
             gossip_shed_metrics,
             memory_shed_flag,
         })

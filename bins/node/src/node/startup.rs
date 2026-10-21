@@ -153,6 +153,11 @@ impl Node {
         // for wall-clock-based stale block filtering in gossipsub validation.
         network_config.genesis_time = self.params.genesis_time;
         network_config.slot_duration = self.params.slot_duration;
+        network_config.block_signature_activation_height = self
+            .config
+            .network
+            .params()
+            .inc_i_236_block_signature_activation_height;
 
         // Extract PeerIds from bootstrap multiaddrs for seed release after DHT bootstrap.
         // The seed is only needed for initial peer discovery — after that, DHT takes over.
@@ -280,6 +285,7 @@ impl Node {
             self.config.network.id()
         );
         let network = NetworkService::new(network_config).await?;
+        network.update_best_height(self.chain_state.read().await.best_height);
         crate::metrics_gossip::watch_event_lanes(network.lane_stats(), network.lane_budgets());
         crate::metrics_gossip::watch_retention(network.retention());
         self.network = Some(network);

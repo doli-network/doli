@@ -114,6 +114,8 @@ pub struct RpcContext {
     pub inc_i_204_fork_choice_activation_height: u64,
     /// INC-I-181 pending-queue state-root gate (network-specific).
     pub inc_i_181_pending_root_activation_height: u64,
+    /// INC-I-236 block signature gate (network-specific).
+    pub inc_i_236_block_signature_activation_height: u64,
 }
 
 impl RpcContext {
@@ -166,6 +168,8 @@ impl RpcContext {
                 .inc_i_204_fork_choice_activation_height,
             inc_i_181_pending_root_activation_height: net_params
                 .inc_i_181_pending_root_activation_height,
+            inc_i_236_block_signature_activation_height: net_params
+                .inc_i_236_block_signature_activation_height,
             backfill_state: Arc::new(BackfillState {
                 running: AtomicBool::new(false),
                 imported: AtomicU64::new(0),
@@ -240,6 +244,8 @@ impl RpcContext {
                     .inc_i_204_fork_choice_activation_height,
                 inc_i_181_pending_root_activation_height: NetworkParams::load(Network::Mainnet)
                     .inc_i_181_pending_root_activation_height,
+                inc_i_236_block_signature_activation_height: NetworkParams::load(Network::Mainnet)
+                    .inc_i_236_block_signature_activation_height,
                 backfill_state: Arc::new(BackfillState {
                     running: AtomicBool::new(false),
                     imported: AtomicU64::new(0),

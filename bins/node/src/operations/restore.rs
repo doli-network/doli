@@ -38,6 +38,7 @@ pub fn bridge_checkpoint_to_archive(
     block_store: &Arc<BlockStore>,
     state_db: &Arc<StateDb>,
     archive_dir: &Path,
+    activation_height: u64,
 ) -> Result<BridgeReport> {
     // FM-1: No archive directory -- early return with info log
     if !archive_dir.exists() {
@@ -65,6 +66,7 @@ pub fn bridge_checkpoint_to_archive(
         archive_dir,
         block_store,
         genesis_hash.as_ref(),
+        activation_height,
     ) {
         Ok(count) => count,
         Err(e) => {
@@ -149,9 +151,14 @@ pub(crate) fn backfill_from_archive(
         found.unwrap_or_else(|| doli_core::genesis::genesis_hash(network))
     };
 
-    let imported =
-        storage::archiver::backfill_from_archive(archive_dir, &block_store, Some(&genesis_hash))
-            .map_err(|e| anyhow!("{}", e))?;
+    let sig_ah = network.params().inc_i_236_block_signature_activation_height;
+    let imported = storage::archiver::backfill_from_archive(
+        archive_dir,
+        &block_store,
+        Some(&genesis_hash),
+        sig_ah,
+    )
+    .map_err(|e| anyhow!("{}", e))?;
 
     println!();
     if imported > 0 {
@@ -293,8 +300,10 @@ pub(crate) async fn restore_from_rpc(
     }
 
     // Step 3: Download and store blocks (BlockStore already opened in Step 2)
+    let sig_ah = network.params().inc_i_236_block_signature_activation_height;
     let mut imported = 0u64;
     let mut skipped = 0u64;
+    let mut rejected = 0u64;
 
     for h in 1..=remote_height {
         // Skip existing blocks in backfill mode
@@ -350,6 +359,11 @@ pub(crate) async fn restore_from_rpc(
         // Deserialize and store
         let block: doli_core::Block = bincode::deserialize(&data)
             .map_err(|e| anyhow!("Deserialize error at {}: {}", h, e))?;
+        if let Err(e) = doli_core::validation::verify_block_signature_at(&block.header, h, sig_ah) {
+            eprintln!("ERROR: rejected block at {}: {} (not stored)", h, e);
+            rejected += 1;
+            continue;
+        }
 
         block_store
             .put_block_canonical(&block, h)
@@ -369,6 +383,9 @@ pub(crate) async fn restore_from_rpc(
         "{} complete: {} blocks imported, {} skipped.",
         mode, imported, skipped
     );
+    if rejected > 0 {
+        eprintln!("ERROR: {} blocks rejected and not stored.", rejected);
+    }
 
     if !backfill && imported > 0 {
         println!();
@@ -415,9 +432,14 @@ pub(crate) fn restore_from_archive(
     let genesis_hash = doli_core::genesis::genesis_hash(network);
 
     // Import blocks with checksum + genesis_hash verification
-    let imported =
-        storage::archiver::restore_from_archive(archive_dir, &block_store, Some(&genesis_hash))
-            .map_err(|e| anyhow!("{}", e))?;
+    let sig_ah = network.params().inc_i_236_block_signature_activation_height;
+    let imported = storage::archiver::restore_from_archive(
+        archive_dir,
+        &block_store,
+        Some(&genesis_hash),
+        sig_ah,
+    )
+    .map_err(|e| anyhow!("{}", e))?;
 
     println!();
     println!("Imported {} blocks. Rebuilding chain state...", imported);

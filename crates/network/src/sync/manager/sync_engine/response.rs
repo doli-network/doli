@@ -87,10 +87,7 @@ impl SyncManager {
                 );
                 // Fork recovery intercept: consume blocks during active recovery
                 if self.fork.fork_recovery.is_active()
-                    && self
-                        .fork
-                        .fork_recovery
-                        .handle_block(peer, maybe_block.clone())
+                    && self.walk_intake(peer, maybe_block.clone())
                 {
                     return vec![]; // Consumed by fork recovery
                 }
@@ -512,7 +509,7 @@ impl SyncManager {
         self.network.last_sync_activity = Instant::now();
 
         // Process through body_downloader to update its internal state
-        let processed_bodies = self.pipeline.body_downloader.process_response(peer, bodies);
+        let processed_bodies = self.take_requested_bodies(peer, bodies);
 
         // Remove these hashes from needed list and store blocks
         let mut blocks_to_apply = Vec::new();

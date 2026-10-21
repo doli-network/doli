@@ -90,6 +90,9 @@ impl Node {
             debug!("Ignoring gossip block {} during snap sync", block.hash());
             return Ok(());
         }
+        if !self.gossip_event_authenticated(&block).await {
+            return Ok(());
+        }
 
         // Fix (2026-04-15, upstream already_known filter): drop blocks we've already
         // applied canonically BEFORE entering the full apply path. Gossip rebroadcast

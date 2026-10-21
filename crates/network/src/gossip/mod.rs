@@ -9,6 +9,8 @@ pub mod validation;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_inc_i236_m2_gossip;
 
 pub use config::*;
 pub use publish::*;

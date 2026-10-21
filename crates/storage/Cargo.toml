@@ -48,3 +48,10 @@ path = "tests/m2_canonical_fold_byte_equality.rs"
 [[test]]
 name = "m2_canonical_fold_fail_loud"
 path = "tests/m2_canonical_fold_fail_loud.rs"
+
+# INC-I-236 M2 — its OWN test binary on purpose: it names the archive-import
+# activation-height parameter that does not exist until the milestone lands, so
+# folding it into `tests/it/` would break every storage integration test during RED.
+[[test]]
+name = "inc_i_236_m2_archive_import"
+path = "tests/inc_i_236_m2_archive_import.rs"
