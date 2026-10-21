@@ -132,6 +132,10 @@
 #   * GS-025 (archive integrity scan, no phantom repair loop, INC-I-253) is
 #     STANDALONE ONLY: this runner SKIPs its tokens. It starts a scratch archive
 #     node from the oldest seed checkpoint; run scripts/gauntlet-gs025.sh directly.
+#   * GS-026 (block authentication above the signature gate, INC-I-236) is
+#     STANDALONE ONLY: this runner SKIPs its tokens. It stands up an ephemeral
+#     mixed HEAD/pre-fix devnet and injects forged and unsigned blocks on gossip;
+#     run scripts/gauntlet-gs026.sh directly.
 #
 # Assertions key off STRUCTURED telemetry fields (gap=, rollback_depth=,
 # sync_fails=, state=) and distinct-event phrases — NEVER raw keywords that also
@@ -738,6 +742,8 @@ assert(){
       ok=2; why="$t: standalone scenario, run scripts/gauntlet-gs024.sh (not part of gauntlet.sh)" ;;
     gs025-a-three-scans|gs025-a-no-missing|gs025-a-no-repair|gs025-b-repaired-once|gs025-b-names-hole|gs025-b-complete-after|gs025-b-no-loop)
       ok=2; why="$t: standalone scenario, run scripts/gauntlet-gs025.sh (not part of gauntlet.sh)" ;;
+    gs026-mixed-below-height-equal-tips|gs026-crossing-height-no-fork|gs026-forged-rejected|gs026-unsigned-rejected)
+      ok=2; why="$t: standalone scenario, run scripts/gauntlet-gs026.sh (not part of gauntlet.sh)" ;;
     *)
       why="unknown assertion token '$t'" ;;
   esac

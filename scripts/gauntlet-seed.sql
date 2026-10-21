@@ -157,6 +157,13 @@ VALUES ('GS-025', 'archive-integrity-no-phantom-loop',
   'gs025-a-three-scans,gs025-a-no-missing,gs025-a-no-repair,gs025-b-repaired-once,gs025-b-names-hole,gs025-b-complete-after,gs025-b-no-loop', json('{"nodes": 1, "min_scans": 3, "part_max_s": 1500}'), 'gauntlet-gs025.sh', 'active', 0)
 ON CONFLICT(scenario_id) DO UPDATE SET incident_ids=excluded.incident_ids, description=excluded.description, assertions=excluded.assertions, scale_params=excluded.scale_params, runner=excluded.runner, expect_fail=excluded.expect_fail, status='active';
 
+INSERT INTO gauntlet_scenarios (scenario_id, name, description, incident_ids, assertions, scale_params, runner, status, expect_fail)
+VALUES ('GS-026', 'block-authentication',
+  'Guards block producer authentication above the signature activation height (INC-I-236: a block named its producer in the header but carried no proof the producer signed it, and the VDF input is public data, so a keyless party could author a valid-looking block in any producer slot). STANDALONE ONLY, not part of the default gauntlet.sh flow. INJECTS: scripts/gauntlet-gs026.sh stands up an ephemeral local devnet (throwaway keys, one shared chainspec, free high ports) with two HEAD producer nodes and one pre-fix control node, arms the signature gate at a finite height through the devnet-only env var, then publishes on the gossip blocks topic (bins/node/examples/gs026_forge_block) one block naming a scheduled producer but built WITHOUT its key and one block with no signature, pausing the named producer first. ASSERTS: below the gate the mixed control+HEAD cluster shares one chain (identical block hash at several heights); an all-HEAD cluster crosses the gate height with no fork and every node agrees on the tip; after the gate every HEAD node rejects both the forged and the unsigned block, tip height and hash stay equal on all nodes, and production continues. A pre-fix control cluster accepts them (the RED proof). It never touches a running node, kills only its own PID and deletes the scratch dir. Missing inputs, a busy port or a running build SKIP (rc 2).',
+  json('["INC-I-236"]'),
+  'gs026-mixed-below-height-equal-tips,gs026-crossing-height-no-fork,gs026-forged-rejected,gs026-unsigned-rejected', json('{"nodes": 6, "ephemeral": true, "mixed_binary": true}'), 'scripts/gauntlet-gs026.sh', 'active', 0)
+ON CONFLICT(scenario_id) DO UPDATE SET incident_ids=excluded.incident_ids, description=excluded.description, assertions=excluded.assertions, scale_params=excluded.scale_params, runner=excluded.runner, expect_fail=excluded.expect_fail, status='active';
+
 COMMIT;
 
 -- ── DELIBERATELY UNMAPPED (out of system-dynamics scope) ─────────────────────

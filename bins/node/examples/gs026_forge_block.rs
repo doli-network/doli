@@ -1,0 +1,163 @@
+//! GS-026 (INC-I-236) helper: forge a block in a scheduled producer's slot and
+//! publish it on the gossip blocks topic. Models the raw gossipsub publisher in
+//! `bins/node/tests/inc_i_237_m5_soak.rs`.
+//!
+//! The forger never holds the named producer's key: `--kind unsigned` leaves
+//! `vdf_proof.pi` empty, `--kind forged` signs the header with a throwaway key.
+//! Both are rejected above the signature activation height by a HEAD node and
+//! accepted by a pre-fix node. Every other field (coinbase, VDF, genesis hash)
+//! is built valid so the signature is the only reason a HEAD node rejects it.
+//!
+//! Usage: `gs026_forge_block --kind forged|unsigned --tip-b64 <b64> --height <h>
+//! --slot <s> --producer <hex> --genesis-time <t> --slot-duration <d>
+//! --dial <multiaddr>[,<multiaddr>...]`. Prints `INJECTED kind=… hash=… slot=…`.
+
+use std::time::{Duration, Instant};
+
+use crypto::{Hash, KeyPair, PublicKey};
+use doli_core::block::{Block, BlockBuilder};
+use doli_core::consensus::{construct_vdf_input, reward_pool_pubkey_hash, ConsensusParams};
+use doli_core::network::Network;
+use doli_core::tpop::heartbeat::{hash_chain_vdf, heartbeat_vdf_iterations_for_network};
+use futures::StreamExt;
+use libp2p::gossipsub::{self, IdentTopic};
+use libp2p::swarm::SwarmEvent;
+use libp2p::{identity::Keypair, Multiaddr, Swarm};
+use network::gossip::{new_gossipsub, MeshConfig, BLOCKS_TOPIC};
+use network::transport::build_transport;
+use vdf::VdfOutput;
+
+const PUBLISH_DEADLINE: Duration = Duration::from_secs(40);
+const PROPAGATE_GRACE: Duration = Duration::from_secs(3);
+
+fn arg(args: &[String], key: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == key)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+}
+
+fn req(args: &[String], key: &str) -> String {
+    arg(args, key).unwrap_or_else(|| {
+        eprintln!("missing required argument {key}");
+        std::process::exit(2);
+    })
+}
+
+/// Build the forged block: valid coinbase, VDF and genesis hash; the signature
+/// is the only thing a keyless forger cannot produce.
+fn forge(args: &[String]) -> (Block, u32) {
+    let kind = req(args, "--kind");
+    let tip_b64 = req(args, "--tip-b64");
+    let height: u64 = req(args, "--height").parse().expect("height");
+    let slot: u32 = req(args, "--slot").parse().expect("slot");
+    let producer = PublicKey::from_hex(&req(args, "--producer")).expect("producer hex");
+    let genesis_time: u64 = req(args, "--genesis-time").parse().expect("genesis-time");
+    let slot_duration: u64 = req(args, "--slot-duration").parse().expect("slot-duration");
+
+    use base64::Engine;
+    let tip_bytes = base64::engine::general_purpose::STANDARD
+        .decode(tip_b64.trim())
+        .expect("tip base64");
+    let tip = Block::deserialize(&tip_bytes).expect("tip block bincode");
+    let prev_hash = tip.header.hash();
+    let genesis_hash = tip.header.genesis_hash;
+    let prev_slot = tip.header.slot;
+
+    let mut params = ConsensusParams::devnet();
+    params.genesis_time = genesis_time;
+    params.slot_duration = slot_duration;
+    params.genesis_hash = genesis_hash;
+    let timestamp = params.slot_to_timestamp(slot);
+
+    let mut builder = BlockBuilder::new(prev_hash, prev_slot, producer)
+        .with_params(params)
+        .with_fork_id(Hash::ZERO);
+    builder.add_coinbase(height, slot, reward_pool_pubkey_hash());
+    let (mut header, txs) = builder.build(timestamp).expect("block builder slot");
+    header.genesis_hash = genesis_hash;
+
+    let vdf_input = construct_vdf_input(&prev_hash, &header.merkle_root, slot, &producer);
+    let iterations = heartbeat_vdf_iterations_for_network(Network::Devnet);
+    header.vdf_output = VdfOutput {
+        value: hash_chain_vdf(&vdf_input, iterations).to_vec(),
+    };
+
+    match kind.as_str() {
+        "unsigned" => {} // pi stays empty: no signature at all
+        "forged" => {
+            let impostor = KeyPair::from_seed([0x26; 32]);
+            let msg = header.signing_message();
+            header.vdf_proof.pi =
+                crypto::signature::sign(msg.as_bytes(), impostor.private_key()).to_vec();
+        }
+        other => {
+            eprintln!("--kind must be forged or unsigned, got {other}");
+            std::process::exit(2);
+        }
+    }
+
+    (Block::new(header, txs), slot)
+}
+
+#[tokio::main]
+async fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let kind = req(&args, "--kind");
+    let dials: Vec<Multiaddr> = req(&args, "--dial")
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse().expect("dial multiaddr"))
+        .collect();
+
+    let (block, slot) = forge(&args);
+    let bytes = block.serialize();
+    let hash = block.hash().to_hex();
+
+    let kp = Keypair::generate_ed25519();
+    let peer_id = kp.public().to_peer_id();
+    let mesh = MeshConfig {
+        mesh_n: 6,
+        mesh_n_low: 4,
+        mesh_n_high: 12,
+        gossip_lazy: 6,
+    };
+    let mut swarm: Swarm<gossipsub::Behaviour> = Swarm::new(
+        build_transport(&kp, None).expect("transport"),
+        new_gossipsub(&kp, &mesh).expect("gossipsub"),
+        peer_id,
+        libp2p::swarm::Config::with_tokio_executor()
+            .with_idle_connection_timeout(Duration::from_secs(600)),
+    );
+    let topic = IdentTopic::new(BLOCKS_TOPIC);
+    swarm.behaviour_mut().subscribe(&topic).expect("subscribe");
+    for addr in &dials {
+        swarm.dial(addr.clone()).expect("dial");
+    }
+
+    let start = Instant::now();
+    let mut published_at: Option<Instant> = None;
+    loop {
+        if let Some(t) = published_at {
+            if t.elapsed() >= PROPAGATE_GRACE {
+                break;
+            }
+        } else if start.elapsed() >= PUBLISH_DEADLINE {
+            eprintln!("gs026 forge: no gossip mesh peer within {PUBLISH_DEADLINE:?}");
+            std::process::exit(1);
+        }
+        let step = tokio::time::timeout(Duration::from_millis(500), swarm.select_next_some()).await;
+        if let Ok(SwarmEvent::Behaviour(gossipsub::Event::Subscribed { .. })) = step {
+            // a peer joined the blocks mesh; publish is attempted below
+        }
+        if published_at.is_none()
+            && swarm
+                .behaviour_mut()
+                .publish(topic.clone(), bytes.clone())
+                .is_ok()
+        {
+            published_at = Some(Instant::now());
+            println!("INJECTED kind={kind} hash={hash} slot={slot}");
+        }
+    }
+}
