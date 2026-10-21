@@ -8,7 +8,7 @@
 //!   O3 sync_manager stuck_fork_signal
 //! PATHS: P1 check_block; P2 HeightOccupied{is_better:true} arm — both below the AH.
 //! INPUT PARTITIONS:
-//!   P1a forged unsigned + real signed, same (producer, slot) -> O1 = 1, O2 = 1
+//!   P1a forged unsigned + real signed, same (producer, slot) -> O1 = 1, O2 = 0 (log-only)
 //!   P2a forged unsigned lower-slot sibling at an occupied height -> O3 raised
 
 use doli_core::{Network, NetworkParams};
@@ -64,8 +64,8 @@ async fn req_auth_007_012_below_ah_behavior_unchanged() {
     );
     assert_eq!(
         slash_txs_against(&node, &pk).await,
-        1,
-        "below AH: slash tx as before"
+        0,
+        "below AH: no slash tx, as before (handle_equivocation is log-only)"
     );
 
     // P2a

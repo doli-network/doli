@@ -25,6 +25,10 @@
 //   O1 x P-PRE x IE-EMPTY/GEN -> Ok (regression lock)
 //   O1 x P-DEC x ID-GARB/LEN x {P-PRE, P-AH} -> InvalidSlash, no panic
 //   O1 x P-AH  x ID-BIG -> InvalidSlash
+// INPUT PARTITIONS:
+//   P-AH:  IE-EMPTY, IE-GARB, IE-OTHER, IE-SWAP, IE-HALF, IE-GEN, IE-SAME, ID-BIG -> InvalidSlash; IE-SIGNED -> Ok
+//   P-PRE: IE-EMPTY, IE-GEN with default ctx and AH = h+1 -> Ok (verdict unchanged)
+//   P-DEC: ID-GARB, ID-LEN at every height -> InvalidSlash, no panic
 
 use crypto::{Hash, KeyPair, PublicKey, Signature};
 use doli_core::block::BlockHeader;

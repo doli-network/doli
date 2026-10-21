@@ -2,6 +2,7 @@
 //! INC-I-236 M5: header-first sync verifies the producer signature at h >= AH.
 // REQ-AUTH-008 — Decision: a failure means header-first sync still accepts forged/unsigned headers above the AH (or wrongly rejects legacy ones below it).
 //
+// OUTPUT CONTRACT: fn HeaderDownloader::process_headers(&mut self, &[BlockHeader], Hash) -> usize
 // OUTPUT CONTRACT (HeaderDownloader::process_headers):
 //   return valid_count | self.validated_headers (pending_count/take_headers)
 //   | self.total_downloaded | self.expected_prev_hash | self.last_chain_break

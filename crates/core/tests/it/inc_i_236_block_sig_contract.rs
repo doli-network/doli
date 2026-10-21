@@ -33,6 +33,11 @@
 //   O1(signing_message)             -> req_auth_003_signing_message_domain_is_not_utf8
 //   O1,O2(hash/bincode)             -> req_auth_004_golden_*
 //   O1(defaults) x IP-NET           -> req_auth_001_per_network_activation_heights
+// INPUT PARTITIONS:
+//   validate at h == AH: IP-LEN, IP-KEY, IP-MSG, IP-MAL, IP-MUT -> InvalidBlockSignature in all 3 modes
+//   signing_message: digest = blake3(domain || hash()); preimage is never UTF-8
+//   hash/bincode: golden header pi empty | pi 64 B -> same hash; signed vs pi-cleared -> same hash and signing_message
+//   defaults: IP-NET mainnet, testnet -> u64::MAX; devnet -> 0
 
 use super::inc_i_236_forged_block_authn::{
     armed, assert_sig_rejected, forge_block_as, sign_into_pi, signed_block,

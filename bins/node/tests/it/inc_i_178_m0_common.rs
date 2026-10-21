@@ -182,6 +182,8 @@ pub fn record_attesters(node: &mut Node, slot: u32, attesters: &[PublicKey]) {
 }
 
 pub fn sample_header(fork_id: Hash) -> BlockHeader {
+    let producer = KeyPair::generate();
+    crate::block_sig::register_keys(std::slice::from_ref(&producer));
     BlockHeader {
         version: 2,
         prev_hash: crypto::hash::hash(b"m0-prev"),
@@ -190,7 +192,7 @@ pub fn sample_header(fork_id: Hash) -> BlockHeader {
         genesis_hash: doli_core::chainspec::ChainSpec::devnet().genesis_hash(),
         timestamp: 1_700_000_000,
         slot: 42,
-        producer: *KeyPair::generate().public_key(),
+        producer: *producer.public_key(),
         vdf_output: VdfOutput {
             value: vec![7u8; 32],
         },

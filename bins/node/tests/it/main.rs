@@ -79,6 +79,7 @@ mod inc_i_236_m2_producer_signs;
 mod inc_i_236_m4_below_ah;
 mod inc_i_236_m4_common;
 mod inc_i_236_m4_header_side_effects;
+mod inc_i_236_run_a_replay_unsigned;
 mod inc_i_237_m0_common;
 mod inc_i_237_m0_metrics;
 mod inc_i_237_m0_node_hook;

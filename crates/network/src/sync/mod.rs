@@ -18,6 +18,8 @@ mod reorg;
 mod adversarial_tests;
 #[cfg(test)]
 mod tests_inc_i236_m5_headers;
+#[cfg(test)]
+mod tests_inc_i236_run_a_resume;
 
 pub use bodies::BodyDownloader;
 pub use chunk_sink::{StagedUtxoMarker, UtxoChunkSink};

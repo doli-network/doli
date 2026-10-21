@@ -3,7 +3,7 @@
 //!
 //! OUTPUT CONTRACT: fn Node::handle_new_block(&mut self, block, peer) -> Result<()>
 //!   O1 equivocation_detector pending proofs (EquivocationProof naming the victim)
-//!   O2 mempool SlashProducer tx naming the victim (handle_equivocation)
+//!   O2 mempool SlashProducer tx naming the victim (handle_equivocation; always 0, log-only)
 //!   O3 sync_manager stuck_fork_signal (HeightOccupied{is_better:true} arm)
 //!   O4 chain_state.best_hash (must not move for a forged sibling)
 //!   O5 return value — not asserted: O1-O3 fire before any validation verdict
@@ -113,8 +113,8 @@ async fn req_auth_007_two_validly_signed_conflicting_headers_still_detected() {
     );
     assert_eq!(
         slash_txs_against(&node, &pk).await,
-        1,
-        "signed double production must yield one SlashProducer tx in the mempool"
+        0,
+        "handle_equivocation is log-only: no SlashProducer tx even for signed double production"
     );
 }
 

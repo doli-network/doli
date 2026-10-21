@@ -37,7 +37,7 @@ pub fn resign(header: &mut doli_core::BlockHeader) {
         .lock()
         .unwrap()
         .get(header.producer.as_bytes())
-        .cloned()
-        .expect("block producer key not registered with block_sig::register_keys");
+        .cloned();
+    let kp = kp.expect("block producer key not registered with block_sig::register_keys");
     sign_header(header, &kp);
 }

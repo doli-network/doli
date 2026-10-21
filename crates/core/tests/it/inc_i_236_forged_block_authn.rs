@@ -30,6 +30,9 @@
 //   O1 x P-NOSIG (ctx default)    -> req_auth_003_ctx_default_never_requires_signature
 //   O1 x P-NOSIG x IP-G x 3 modes -> req_auth_003_garbage_pi_ignored_below_ah
 //   O1 x P-SIG   x IP-W x Full    -> req_auth_003_control_signed_but_unscheduled_still_rejected
+// INPUT PARTITIONS:
+//   P-SIG:   IP-F -> InvalidBlockSignature per mode; IP-V -> Ok at AH and far above; IP-W -> Err, not a signature error
+//   P-NOSIG: IP-F at AH-1 -> Ok; default ctx (AH u64::MAX) -> Ok; IP-G len {1, 63, 64, 65, 10 KiB} at AH-1 -> Ok
 
 use crypto::{Hash, KeyPair, PublicKey};
 use doli_core::block::{Block, BlockHeader};

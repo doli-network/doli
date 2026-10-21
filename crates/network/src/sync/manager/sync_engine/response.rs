@@ -692,9 +692,16 @@ impl SyncManager {
             }
         }
 
-        // Resume header downloader from the last preserved header
+        // Resume header downloader from the last preserved header; the
+        // surviving headers chain from local_hash, so the last one sits at
+        // local_height + len.
         if let Some(last) = self.pipeline.pending_headers.back() {
-            self.pipeline.header_downloader.resume_from(last.hash());
+            let last_height = self
+                .local_height
+                .saturating_add(self.pipeline.pending_headers.len() as u64);
+            self.pipeline
+                .header_downloader
+                .resume_from(last.hash(), last_height);
         } else {
             self.pipeline.header_downloader.clear();
         }

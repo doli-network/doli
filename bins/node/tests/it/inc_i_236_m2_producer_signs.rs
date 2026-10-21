@@ -17,6 +17,10 @@
 //   O1,O2(produce) x testnet          -> req_auth_002_produced_block_is_signed_below_ah
 //   O1(validate_for_apply) x devnet x {signed, empty} -> req_auth_001_node_validation_ctx_enforces_devnet_ah
 //   O1(handle_new_block) x devnet x {empty, corrupted} then signed -> req_auth_sec_002_*
+// INPUT PARTITIONS:
+//   produce: testnet (AH u64::MAX) -> 64-byte pi, strict verify, hash unchanged, accepted at AH 0
+//   validate_for_apply: devnet AH 0 x {signed -> Ok, empty -> signature error}
+//   handle_new_block: devnet x {empty, corrupted 64 B} first -> tip unchanged; signed next -> tip = signed hash
 
 use crypto::KeyPair;
 use doli_core::block::Block;

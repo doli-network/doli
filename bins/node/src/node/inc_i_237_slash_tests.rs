@@ -57,6 +57,7 @@ fn header(by: &KeyPair, prev: Hash, merkle: Hash, presence: Hash) -> BlockHeader
     h.vdf_output = VdfOutput {
         value: out.to_vec(),
     };
+    crate::node::test_block_sig::sign_header(&mut h, by);
     h
 }
 
