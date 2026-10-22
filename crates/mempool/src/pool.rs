@@ -24,6 +24,7 @@ use super::entry::MempoolEntry;
 use super::holdings::HoldingsSources;
 use super::pending_registrations;
 use super::policy::MempoolPolicy;
+use super::unbonding;
 use super::withdrawal_holdings;
 use super::zero_flow_auth::ZeroFlowSnapshot;
 use super::zero_flow_newness::ChangeIndex;
@@ -564,6 +565,10 @@ impl Mempool {
             .with_inc_i_255_slashing_activation_height(
                 self.network.params().effective_slashing_activation_height(),
             )
+            .with_inc_i_257_unbonding(
+                self.network.params().inc_i_257_unbonding_activation_height,
+                self.network.params().unbonding_period,
+            )
             .with_oracle_activation_height(self.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
@@ -1045,6 +1050,10 @@ impl Mempool {
             .with_inc_i_255_slashing_activation_height(
                 self.network.params().effective_slashing_activation_height(),
             )
+            .with_inc_i_257_unbonding(
+                self.network.params().inc_i_257_unbonding_activation_height,
+                self.network.params().unbonding_period,
+            )
             .with_oracle_activation_height(self.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
@@ -1380,6 +1389,7 @@ impl Mempool {
             // First check if output is in mempool
             if let Some(parent_entry) = self.entries.get(&input.prev_tx_hash) {
                 if let Some(output) = parent_entry.tx.outputs.get(input.output_index as usize) {
+                    unbonding::check_output(self.network, tx.tx_type, output, current_height)?;
                     // INC-I-233: native amounts only, same as consensus (utxo.rs).
                     if output.output_type.is_native_amount() {
                         total += output.amount;
@@ -1393,19 +1403,7 @@ impl Mempool {
 
             // Then check UTXO set
             if let Some(utxo) = utxo_set.get(&outpoint) {
-                // Skip lock check for RequestWithdrawal and Exit — they unlock Bond UTXOs
-                // (matches validation.rs:2527 exemption)
-                let skip_lock =
-                    tx.tx_type == TxType::RequestWithdrawal || tx.tx_type == TxType::Exit;
-                if !skip_lock {
-                    let maturity = self.network.coinbase_maturity();
-                    if !utxo.is_spendable_at_with_maturity(current_height, maturity) {
-                        return Err(MempoolError::InvalidTransaction(format!(
-                            "[MPTX009] output not spendable until height {} (current={}, maturity={})",
-                            utxo.height + maturity, current_height, maturity
-                        )));
-                    }
-                }
+                unbonding::check_utxo(self.network, tx.tx_type, &utxo, current_height)?;
                 // INC-I-233: token/LP units are not native DOLI and never pay a fee.
                 if utxo.output.output_type.is_native_amount() {
                     total += utxo.output.amount;

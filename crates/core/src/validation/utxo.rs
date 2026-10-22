@@ -148,17 +148,12 @@ pub fn validate_transaction_with_utxos<U: UtxoProvider>(
             )));
         }
 
-        // Check lock time -- skip for WithdrawalRequest/Exit ONLY on Bond UTXOs.
-        // AUDIT-UTXO-002: Previously skipped for ALL output types, allowing
-        // RequestWithdrawal to bypass Vesting/HTLC/any lock. Now restricted to Bond.
-        let lock_bypass = (tx.tx_type == TxType::RequestWithdrawal || tx.tx_type == TxType::Exit)
-            && utxo.output.output_type == OutputType::Bond;
-        if !lock_bypass && !utxo.output.is_spendable_at(ctx.current_height) {
-            return Err(ValidationError::OutputLocked {
-                lock_height: utxo.output.lock_until,
-                current_height: ctx.current_height,
-            });
-        }
+        super::spend_lock_verdict(
+            tx.tx_type,
+            &utxo.output,
+            ctx.current_height,
+            ctx.inc_i_257_unbonding_activation_height,
+        )?;
 
         // Verify spending conditions (signature for Normal/Bond, condition evaluator for others).
         // ZKSettle authorizes spending via a ZK proof, not a signature — the

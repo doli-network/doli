@@ -72,7 +72,8 @@ fn signed_withdrawal(node: &Node, kp: &KeyPair, producer: &PublicKey) -> Transac
         .collect();
     let dest = crypto::hash::hash(b"inc-i-180-m2-f5-destination");
     let net = unit * DECLARED as u64 - unit / 100;
-    let mut tx = Transaction::new_request_withdrawal(inputs, *producer, DECLARED, dest, net);
+    let mut tx =
+        super::inc_i_255_m2_common::run_b_withdrawal(inputs, *producer, DECLARED, dest, net);
     for i in 0..tx.inputs.len() {
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = crypto::signature::sign_hash(&signing_hash, kp.private_key());

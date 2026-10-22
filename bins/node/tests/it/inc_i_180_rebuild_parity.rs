@@ -203,7 +203,7 @@ async fn seed_chain(with_addbond: bool) -> (Node, KeyPair, Vec<(u64, Block)>, Te
             )]
         } else if height == WITHDRAW_H {
             let dest = crypto::hash::hash(b"inc-i-180-rebuild-destination");
-            vec![Transaction::new_request_withdrawal(
+            vec![super::inc_i_255_m2_common::run_b_withdrawal(
                 Vec::new(),
                 tpk,
                 N11_BONDS + 1,
@@ -422,7 +422,7 @@ async fn seed_delegation_chain() -> (Node, KeyPair, KeyPair, Vec<(u64, Block)>, 
             vec![Transaction::new_delegate_bond(delegate_data.clone())]
         } else if height == WITHDRAW_H {
             let dest = crypto::hash::hash(b"inc-i-180-delegated-exit-destination");
-            vec![Transaction::new_request_withdrawal(
+            vec![super::inc_i_255_m2_common::run_b_withdrawal(
                 Vec::new(),
                 apk,
                 A_BONDS,

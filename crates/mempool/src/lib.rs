@@ -12,6 +12,7 @@ mod policy;
 mod pool;
 pub mod rotation_filter;
 pub mod slash_admission;
+mod unbonding;
 pub mod vesting_bound;
 mod withdrawal_holdings;
 pub mod zero_flow_auth;

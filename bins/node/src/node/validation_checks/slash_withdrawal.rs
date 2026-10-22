@@ -44,6 +44,10 @@ impl Node {
                 )
                 .with_inc_i_255_slashing_activation_height(
                     params.effective_slashing_activation_height(),
+                )
+                .with_inc_i_257_unbonding(
+                    params.inc_i_257_unbonding_activation_height,
+                    params.unbonding_period,
                 );
         let utxo = self.utxo_set.read().await;
         validation::validate_slash_bond_spends(&block.transactions, &ctx, &*utxo)?;

@@ -533,7 +533,7 @@ async fn req_i180_001_rebuild_matches_live_for_the_drain_shape() {
             )]
         } else if height == WITHDRAW_H {
             let dest = crypto::hash::hash(b"inc-i-180-drain-destination");
-            vec![Transaction::new_request_withdrawal(
+            vec![super::inc_i_255_m2_common::run_b_withdrawal(
                 Vec::new(),
                 tpk,
                 N11_BONDS,

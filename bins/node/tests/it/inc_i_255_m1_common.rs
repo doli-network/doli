@@ -298,12 +298,17 @@ pub fn in_child() -> bool {
     std::env::var_os(CHILD_ENV).is_some()
 }
 
-/// Re-exec `test` alone with the devnet slash gate set to `gate`.
+/// Re-exec `test` alone with the devnet slash gate set to `gate` and the
+/// INC-I-257 unbonding lock closed (the Run B world: Normal payouts, Bond Transfers).
 pub fn run_in_child(test: &str, gate: u64) {
     let out = std::process::Command::new(std::env::current_exe().expect("current exe"))
         .args([test, "--exact", "--test-threads=1", "--nocapture"])
         .env(CHILD_ENV, "1")
         .env(GATE_ENV, gate.to_string())
+        .env(
+            "DOLI_INC_I_257_UNBONDING_ACTIVATION_HEIGHT",
+            u64::MAX.to_string(),
+        )
         .output()
         .expect("spawn child test process");
     let stdout = String::from_utf8_lossy(&out.stdout);

@@ -1,6 +1,8 @@
+use std::str::FromStr;
+
 use anyhow::Result;
 use crypto::{signature, Hash, PublicKey};
-use doli_core::{Input, Transaction};
+use doli_core::{Network, NetworkParams};
 
 use super::common::{compute_fifo_breakdown, display_fifo_breakdown};
 use crate::common::address_prefix;
@@ -10,6 +12,9 @@ use crate::wallet::Wallet;
 use doli_cli::producer_ledger::{
     max_withdrawable, producer_set_allowance, select_bond_inputs_by_count,
     withdrawal_ledger_mismatch,
+};
+use doli_cli::unbonding_tx::{
+    build_withdrawal_tx, unbonding_gate_open, unbonding_lock_until, FeeUtxo, WithdrawalSpec,
 };
 
 pub(super) async fn handle_request_withdrawal(
@@ -133,10 +138,16 @@ pub(super) async fn handle_request_withdrawal(
         .filter(|u| u.output_type == "bond")
         .collect();
 
-    let bond_unit = {
-        let params = rpc.get_network_params().await?;
-        params.bond_unit
-    };
+    let rpc_params = rpc.get_network_params().await?;
+    let bond_unit = rpc_params.bond_unit;
+    let network = Network::from_str(&rpc_params.network).map_err(|_| {
+        anyhow::anyhow!(
+            "Unknown network reported by the node: {}",
+            rpc_params.network
+        )
+    })?;
+    let net_params = NetworkParams::defaults(network);
+    let best_height = rpc.get_chain_info().await?.best_height;
     let required_bond_value = bond_unit * count as u64;
     let available_bond_value: u64 = bond_utxos.iter().map(|u| u.amount).sum();
 
@@ -152,57 +163,45 @@ pub(super) async fn handle_request_withdrawal(
     let bond_amounts: Vec<u64> = bond_utxos.iter().map(|u| u.amount).collect();
     let selected_idx =
         select_bond_inputs_by_count(&bond_amounts, count).map_err(|e| anyhow::anyhow!(e))?;
-    let mut bond_inputs: Vec<Input> = Vec::new();
+    let mut bond_inputs: Vec<(Hash, u32)> = Vec::new();
     for &i in &selected_idx {
         let utxo = &bond_utxos[i];
         let prev_tx_hash = Hash::from_hex(&utxo.tx_hash)
             .ok_or_else(|| anyhow::anyhow!("Invalid Bond UTXO tx_hash"))?;
-        bond_inputs.push(Input::new(prev_tx_hash, utxo.output_index));
+        bond_inputs.push((prev_tx_hash, utxo.output_index));
     }
 
-    // Select a normal UTXO to cover the tx fee
-    let normal_utxos: Vec<_> = all_utxos
-        .iter()
-        .filter(|u| u.output_type == "normal")
-        .collect();
-    let mut fee_input_total = 0u64;
-    let mut fee_inputs: Vec<Input> = Vec::new();
-    let fee_estimate = 1u64;
-    for utxo in &normal_utxos {
-        if fee_input_total >= fee_estimate {
-            break;
-        }
-        let prev_tx_hash =
+    // Below the gate a normal UTXO covers the tx fee; at/above it the fee comes from the payout.
+    let mut fee_utxos: Vec<FeeUtxo> = Vec::new();
+    for utxo in all_utxos.iter().filter(|u| u.output_type == "normal") {
+        let tx_hash =
             Hash::from_hex(&utxo.tx_hash).ok_or_else(|| anyhow::anyhow!("Invalid UTXO tx_hash"))?;
-        fee_inputs.push(Input::new(prev_tx_hash, utxo.output_index));
-        fee_input_total += utxo.amount;
+        fee_utxos.push(FeeUtxo {
+            tx_hash,
+            output_index: utxo.output_index,
+            amount: utxo.amount,
+        });
     }
 
-    // Combine bond + fee inputs
-    let mut all_inputs = bond_inputs;
-    all_inputs.extend(fee_inputs);
-
-    // Flat fee: 1 satoshi per transaction
-    let fee = 1u64;
-    if fee_input_total < fee {
-        anyhow::bail!(
-            "Insufficient spendable balance for tx fee. Need {}, have {}",
-            format_balance(fee),
-            format_balance(fee_input_total)
+    let gated = unbonding_gate_open(&net_params, best_height);
+    let spec = WithdrawalSpec {
+        producer: producer_pubkey,
+        bond_count: count,
+        bond_inputs,
+        total_net,
+        destination: dest_hash,
+        fee_utxos,
+        fee: 1,
+    };
+    let mut tx = build_withdrawal_tx(&net_params, best_height, &spec)
+        .map_err(|e| anyhow::anyhow!("Cannot build the withdrawal: {}", e))?;
+    if gated {
+        println!(
+            "Unbonding: the payout is locked until height {} (unbonding period {} blocks).",
+            unbonding_lock_until(&net_params, best_height),
+            net_params.unbonding_period
         );
     }
-
-    // Create request-withdrawal transaction with Bond + fee inputs
-    // Validation requires exactly 1 output, so fee change is rolled into payout
-    let fee_change = fee_input_total - fee;
-    let payout_amount = total_net + fee_change;
-    let mut tx = Transaction::new_request_withdrawal(
-        all_inputs,
-        producer_pubkey,
-        count,
-        dest_hash,
-        payout_amount,
-    );
 
     // Sign all inputs (BIP-143: per-input signing hash)
     let keypair = wallet.primary_keypair()?;
@@ -228,6 +227,10 @@ pub(super) async fn handle_request_withdrawal(
             // MINED — "Funds available now." was false for a tx still sitting in
             // the mempool, and outright wrong for one that was never retained.
             match retention {
+                _ if gated => println!(
+                    "The payout becomes spendable at height {}, after this transaction is mined.",
+                    unbonding_lock_until(&net_params, best_height)
+                ),
                 Retention::Mined { confirmations } => println!(
                     "Payout output created — funds are spendable ({} confirmation(s)).",
                     confirmations

@@ -200,7 +200,8 @@ fn signed_withdrawal(node: &Node, kp: &KeyPair, declared: u32, spends: u32) -> T
         .collect();
     let dest = crypto::hash::hash(b"inc-i-180-apply-block-destination");
     let net = unit * u64::from(spends) - unit / 100;
-    let mut tx = Transaction::new_request_withdrawal(inputs, *kp.public_key(), declared, dest, net);
+    let mut tx =
+        super::inc_i_255_m2_common::run_b_withdrawal(inputs, *kp.public_key(), declared, dest, net);
     for i in 0..tx.inputs.len() {
         sign_input(&mut tx, i, kp);
     }

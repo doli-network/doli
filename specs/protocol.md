@@ -192,6 +192,7 @@ output = {
 | 13 | ZKRollup | L2 committed state (verifying_key + state_root) | `ZkRollupData` (per `specs/l2-settlement.md`) |
 | 14 | EncryptedContent | Privacy-first NFT replacement | `[ciphertext_len(4 LE) | ciphertext | wrapped_key(80) | nonce(12) | content_hash(32)]` (≥128 bytes) |
 | 15 | OraclePrice | Phase 2.1 oracle aggregated price (system-only UTXO) | 50 bytes: `[price_cents(8 LE) | last_update_height(8 LE) | contributor_count(2 LE) | pair_id(32)]` |
+| 16 | Unbonding | Locked payout of a bond withdrawal (INC-I-257, §3.13) | Empty |
 
 Output types 2-8 use the programmable conditions system (`crates/core/src/conditions/`)
 with composable predicates (Signature, Multisig, Hashlock, Timelock, And, Or, Threshold).
@@ -202,6 +203,12 @@ OutputType 15 (OraclePrice) is the Phase 2.1 oracle's per-pair singleton — cre
 and consumed exclusively by `apply_block` at epoch boundaries (system-spent only;
 user transactions cannot mint one — validation hard-rejects with `[ERRTX-ORACLE004]`).
 See `specs/oracle-structural-anchored-economics.md` §1.2.
+OutputType 16 (Unbonding) is a native-amount output spent by a signature on its
+`pubkey_hash`, like Normal. It is declared last in the enum, so its bincode variant
+position is 14 and the positions of all older types do not change. It needs a
+non-zero `lock_until` and empty `extra_data` (`[ERRTX-UNBOND007]`). Only a
+RequestWithdrawal at or above `inc_i_257_unbonding_activation_height` may create
+one (§3.13).
 
 **Bond UTXO extra_data format:**
 ```
@@ -436,7 +443,7 @@ Only two sites consult it: the consensus fee floor in `validate_transaction_with
 - A block that holds a slash for accused p holds no RequestWithdrawal that names p, in either order. The error is `InvalidSlash("block holds a slash and a bond withdrawal for one producer")`.
 - The counts and the withdrawal rule run before any evidence check. Then each slash must pass `validate_slash_target`.
 
-The withdrawal rule uses the producer that the withdrawal names (`bond_withdrawal_producer`). It does not cover every spend of a bond: any transaction type (for example a Transfer) can spend a Bond UTXO once `height >= lock_until`. A Bond output with a finite `lock_until` is still accepted at creation (AUDIT-P1-003; the registration and Bond-output rules do not change here). For this reason the next rule keys on the spent UTXO, not on the transaction type.
+The withdrawal rule uses the producer that the withdrawal names (`bond_withdrawal_producer`). It does not cover every spend of a bond: below `inc_i_257_unbonding_activation_height`, any transaction type (for example a Transfer) can spend a Bond UTXO once `height >= lock_until` (at and above that gate only RequestWithdrawal may spend a Bond, §3.13.1). A Bond output with a finite `lock_until` is still accepted at creation (AUDIT-P1-003; the registration and Bond-output rules do not change here). For this reason the next rule keys on the spent UTXO, not on the transaction type.
 
 **Bond-spend rule.** At and above the effective height, a block that holds a slash for p holds no transaction, of any type and in any order, that spends a Bond UTXO owned by p. This is the burn's own selection: `output_type == Bond` and owner `hash_with_domain(ADDRESS_DOMAIN, p)`. Each input is resolved in the pre-block UTXO set, or as an output of an earlier transaction of the same block. The error is `InvalidSlash("block holds a slash and a spend of the accused's bond")`.
 
@@ -468,7 +475,7 @@ At and above the effective height, apply burns the bonds in the slash block itse
 - A Slashed producer gives no attester weight.
 - Block validation (`[ECON_WITHDRAWAL_SLASHED]`) and mempool admission refuse a RequestWithdrawal by a Slashed or slash-queued producer.
 - This check reads the producer set as it was before the block. The §3.10.4 withdrawal and bond-spend rules cover the slash block itself: a block cannot hold a slash for p together with a RequestWithdrawal that names p, or with any transaction that spends a Bond UTXO owned by p.
-- Residual: a transaction mined in an earlier block than the slash (a RequestWithdrawal by p, or any spend of a lock-expired Bond UTXO of p) still spends those bonds. The burn takes only the accused's Bond UTXOs that are still live in the slash block.
+- Residual: a transaction mined in an earlier block than the slash (a RequestWithdrawal by p, or any spend of a lock-expired Bond UTXO of p) still spends those bonds. The burn takes only the accused's Bond UTXOs that are still live in the slash block. At and above `inc_i_257_unbonding_activation_height` the withdrawn value stays in a locked Unbonding output of p (§3.13.1); burning that locked output in a later slash is a separate, later step.
 
 **Rollback and reorg.** `block_mutates_producer_set` lists SlashProducer, so the slash block stores a ProducerSet snapshot. Undo restores the bonds, the supply and a producer set without the queued Slash. Both rebuild-from-blocks UTXO fallbacks (`rollback.rs`, `execute_reorg`) apply the same burn (`slash_burn_in_utxo_set`).
 
@@ -716,10 +723,12 @@ add_bond_tx = {
 
 ### 3.13 WithdrawalRequest Transaction
 
-Instant bond withdrawal. Consumes Bond UTXOs (FIFO — oldest first), creates a
-Normal output with the net amount after vesting penalties. Penalty is the
+Bond withdrawal. Consumes Bond UTXOs (FIFO — oldest first), creates one
+output with the net amount after vesting penalties. Penalty is the
 difference between input (bond) and output (payout) — burned naturally via
-UTXO accounting. **No delay. Funds available in the same block.**
+UTXO accounting. Below `inc_i_257_unbonding_activation_height` the payout is a
+Normal output, spendable in the next block (the shape below). At and above the
+gate the payout is a locked Unbonding output (§3.13.1).
 
 ```
 withdrawal_request_tx = {
@@ -749,7 +758,8 @@ withdrawal_request_tx = {
 - Producer must be registered
 - All inputs must reference Bond UTXOs (output_type == 1)
 - Inputs must be owned by the producer (pubkey_hash matches)
-- Validation bypasses `is_spendable_at()` for Bond UTXOs (lock_until=u64::MAX)
+- Validation bypasses `is_spendable_at()` for Bond UTXO inputs (see §3.13.1 for
+  the rule at and above the unbonding gate)
 - Vesting penalty per bond: derived from `creation_slot` in the Bond UTXO's extra_data
 - `net_amount = sum(bond_amounts) - sum(penalties)`
 - Penalty = `sum(inputs) - sum(outputs)` (burned, not redistributed)
@@ -1072,6 +1082,48 @@ Penalty calculation uses FIFO order — oldest Bond UTXOs are consumed first,
 ensuring bonds that have vested longer incur lower penalties. The `creation_slot`
 stored in each Bond UTXO's `extra_data` (4 bytes LE) determines the bond's age
 and therefore its penalty tier.
+
+#### 3.13.1 Unbonding lock (INC-I-257)
+
+Gate: `inc_i_257_unbonding_activation_height` — mainnet `u64::MAX`, testnet
+`u64::MAX` (not yet scheduled), devnet `0`. The env override
+`DOLI_INC_I_257_UNBONDING_ACTIVATION_HEIGHT` is read on devnet only. The gate
+must not be above the effective slashing height, so that no height range has
+working slashing and an unlocked payout.
+
+Unbonding period (`NetworkParams::unbonding_period`): mainnet 60,480, testnet 72,
+devnet 60 blocks. It is consensus input at and above the gate, so
+`DOLI_UNBONDING_PERIOD` is read on devnet only.
+
+Payout shape at block height `H >= gate`:
+- exactly one output, of type Unbonding (`[ERRTX-UNBOND004]` otherwise; a Normal
+  payout is refused);
+- `pubkey_hash == bond_owner(producer_pubkey)`, the producer's own address
+  (`[ERRTX-UNBOND005]`);
+- `lock_until >= H.saturating_add(unbonding_period)` (`[ERRTX-UNBOND006]`);
+- empty `extra_data`.
+
+Below the gate any Unbonding output is refused (`[ERRTX-UNBOND003]`). At and above
+it, a transaction of any other type that creates one is refused
+(`[ERRTX-UNBOND002]`). These rules hold whether or not the output-creation
+authority gate (§3.22.1) is active.
+
+Lock rule (`spend_lock_verdict`, one predicate on mempool, builder and apply; the
+mempool judges at `best_height + 1`, for UTXO-set inputs and in-mempool parents):
+- below the gate: a Bond input of RequestWithdrawal or Exit skips the lock check;
+  every other input needs `height >= lock_until`;
+- at and above the gate: a Bond input may be spent only by RequestWithdrawal
+  (lock check skipped); any other type that spends a Bond is refused
+  (`[ERRTX-UNBOND001]`), whatever the Bond's `lock_until`;
+- an Unbonding input never skips the lock check, for any transaction type,
+  including RequestWithdrawal and Exit (`OutputLocked`).
+
+The DOLI CLI builds the gated shape when `best_height + 1 >= gate`: payout to the
+producer's own address (another `--destination` is refused), fee taken from the
+withdrawn amount (no wallet UTXO is spent, so none is locked), and
+`lock_until = best_height + unbonding_period + 10`. The 10-block margin keeps the
+transaction valid while it waits for inclusion. Wallet send spends an Unbonding
+output only once it is spendable.
 
 ### 3.15 RemoveMaintainer Transaction
 
@@ -2498,6 +2550,7 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | Pending-updates state-root cover (`inc_i_181_pending_root_activation_height`) | 612,000 | 97,886 | 0 | Non-mainnet (`DOLI_INC_I_181_PENDING_ROOT_ACTIVATION_HEIGHT`) |
 | Block producer signature (`inc_i_236_block_signature_activation_height`) | `u64::MAX` | `u64::MAX` | 0 | Devnet only (`DOLI_INC_I_236_BLOCK_SIGNATURE_ACTIVATION_HEIGHT`) |
 | Equivocation slashing (`inc_i_255_slashing_activation_height`, §3.10.1) | `u64::MAX` | `u64::MAX` | 0 | Devnet only (`DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT`) |
+| Unbonding lock (`inc_i_257_unbonding_activation_height`, §3.13.1) | `u64::MAX` | `u64::MAX` | 0 | Devnet only (`DOLI_INC_I_257_UNBONDING_ACTIVATION_HEIGHT`) |
 | Data Directory | `~/.doli/mainnet/` | `~/.doli/testnet/` | `~/.doli/devnet/` | - |
 | Config File | `.env` in data dir | `.env` in data dir | `.env` in data dir | - |
 

@@ -47,6 +47,11 @@ fn init_vesting_env() {
     INIT_ENV.call_once(|| {
         std::env::set_var("DOLI_INC_I_171_VESTING_PENALTY_ACTIVATION_HEIGHT", "101");
         std::env::set_var("DOLI_INC_I_171_VESTING_PENALTY_DISABLE_HEIGHT", "201");
+        // Normal-payout withdrawals: keep the INC-I-257 unbonding lock closed.
+        std::env::set_var(
+            "DOLI_INC_I_257_UNBONDING_ACTIVATION_HEIGHT",
+            u64::MAX.to_string(),
+        );
     });
 }
 

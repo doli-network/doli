@@ -40,3 +40,7 @@ mod inc_i_255_m2_block_rules;
 mod inc_i_255_m5_evidence;
 mod inc_i_255_slash_evidence;
 mod inc_i_255_slash_fee;
+mod inc_i_257_m1_gate;
+mod inc_i_257_m1_output_rules;
+mod inc_i_257_m1_output_type_golden;
+mod inc_i_257_m1_spend_lock;

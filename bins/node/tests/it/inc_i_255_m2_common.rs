@@ -56,6 +56,29 @@ pub fn addr(pk: &PublicKey) -> Hash {
     crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pk.as_bytes())
 }
 
+/// Unsigned RequestWithdrawal in the shape the loaded devnet params accept:
+/// one Unbonding payout to the producer while INC-I-257 is armed, else the
+/// Normal payout to `legacy_dest` (children run with the lock closed).
+pub fn run_b_withdrawal(
+    inputs: Vec<doli_core::transaction::Input>,
+    pk: PublicKey,
+    bond_count: u32,
+    legacy_dest: Hash,
+    net: u64,
+) -> Transaction {
+    let armed = doli_core::Network::Devnet
+        .params()
+        .inc_i_257_unbonding_activation_height
+        != u64::MAX;
+    let dest = if armed { addr(&pk) } else { legacy_dest };
+    let mut tx = Transaction::new_request_withdrawal(inputs, pk, bond_count, dest, net);
+    if armed {
+        tx.outputs[0].output_type = doli_core::transaction::OutputType::Unbonding;
+        tx.outputs[0].lock_until = u64::MAX;
+    }
+    tx
+}
+
 pub fn outpoints(tag: u8, n: u32) -> Vec<Outpoint> {
     let h = Hash::from_bytes([tag; 32]);
     (0..n).map(|i| Outpoint::new(h, i)).collect()

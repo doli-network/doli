@@ -16,7 +16,7 @@ use storage::{Outpoint, UtxoEntry};
 
 use super::inc_i_178_m0_common::wait_for_fresh_second;
 use super::inc_i_255_m1_common::{valid_slash, world_with, World};
-use super::inc_i_255_m2_common::addr;
+use super::inc_i_255_m2_common::{addr, run_b_withdrawal};
 use crate::block_sig::sign_header;
 
 pub const M4_MSG: &str = "slash and a bond withdrawal for one producer";
@@ -55,8 +55,7 @@ pub fn withdrawal(node: &Node, kp: &KeyPair, op: Outpoint, fee: u64) -> Transact
     let mut input = Input::new(op.tx_hash, op.index);
     input.public_key = Some(*kp.public_key());
     let dest = crypto::hash::hash(b"inc-i-255-m4-withdrawal-destination");
-    let mut tx =
-        Transaction::new_request_withdrawal(vec![input], *kp.public_key(), 1, dest, unit - fee);
+    let mut tx = run_b_withdrawal(vec![input], *kp.public_key(), 1, dest, unit - fee);
     let msg = tx.signing_message_for_input(0);
     tx.inputs[0].signature = crypto::signature::sign_hash(&msg, kp.private_key());
     tx

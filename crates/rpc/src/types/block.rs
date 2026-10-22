@@ -330,6 +330,7 @@ impl From<&doli_core::Output> for OutputResponse {
             doli_core::OutputType::ZKRollup => "zkRollup",
             doli_core::OutputType::EncryptedContent => "encryptedContent",
             doli_core::OutputType::OraclePrice => "oraclePrice",
+            doli_core::OutputType::Unbonding => "unbonding",
         };
 
         // Decode covenant condition for conditioned outputs

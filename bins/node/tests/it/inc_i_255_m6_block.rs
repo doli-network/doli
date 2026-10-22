@@ -24,7 +24,7 @@ use crypto::KeyPair;
 use doli_core::validation::ValidationMode;
 use storage::Outpoint;
 
-use super::inc_i_255_m1_common::{slash_recorded, tip};
+use super::inc_i_255_m1_common::{in_child, run_in_child, slash_recorded, tip};
 use super::inc_i_255_m2_common::{assert_same, Snap};
 use super::inc_i_255_m6_common::*;
 
@@ -113,6 +113,10 @@ async fn inc_i_255_m6_probe_3_mode_parity() {
 // REQ-SLASH-003 — Decision: a failure means a Bond for p created earlier in the slash block can be spent after the burn (half-apply) or escapes the in-block check.
 #[tokio::test]
 async fn inc_i_255_m6_probe_8_in_block_bond_spend_rejected() {
+    if !in_child() {
+        let test = "inc_i_255_m6_block::inc_i_255_m6_probe_8_in_block_bond_spend_rejected";
+        return run_in_child(test, 0);
+    }
     let unit;
     {
         let mut c = m6(FEE_TIE).await;

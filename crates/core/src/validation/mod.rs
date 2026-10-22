@@ -53,6 +53,7 @@ mod tests_oracle_slash;
 mod transaction;
 mod tx_types;
 mod types;
+mod unbonding;
 mod utxo;
 /// INC-I-171 vesting-penalty predicate (pure integer arithmetic, no storage types).
 pub mod vesting;
@@ -81,5 +82,6 @@ pub use tx_types::{check_addbond_cap, count_bond_outputs};
 pub use types::{
     RegistrationChainState, UtxoInfo, UtxoProvider, ValidationContext, ValidationMode,
 };
+pub use unbonding::spend_lock_verdict;
 pub use utxo::validate_transaction_with_utxos;
 pub use zk::{proof_system, verify_zk_proof, ZkVerifyContext, ZkVerifyError};

@@ -30,6 +30,10 @@ const GATE: u64 = 3;
 // REQ-SLASH-003 — Decision: a failure means a resident T(p) survives the admission of Slash(p), so both reach the builder and the block half-applies or p escapes the burn.
 #[tokio::test]
 async fn inc_i_255_m6_probe_5_admit_slash_evicts_spend() {
+    if !in_child() {
+        let test = "inc_i_255_m6_mempool::inc_i_255_m6_probe_5_admit_slash_evicts_spend";
+        return run_in_child(test, 0);
+    }
     let r = m6(FEE_TIE).await;
     let n = &r.w.node;
     for tx in [&r.t, &r.tq] {
@@ -56,6 +60,10 @@ async fn inc_i_255_m6_probe_5_admit_slash_evicts_spend() {
 // REQ-SLASH-003 — Decision: a failure means T(p) joins a resident Slash(p), so the builder can pack both.
 #[tokio::test]
 async fn inc_i_255_m6_probe_6_refuse_spend_while_slash_resident() {
+    if !in_child() {
+        let test = "inc_i_255_m6_mempool::inc_i_255_m6_probe_6_refuse_spend_while_slash_resident";
+        return run_in_child(test, 0);
+    }
     let r = m6(FEE_TIE).await;
     let n = &r.w.node;
     let s = admit_at(n, &r.slash, AT).await;

@@ -282,6 +282,7 @@ impl NetworkParams {
                 inc_i_234_activation_height: 612_000,
                 inc_i_236_block_signature_activation_height: u64::MAX,
                 inc_i_255_slashing_activation_height: u64::MAX,
+                inc_i_257_unbonding_activation_height: u64::MAX,
                 // INC-I-233 F4 coinbase credit. PINNED 612_000 on mainnet (user
                 // decision 2026-10-02). Block CONTENT changes => every producer must
                 // run the release before this height. IMMUTABLE once crossed.
@@ -553,6 +554,7 @@ impl NetworkParams {
                 inc_i_234_activation_height: 78_199,
                 inc_i_236_block_signature_activation_height: u64::MAX,
                 inc_i_255_slashing_activation_height: u64::MAX,
+                inc_i_257_unbonding_activation_height: u64::MAX,
                 // INC-I-233 F4 coinbase credit. PINNED 94_500 on testnet (tip 94_131 at
                 // 2026-09-26 09:48Z, ~1 h lead, user decision). IMMUTABLE once crossed.
                 inc_i_233_activation_height: 94_500,
@@ -826,6 +828,7 @@ impl NetworkParams {
                 inc_i_234_activation_height: 0,
                 inc_i_236_block_signature_activation_height: 0,
                 inc_i_255_slashing_activation_height: 0,
+                inc_i_257_unbonding_activation_height: 0,
                 // INC-I-233 F4: 0 is safe on devnet — a chain with no fee-exempt
                 // txs gets a byte-identical coinbase.
                 inc_i_233_activation_height: 0,

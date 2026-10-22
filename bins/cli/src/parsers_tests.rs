@@ -320,6 +320,7 @@ fn output_type_guard_all_15_variants() {
         ("lpshare", doli_core::OutputType::LPShare),
         ("zkrollup", doli_core::OutputType::ZKRollup),
         ("encryptedcontent", doli_core::OutputType::EncryptedContent),
+        ("unbonding", doli_core::OutputType::Unbonding),
     ];
     for (name, expected_type) in &variants {
         let input = format!("output_type_guard({}, 0)", name);

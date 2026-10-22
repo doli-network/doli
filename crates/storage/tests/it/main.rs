@@ -25,6 +25,7 @@ mod inc_i_249_outcome_probe;
 mod inc_i_249_release_fixes;
 mod inc_i_253_height_range;
 mod inc_i_253_targeted_repair;
+mod inc_i_257_m1_canonical_golden;
 mod m1_state_root_decode_seam;
 mod m2_caller_port_locks;
 mod m3_chunk_byte_equality;

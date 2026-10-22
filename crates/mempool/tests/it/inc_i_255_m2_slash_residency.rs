@@ -205,6 +205,10 @@ fn run_in_child(test: &str) {
         .args([test, "--exact", "--test-threads=1", "--nocapture"])
         .env(CHILD_ENV, "1")
         .env(GATE_ENV, RAISED_GATE.to_string())
+        .env(
+            "DOLI_INC_I_257_UNBONDING_ACTIVATION_HEIGHT",
+            u64::MAX.to_string(),
+        )
         .output()
         .expect("spawn child test process");
     let stdout = String::from_utf8_lossy(&out.stdout);

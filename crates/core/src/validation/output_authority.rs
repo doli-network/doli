@@ -29,6 +29,7 @@ pub fn check_output_placement(
     tx: &Transaction,
     ctx: &ValidationContext,
 ) -> Result<(), ValidationError> {
+    super::unbonding::check_unbonding_outputs(tx, ctx)?;
     if inactive(ctx) {
         return Ok(());
     }

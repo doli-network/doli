@@ -413,6 +413,7 @@ pub(super) fn validate_outputs(
                     )));
                 }
             }
+            OutputType::Unbonding => super::unbonding::check_output_shape(i, output)?,
             OutputType::Bond => {
                 // Bond outputs must have a future lock time
                 if output.lock_until == 0 {

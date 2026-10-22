@@ -420,7 +420,7 @@ pub(crate) async fn cmd_send(
             .get_utxos(pubkey_hash, true)
             .await?
             .into_iter()
-            .filter(|u| u.output_type == "normal" && u.spendable)
+            .filter(|u| doli_cli::unbonding_tx::send_selectable(&u.output_type, u.spendable))
             .map(|u| (u, pubkey_hash.clone()))
             .collect();
         utxos.extend(addr_utxos);

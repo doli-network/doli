@@ -66,7 +66,7 @@ fn signed_withdrawal(unit: u64, kp: &KeyPair, ops: &[storage::Outpoint]) -> Tran
     let n = ops.len() as u32;
     let dest = crypto::hash::hash(b"inc-i-255-m2-withdrawal-destination");
     let net = unit * u64::from(n) - unit / 100;
-    let mut tx = Transaction::new_request_withdrawal(inputs, *kp.public_key(), n, dest, net);
+    let mut tx = run_b_withdrawal(inputs, *kp.public_key(), n, dest, net);
     for i in 0..tx.inputs.len() {
         let msg = tx.signing_message_for_input(i);
         tx.inputs[i].signature = crypto::signature::sign_hash(&msg, kp.private_key());

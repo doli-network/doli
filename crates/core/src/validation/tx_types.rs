@@ -388,7 +388,10 @@ pub(super) fn validate_withdrawal_request_data(tx: &Transaction) -> Result<(), V
     }
 
     let output = &tx.outputs[0];
-    if output.output_type != OutputType::Normal {
+    if !matches!(
+        output.output_type,
+        OutputType::Normal | OutputType::Unbonding
+    ) {
         return Err(ValidationError::InvalidWithdrawalRequest(
             "withdrawal output must be Normal type".to_string(),
         ));

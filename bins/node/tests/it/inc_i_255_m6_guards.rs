@@ -71,6 +71,10 @@ async fn accepted(r: &mut M6, spend: &Transaction, other: &str, slash_first: boo
 // REQ-SLASH-003 — Decision: a failure means the fix refuses an unrelated producer's bond spend mined beside a slash.
 #[tokio::test]
 async fn inc_i_255_m6_guard_other_producer_bond_spend() {
+    if !in_child() {
+        let test = "inc_i_255_m6_guards::inc_i_255_m6_guard_other_producer_bond_spend";
+        return run_in_child(test, 0);
+    }
     for slash_first in [true, false] {
         let mut r = m6(FEE_TIE).await;
         let tq = r.tq.clone();

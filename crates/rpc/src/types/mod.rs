@@ -68,6 +68,7 @@ mod tests {
             unconfirmed: 500,
             immature: 0,
             bonded: 0,
+            unbonding: 0,
             total: 1_000_500,
         };
 

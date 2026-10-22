@@ -241,11 +241,7 @@ pub struct ValidationContext {
     /// `validate_transaction_with_utxos` is `Transaction::is_zero_flow()` —
     /// 0 inputs AND 0 outputs AND an authorization-curated type. Below it, the
     /// legacy 3-type `matches!` is preserved character-identical so a mixed
-    /// fleet cannot fork (INV-COMPAT-001).
-    ///
-    /// The gate is evaluated from THIS context's `current_height` (the BLOCK's
-    /// height), inside the shared validator and nowhere else, so builder/apply
-    /// parity holds by construction (constraint C4 / INV-PROD-003).
+    /// fleet cannot fork (INV-COMPAT-001). Evaluated from `current_height` only.
     ///
     /// Sourced from `NetworkParams::inc_i_173_activation_height`. Default
     /// `u64::MAX` (fail-closed): a construction site that forgets
@@ -259,6 +255,9 @@ pub struct ValidationContext {
     /// INC-I-236 block-signature gate. Default `u64::MAX` (fail-closed).
     pub inc_i_236_block_signature_activation_height: u64,
     pub inc_i_255_slashing_activation_height: u64,
+    /// INC-I-257 gate (default `u64::MAX`, fail-closed) and lock length.
+    pub inc_i_257_unbonding_activation_height: u64,
+    pub unbonding_period: u64,
     pub slash_targets: std::collections::HashMap<PublicKey, super::SlashTargetState>,
 }
 
@@ -305,6 +304,8 @@ impl ValidationContext {
             inc_i_234_activation_height: u64::MAX,
             inc_i_236_block_signature_activation_height: u64::MAX,
             inc_i_255_slashing_activation_height: u64::MAX,
+            inc_i_257_unbonding_activation_height: u64::MAX,
+            unbonding_period: 0,
             slash_targets: std::collections::HashMap::new(),
         }
     }
