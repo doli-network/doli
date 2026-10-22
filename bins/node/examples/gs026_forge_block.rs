@@ -50,7 +50,6 @@ fn forge(args: &[String]) -> (Block, u32) {
     let kind = req(args, "--kind");
     let tip_b64 = req(args, "--tip-b64");
     let height: u64 = req(args, "--height").parse().expect("height");
-    let slot: u32 = req(args, "--slot").parse().expect("slot");
     let producer = PublicKey::from_hex(&req(args, "--producer")).expect("producer hex");
     let genesis_time: u64 = req(args, "--genesis-time").parse().expect("genesis-time");
     let slot_duration: u64 = req(args, "--slot-duration").parse().expect("slot-duration");
@@ -68,7 +67,32 @@ fn forge(args: &[String]) -> (Block, u32) {
     params.genesis_time = genesis_time;
     params.slot_duration = slot_duration;
     params.genesis_hash = genesis_hash;
+
+    // Choose the slot from the DECODED tip, not from a CLI guess: it must be
+    // strictly greater than the tip's slot (BlockBuilder rejects a non-increasing
+    // slot) AND its timestamp must not be in the future (the node rejects
+    // timestamp > now + MAX_DRIFT=1s). slot = prev_slot + 1 satisfies the first;
+    // for the second we busy-wait until wall-clock reaches that slot. Production
+    // is paused by the runner, so prev_slot is frozen and the wait is bounded by
+    // one slot.
+    let slot: u32 = prev_slot + 1;
     let timestamp = params.slot_to_timestamp(slot);
+    loop {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if now >= timestamp {
+            break;
+        }
+        let wait = timestamp - now;
+        if wait > slot_duration + 2 {
+            // The tip is more than a slot ahead of wall-clock; something is off.
+            eprintln!("forge: tip slot {prev_slot} is {wait}s ahead of now; aborting");
+            std::process::exit(3);
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
 
     let mut builder = BlockBuilder::new(prev_hash, prev_slot, producer)
         .with_params(params)

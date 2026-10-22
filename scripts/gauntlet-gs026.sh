@@ -43,21 +43,54 @@ GS026_CONTROL_BIN="${GS026_CONTROL_BIN:-$ROOT/target/gs026/doli-node-b4cff010}"
 GS026_CLI="${GS026_CLI:-$ROOT/target/release/doli}"
 GS026_FORGE="${GS026_FORGE:-$ROOT/target/release/examples/gs026_forge_block}"
 GS026_NODES="${GS026_NODES:-6}"
+# One genesis producer (node0) + validators. A single scheduled producer cannot
+# fork: there is never a competing block for any height, which removes the
+# multi-producer bootstrap/epoch-transition fork that wedged every >1-producer
+# run (reproduced identically on the pre-fix control binary -> a devnet harness
+# property, not the signature fix). EPOCH_SLOTS is kept past AH so the first
+# epoch boundary (where MIN_PRODUCERS_FLOOR=3 would apply) never falls in-run.
+# The 5 validators are full nodes: they sync node0 over real gossip and run the
+# SAME block-signature check on every block, so "every node rejects the forged
+# block" is still a real multi-node property.
+GS026_PRODUCERS="${GS026_PRODUCERS:-1}"
 GS026_ALL_CONTROL="${GS026_ALL_CONTROL:-0}"
-GS026_AH="${GS026_AH:-80}"
-GS026_MIX_FLOOR="${GS026_MIX_FLOOR:-62}"
+GS026_AH="${GS026_AH:-30}"
+GS026_MIX_FLOOR="${GS026_MIX_FLOOR:-15}"
+# Shrink the devnet chain so AH is reached in ~4 min at the proven 10 s slot
+# (devnet defaults genesis_blocks=40, bootstrap_blocks=60 would need ~13 min).
+# Both are devnet-env-overridable (env_loader.rs:121,177). Constraints:
+#  - genesis_blocks >= 9: production/mod.rs:258 blocks forever if a block at
+#    height < 10 is produced OUTSIDE genesis with > 5 active producers, so the
+#    first post-genesis height (genesis_blocks+1) must be >= 10.
+#  - AH sits just above bootstrap_blocks; EPOCH_SLOTS is pushed past AH so no
+#    MIN_PRODUCERS_FLOOR=3 epoch boundary falls inside the run.
+GS026_GENESIS_BLOCKS="${GS026_GENESIS_BLOCKS:-10}"
+GS026_BOOTSTRAP_BLOCKS="${GS026_BOOTSTRAP_BLOCKS:-12}"
 GS026_P2P_BASE="${GS026_P2P_BASE:-50360}"
 GS026_RPC_BASE="${GS026_RPC_BASE:-28560}"
 GS026_MET_BASE="${GS026_MET_BASE:-29060}"
 GS026_BOOT_MAX="${GS026_BOOT_MAX:-150}"
-GS026_PHASE_MAX="${GS026_PHASE_MAX:-240}"
+GS026_PHASE_MAX="${GS026_PHASE_MAX:-480}"
 GS026_KEEP="${GS026_KEEP:-0}"
 
-SLOT_DUR=1
+# Match the shipped devnet launcher's effective slot (devnet default 10 s).
+# Two reasons: (1) the node's propagation-delay gate (production/mod.rs) only
+# produces once slot_offset_ms >= 1000, so a sub-second slot never produces and
+# the chain never leaves genesis (seen on BOTH the pre-fix control binary and
+# HEAD -> not a regression of the signature fix); (2) a tight slot leaves no time
+# for a block to propagate before the next producer builds, so producers build
+# competing blocks and some nodes wedge on a minority fork. A 10 s slot gives
+# ~9 s of propagation headroom, the value the shipped `doli-node devnet` uses.
+SLOT_DUR="${GS026_SLOT_DUR:-10}"
 REWARD=100000000
 BOND=100000000
-EPOCH_SLOTS=30
-GEN_DELAY=15
+EPOCH_SLOTS=60
+# GEN_DELAY is in SLOTS (the GEN_TS formula below multiplies it by SLOT_DUR):
+# 3 slots at a 10 s slot = ~30 s of pre-genesis time for every node to come up,
+# dial node0 and converge its producer G-Set before slot 0. Too large a value
+# (e.g. 30 here) pushes genesis minutes into the future and the chain looks
+# stalled when it is simply not born yet.
+GEN_DELAY=3
 TMPROOT="${TMPDIR:-/tmp}"
 TMPROOT="${TMPROOT%/}"
 S=""
@@ -78,12 +111,17 @@ skip() {
 
 [ "$N" -ge 6 ] 2>/dev/null || skip "GS026_NODES=$N must be >= 6 (genesis bootstrap gate needs >= 5 peers)"
 
+GS026_ALL_HEAD="${GS026_ALL_HEAD:-0}"
 for ((i = 0; i < N; i++)); do
   P2P[$i]=$((GS026_P2P_BASE + i))
   RPCP[$i]=$((GS026_RPC_BASE + i))
   MET[$i]=$((GS026_MET_BASE + i))
   STOPPED[$i]=0
-  if [ "$GS026_ALL_CONTROL" = 1 ] || [ "$i" -eq "$CTRL_IDX" ]; then
+  # GS026_ALL_HEAD=1: every node runs HEAD (control experiment for a genesis
+  # stall: compare against GS026_ALL_CONTROL=1 on the same host and node count).
+  if [ "$GS026_ALL_HEAD" = 1 ]; then
+    BINS[$i]="$GS026_HEAD_BIN"
+  elif [ "$GS026_ALL_CONTROL" = 1 ] || [ "$i" -eq "$CTRL_IDX" ]; then
     BINS[$i]="$GS026_CONTROL_BIN"
   else
     BINS[$i]="$GS026_HEAD_BIN"
@@ -185,17 +223,32 @@ start_node() {
   mkdir -p "$dd"
   : >"$dd/.env"
   local args=(--network devnet --data-dir "$dd" --log-level info run
-    --producer --producer-key "$S/w$idx.json" --chainspec "$S/chainspec.json"
+    --chainspec "$S/chainspec.json"
     --p2p-port "${P2P[$idx]}" --rpc-port "${RPCP[$idx]}" --metrics-port "${MET[$idx]}"
     --no-auto-update --force-start --yes)
-  # Bootstrap each node to ALL earlier nodes so the cluster forms a full mesh:
-  # every node ends with N-1 peers, which the genesis bootstrap gate (>= 5 peers)
-  # requires. A star to node0 alone leaves the children at one peer and blocked.
-  local j
-  for ((j = 0; j < idx; j++)); do
-    args+=(--bootstrap "/ip4/127.0.0.1/tcp/${P2P[$j]}")
-  done
-  "${BINS[$idx]}" "${args[@]}" >"$S/n$idx/node.log" 2>&1 &
+  # Only the first GS026_PRODUCERS nodes produce; the rest are validators.
+  if [ "$idx" -lt "$GS026_PRODUCERS" ]; then
+    args+=(--producer --producer-key "$S/w$idx.json")
+  fi
+  # Star topology, like the shipped `doli-node devnet` launcher: every child
+  # bootstraps to node0 only. Peer discovery (discv5/DHT + gossip) then fills each
+  # node's peer table to the full set, satisfying the >= 5 peer genesis quorum.
+  # (A full mesh gave peers=5 instantly yet still forked, so the mesh was not the
+  # fix; the slot duration was.)
+  if [ "$idx" -gt 0 ]; then
+    args+=(--bootstrap "/ip4/127.0.0.1/tcp/${P2P[0]}")
+  fi
+  # Arm the FINITE signature activation height on every node through the
+  # devnet-only env override (env_loader.rs honours it only for Network::Devnet).
+  # Below GS026_AH a HEAD node accepts unsigned blocks exactly like the pre-fix
+  # control (the mixed phase is real); at/above it every HEAD node verifies. The
+  # control binary predates the variable and ignores it. The empty .env above
+  # only blocks the ~/.doli/devnet/.env fallback; dotenvy never overrides a
+  # variable already in the process environment.
+  DOLI_INC_I_236_BLOCK_SIGNATURE_ACTIVATION_HEIGHT="$GS026_AH" \
+  DOLI_GENESIS_BLOCKS="$GS026_GENESIS_BLOCKS" \
+  DOLI_BOOTSTRAP_BLOCKS="$GS026_BOOTSTRAP_BLOCKS" \
+    "${BINS[$idx]}" "${args[@]}" >"$S/n$idx/node.log" 2>&1 &
   NODE_PID[$idx]=$!
   NODE_PIDS="$NODE_PIDS ${NODE_PID[$idx]}"
 }
@@ -247,9 +300,13 @@ command -v python3 >/dev/null 2>&1 || skip "python3 unavailable"
 [ -x "$GS026_CLI" ] || skip "CLI $GS026_CLI missing or not executable"
 [ -x "$GS026_FORGE" ] || skip "forge helper $GS026_FORGE missing (cargo build --release -p doli-node --example gs026_forge_block)"
 [ -x "$GS026_CONTROL_BIN" ] || skip "control binary $GS026_CONTROL_BIN missing (build v6.44.2 b4cff010)"
-[ "$GS026_AH" -gt 60 ] || skip "GS026_AH=$GS026_AH must exceed bootstrap_blocks=60"
-[ "$GS026_MIX_FLOOR" -ge 61 ] && [ "$GS026_MIX_FLOOR" -lt "$GS026_AH" ] ||
-  skip "GS026_MIX_FLOOR=$GS026_MIX_FLOOR must be in [61, GS026_AH)"
+# AH must sit above the bootstrap->epoch transition so a block below it is a
+# normal epoch block (not a bootstrap block), and MIX_FLOOR must be between that
+# transition and the AH so the below-height phase is a real finite regime.
+[ "$GS026_AH" -gt "$GS026_BOOTSTRAP_BLOCKS" ] ||
+  skip "GS026_AH=$GS026_AH must exceed bootstrap_blocks=$GS026_BOOTSTRAP_BLOCKS"
+[ "$GS026_MIX_FLOOR" -gt "$GS026_BOOTSTRAP_BLOCKS" ] && [ "$GS026_MIX_FLOOR" -lt "$GS026_AH" ] ||
+  skip "GS026_MIX_FLOOR=$GS026_MIX_FLOOR must be in (bootstrap_blocks=$GS026_BOOTSTRAP_BLOCKS, GS026_AH=$GS026_AH)"
 for ((i = 0; i < N; i++)); do
   for p in "${P2P[$i]}" "${RPCP[$i]}" "${MET[$i]}"; do
     port_busy "$p" && skip "TCP port $p is busy"
@@ -265,7 +322,9 @@ for ((i = 0; i < N; i++)); do
     skip "wallet generation failed for node $i"
   PK[$i]="$(wallet_pubkey "$S/w$i.json")"
   [ -n "${PK[$i]}" ] || skip "could not read pubkey for node $i"
-  PKARGS+=("${PK[$i]}")
+  # Only the first GS026_PRODUCERS nodes are genesis producers (scheduled). The
+  # rest are validators: full nodes that sync and check, but never scheduled.
+  [ "$i" -lt "$GS026_PRODUCERS" ] && PKARGS+=("${PK[$i]}")
 done
 
 now="$(date +%s)"
@@ -315,7 +374,7 @@ while [ $(($(date +%s) - t0)) -lt "$GS026_BOOT_MAX" ]; do
   done
   sleep 3
 done
-[ "$booted" = 1 ] || skip "cluster did not reach height 2 within ${GS026_BOOT_MAX}s (genesis quorum needs >= 5 peers)"
+[ "$booted" = 1 ] || skip "cluster did not reach height 2 within ${GS026_BOOT_MAX}s (see n0/node.log PROD_DIAG and [NODE_PRODUCE] BLOCKED lines)"
 
 # --- gs026-mixed-below-height-equal-tips ----------------------------------------
 t0="$(date +%s)"
@@ -359,18 +418,41 @@ inject() {
   ACCEPTED=0
   TIPS_EQ=0
   rpc0="${RPCP[0]}"
+  # Pause production on EVERY running node FIRST, so the chain freezes and the
+  # forged block is the sole candidate for its height (a fallback producer would
+  # otherwise fill it and mask whether the node ACCEPTED the forgery).
+  for i in $(running_idx); do
+    rpc "${RPCP[$i]}" '{"jsonrpc":"2.0","method":"pauseProduction","params":{},"id":1}' >/dev/null
+  done
+  sleep 2 # let any in-flight block settle so tip is stable
+  # Wait until just past a fresh slot boundary so the current slot is one the
+  # paused producer has NOT filled and whose timestamp (genesis + slot*dur) is
+  # ~now (not in the future). Land ~0.5 s into the new slot.
+  local now_s into
+  now_s="$(date +%s)"
+  into=$(((now_s - GEN_TS) % SLOT_DUR))
+  sleep "$((SLOT_DUR - into))" 2>/dev/null || true
   tip="$(best_height "$rpc0")"
   case "$tip" in '' | *[!0-9]*) echo "no tip for injection" >&2; return 1 ;; esac
   sched="$(rpc "$rpc0" '{"jsonrpc":"2.0","method":"getSlotSchedule","params":{},"id":1}')"
   cur_slot="$(printf '%s' "$sched" | jfield currentSlot)"
   case "$cur_slot" in '' | *[!0-9]*) echo "no schedule for injection" >&2; return 1 ;; esac
-  target=$((cur_slot + 1))
+  # Forge for the CURRENT slot, not cur_slot+1: with MAX_DRIFT=1 s a next-slot
+  # block's timestamp (genesis + (cur+1)*slot) is ~slot seconds in the future and
+  # the node rejects it as "timestamp too far in future" — a NON-signature reason
+  # that would make control reject it too. The current slot's timestamp
+  # (genesis + cur*slot) is <= now, so it passes the time check; because
+  # production is paused the paused owner has not filled it.
+  target=$cur_slot
   owner="$(printf '%s' "$sched" | python3 -I -c '
 import json,sys
 d=json.load(sys.stdin).get("result",{})
 want=int(sys.argv[1])
 for e in d.get("slots",[]):
     if e.get("slot")==want: print(e.get("producer","")); break' "$target" 2>/dev/null)"
+  # Single-producer runs: the sole producer owns every slot. Fall back to it when
+  # the schedule does not enumerate the current slot.
+  [ -z "$owner" ] && owner="${PK[0]}"
   oidx=-1
   for i in $(running_idx); do
     [ "${PK[$i]}" = "$owner" ] && oidx="$i"
@@ -379,7 +461,6 @@ for e in d.get("slots",[]):
   b64="$(block_raw "$rpc0" "$tip")"
   [ -n "$b64" ] || { echo "no tip block bytes" >&2; return 1; }
   h=$((tip + 1))
-  rpc "${RPCP[$oidx]}" '{"jsonrpc":"2.0","method":"pauseProduction","params":{},"id":1}' >/dev/null
   local dial=""
   for i in $(running_idx); do
     dial="$dial,/ip4/127.0.0.1/tcp/${P2P[$i]}"
@@ -390,7 +471,7 @@ for e in d.get("slots",[]):
     sed -n 's/^INJECTED .*hash=\([0-9a-f]*\).*/\1/p' | head -1)"
   accepted=0
   tries=0
-  while [ "$tries" -lt 8 ]; do
+  while [ "$tries" -lt 10 ]; do
     for i in $(running_idx); do
       [ -n "$fhash" ] && [ "$(block_hash "${RPCP[$i]}" "$h")" = "$fhash" ] && accepted=1
     done
@@ -398,7 +479,9 @@ for e in d.get("slots",[]):
     sleep 1
     tries=$((tries + 1))
   done
-  rpc "${RPCP[$oidx]}" '{"jsonrpc":"2.0","method":"resumeProduction","params":{},"id":1}' >/dev/null
+  for i in $(running_idx); do
+    rpc "${RPCP[$i]}" '{"jsonrpc":"2.0","method":"resumeProduction","params":{},"id":1}' >/dev/null
+  done
   [ "$accepted" = 1 ] && ACCEPTED=1 || REJECTED=1
   local ch
   ch="$(best_height "$rpc0")"
