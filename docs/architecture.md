@@ -1284,7 +1284,8 @@ Full rules: `specs/protocol.md` §3.10.
 
 ```
 Two signed headers, same producer + slot
-    │  EquivocationDetector::check_block (network/sync/equivocation.rs)
+    │  EquivocationDetector::check_block_with (network/sync/equivocation.rs)
+    │  admit = detector_admits (node/header_auth.rs): evidence_header_admissible
     ▼
 handle_equivocation → submit_equivocation_slash (node/slash_submit.rs)
     │  gate at best+1; canonical SlashData::double_production

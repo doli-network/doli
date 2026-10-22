@@ -7,10 +7,11 @@
 //! The evidence includes full block headers. Authorship is proven by the producer's
 //! block signature (`vdf_proof.pi`, INC-I-236, enforced from the AH), not by the VDF.
 
-use crypto::{signature, KeyPair, PublicKey};
+use crypto::{signature, Hash, KeyPair, PublicKey};
 use doli_core::transaction::{SlashData, SlashingEvidence};
+use doli_core::validation::double_production_evidence_fits;
 use doli_core::{Block, BlockHeader, Transaction};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use tracing::warn;
 
 /// Maximum number of entries to track for equivocation detection.
@@ -23,6 +24,9 @@ const SLIDING_WINDOW_SLOTS: u32 = 360;
 
 /// Most proofs held until taken; further offences are still returned.
 const MAX_PENDING_EQUIVOCATION_PROOFS: usize = 64;
+
+/// `admit` calls allowed for a (producer, slot) after its first proof.
+pub const MAX_EVIDENCE_CHECKS_AFTER_PROOF: u32 = 4;
 
 /// Evidence of double production that can be used to create a slash transaction
 ///
@@ -71,35 +75,46 @@ impl EquivocationProof {
 
 /// Tracks block production to detect equivocation (double signing)
 ///
-/// This detector keeps track of recently produced blocks by (producer, slot) pairs.
-/// When it sees a second block from the same producer for the same slot with a
-/// different hash, it creates an EquivocationProof that can be used to slash
-/// the misbehaving producer.
-///
-/// The detector stores full block headers (not just hashes) so that the
-/// equivocation evidence includes VDF proofs for cryptographic verification.
+/// Keyed by (producer, slot). Only headers the caller's `admit` predicate
+/// accepts are stored or paired; the smaller-encoded header is kept so a pair
+/// that fits a SlashData can still form.
 #[derive(Debug)]
 pub struct EquivocationDetector {
-    /// Map of (producer_pubkey, slot) -> first block header seen
-    /// If a second different block is seen for the same key, equivocation is detected
-    /// Stores full headers for VDF-verifiable evidence
-    seen_blocks: HashMap<(PublicKey, u32), BlockHeader>,
+    /// (producer, slot) -> the stored admitted header
+    seen_blocks: HashMap<(PublicKey, u32), Tracked>,
 
     /// LRU order for eviction (oldest first)
-    /// Stores (producer_pubkey, slot) tuples in order of insertion
     lru_order: VecDeque<(PublicKey, u32)>,
 
     /// Maximum number of entries to track (secondary cap)
     max_tracked: usize,
 
-    /// Detected equivocation proofs ready to be reported
+    /// Detected equivocation proofs, at most one per (producer, slot)
     pending_proofs: Vec<EquivocationProof>,
-
-    /// Tracked (producer, slot) pairs whose equivocation was already returned
-    reported: HashSet<(PublicKey, u32)>,
 
     /// Oldest slot currently tracked (for sliding window cleanup)
     oldest_tracked_slot: u32,
+}
+
+/// The stored header for one (producer, slot).
+#[derive(Debug)]
+struct Tracked {
+    header: BlockHeader,
+    hash: Hash,
+    size: u64,
+    /// `admit` calls since the first proof; `None` before it.
+    checks_after_proof: Option<u32>,
+}
+
+impl Tracked {
+    fn new(header: &BlockHeader, hash: Hash) -> Self {
+        Self {
+            size: bincode::serialized_size(header).unwrap_or(u64::MAX),
+            header: header.clone(),
+            hash,
+            checks_after_proof: None,
+        }
+    }
 }
 
 impl Default for EquivocationDetector {
@@ -116,80 +131,103 @@ impl EquivocationDetector {
             lru_order: VecDeque::new(),
             max_tracked: MAX_TRACKED_ENTRIES,
             pending_proofs: Vec::new(),
-            reported: HashSet::new(),
             oldest_tracked_slot: 0,
         }
     }
 
-    /// Check a block for equivocation
-    ///
-    /// Returns Some(EquivocationProof) if this block represents double production
-    /// by its producer (i.e., we've already seen a different block from the same
-    /// producer for the same slot). Only the first conflict per (producer, slot)
-    /// is returned and queued.
-    ///
-    /// The proof includes full block headers with VDF proofs for cryptographic
-    /// verification that the producer actually created both blocks.
+    /// `check_block_with` admitting every header.
     pub fn check_block(&mut self, block: &Block) -> Option<EquivocationProof> {
-        let producer = block.header.producer;
-        let slot = block.header.slot;
-        let block_hash = block.hash();
-        let key = (producer, slot);
+        self.check_block_with(block, |_| true)
+    }
 
-        // Sliding window: clean up entries older than 1 epoch
-        let min_slot = slot.saturating_sub(SLIDING_WINDOW_SLOTS);
-        self.cleanup_before_slot(min_slot);
+    /// Check a block for equivocation. Returns a proof when an admitted header
+    /// differs from the stored admitted header for its (producer, slot) and the
+    /// pair fits a SlashData. `admit` is not called for the stored header, nor
+    /// after `MAX_EVIDENCE_CHECKS_AFTER_PROOF` calls once (producer, slot) proved.
+    pub fn check_block_with(
+        &mut self,
+        block: &Block,
+        admit: impl FnOnce(&BlockHeader) -> bool,
+    ) -> Option<EquivocationProof> {
+        let header = &block.header;
+        let key = (header.producer, header.slot);
+        self.cleanup_before_slot(header.slot.saturating_sub(SLIDING_WINDOW_SLOTS));
+        let hash = block.hash();
 
-        // Check if we've already seen a block for this (producer, slot)
-        if let Some(existing_header) = self.seen_blocks.get(&key) {
-            if existing_header.hash() != block_hash {
-                if !self.reported.insert(key) {
+        if let Some(stored) = self.seen_blocks.get_mut(&key) {
+            if stored.hash == hash {
+                return None;
+            }
+            if let Some(n) = stored.checks_after_proof.as_mut() {
+                if *n >= MAX_EVIDENCE_CHECKS_AFTER_PROOF {
                     return None;
                 }
-                let proof = EquivocationProof {
-                    producer,
-                    block_header_1: existing_header.clone(),
-                    block_header_2: block.header.clone(),
-                    slot,
-                };
-
-                warn!(
-                    "EQUIVOCATION DETECTED: Producer {} created two blocks for slot {}: {} and {}",
-                    crypto::hash::hash(producer.as_bytes()),
-                    slot,
-                    existing_header.hash(),
-                    block_hash
-                );
-
-                if self.pending_proofs.len() < MAX_PENDING_EQUIVOCATION_PROOFS {
-                    self.pending_proofs.push(proof.clone());
-                }
-
-                return Some(proof);
+                *n += 1;
             }
-            // Same block seen twice, no equivocation
+        }
+        if !admit(header) {
             return None;
         }
+        let candidate = Tracked::new(header, hash);
+        let Some(stored) = self.seen_blocks.get_mut(&key) else {
+            self.record_block(key, candidate);
+            return None;
+        };
 
-        // First time seeing a block for this (producer, slot)
-        self.record_block(key, block.header.clone());
-        None
+        let proof = double_production_evidence_fits(&key.0, &stored.header, header).then(|| {
+            EquivocationProof {
+                producer: key.0,
+                block_header_1: stored.header.clone(),
+                block_header_2: header.clone(),
+                slot: key.1,
+            }
+        });
+        if proof.is_some() && stored.checks_after_proof.is_none() {
+            stored.checks_after_proof = Some(0);
+        }
+        if candidate.size < stored.size {
+            let checks = stored.checks_after_proof;
+            *stored = Tracked {
+                checks_after_proof: checks,
+                ..candidate
+            };
+        }
+        let proof = proof?;
+
+        warn!(
+            "EQUIVOCATION DETECTED: Producer {} created two blocks for slot {}: {} and {}",
+            crypto::hash::hash(proof.producer.as_bytes()),
+            proof.slot,
+            proof.block_header_1.hash(),
+            hash
+        );
+        self.queue_pending(&proof);
+        Some(proof)
+    }
+
+    /// Queue `proof` unless its (producer, slot) is pending or the cap is reached.
+    fn queue_pending(&mut self, proof: &EquivocationProof) {
+        let queued = self
+            .pending_proofs
+            .iter()
+            .any(|p| p.producer == proof.producer && p.slot == proof.slot);
+        if !queued && self.pending_proofs.len() < MAX_PENDING_EQUIVOCATION_PROOFS {
+            self.pending_proofs.push(proof.clone());
+        }
     }
 
     /// Record a new block header in the tracker
-    fn record_block(&mut self, key: (PublicKey, u32), header: BlockHeader) {
+    fn record_block(&mut self, key: (PublicKey, u32), tracked: Tracked) {
         // Evict oldest if at capacity
         while self.seen_blocks.len() >= self.max_tracked {
             if let Some(old_key) = self.lru_order.pop_front() {
                 self.seen_blocks.remove(&old_key);
-                self.reported.remove(&old_key);
             } else {
                 break;
             }
         }
 
-        // Insert new entry
-        self.seen_blocks.insert(key, header);
+        self.seen_blocks.insert(key, tracked);
         self.lru_order.push_back(key);
     }
 
@@ -215,7 +253,6 @@ impl EquivocationDetector {
         self.seen_blocks.clear();
         self.lru_order.clear();
         self.pending_proofs.clear();
-        self.reported.clear();
         self.oldest_tracked_slot = 0;
     }
 
@@ -233,7 +270,6 @@ impl EquivocationDetector {
             if front.1 < min_slot {
                 let old_key = self.lru_order.pop_front().unwrap();
                 self.seen_blocks.remove(&old_key);
-                self.reported.remove(&old_key);
             } else {
                 break;
             }
@@ -244,244 +280,5 @@ impl EquivocationDetector {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crypto::Hash;
-    use doli_core::BlockHeader;
-    use vdf::{VdfOutput, VdfProof};
-
-    fn create_test_block(slot: u32, producer: &PublicKey, merkle_root: Hash) -> Block {
-        let header = BlockHeader {
-            version: 1,
-            prev_hash: Hash::ZERO,
-            merkle_root,
-            presence_root: Hash::ZERO,
-            genesis_hash: Hash::ZERO,
-            timestamp: 0,
-            slot,
-            producer: *producer,
-            vdf_output: VdfOutput { value: vec![] },
-            vdf_proof: VdfProof::empty(),
-            missed_producers: Vec::new(),
-            data_root: Hash::ZERO,
-            fork_id: Hash::ZERO,
-        };
-        Block::new(header, vec![])
-    }
-
-    #[test]
-    fn test_no_equivocation_same_block() {
-        let mut detector = EquivocationDetector::new();
-        let producer = PublicKey::from_bytes([1u8; 32]);
-
-        let block = create_test_block(10, &producer, Hash::ZERO);
-
-        // First time - no equivocation
-        assert!(detector.check_block(&block).is_none());
-
-        // Same block again - still no equivocation
-        assert!(detector.check_block(&block).is_none());
-    }
-
-    #[test]
-    fn test_no_equivocation_different_slots() {
-        let mut detector = EquivocationDetector::new();
-        let producer = PublicKey::from_bytes([1u8; 32]);
-
-        let block1 = create_test_block(10, &producer, Hash::ZERO);
-        let block2 = create_test_block(11, &producer, crypto::hash::hash(b"diff"));
-
-        // Different slots - no equivocation
-        assert!(detector.check_block(&block1).is_none());
-        assert!(detector.check_block(&block2).is_none());
-    }
-
-    #[test]
-    fn test_no_equivocation_different_producers() {
-        let mut detector = EquivocationDetector::new();
-        let producer1 = PublicKey::from_bytes([1u8; 32]);
-        let producer2 = PublicKey::from_bytes([2u8; 32]);
-
-        let block1 = create_test_block(10, &producer1, Hash::ZERO);
-        let block2 = create_test_block(10, &producer2, crypto::hash::hash(b"diff"));
-
-        // Same slot but different producers - no equivocation
-        assert!(detector.check_block(&block1).is_none());
-        assert!(detector.check_block(&block2).is_none());
-    }
-
-    #[test]
-    fn test_detect_equivocation() {
-        let mut detector = EquivocationDetector::new();
-        let producer = PublicKey::from_bytes([1u8; 32]);
-
-        // Same producer, same slot, different blocks
-        let block1 = create_test_block(10, &producer, Hash::ZERO);
-        let block2 = create_test_block(10, &producer, crypto::hash::hash(b"different"));
-
-        // First block - no equivocation
-        assert!(detector.check_block(&block1).is_none());
-
-        // Second different block for same slot - EQUIVOCATION!
-        let proof = detector.check_block(&block2);
-        assert!(proof.is_some());
-
-        let proof = proof.unwrap();
-        assert_eq!(proof.producer, producer);
-        assert_eq!(proof.slot, 10);
-        assert_eq!(proof.block_header_1.hash(), block1.hash());
-        assert_eq!(proof.block_header_2.hash(), block2.hash());
-
-        // Should also be in pending proofs
-        assert!(detector.has_pending_proofs());
-        let pending = detector.take_pending_proofs();
-        assert_eq!(pending.len(), 1);
-    }
-
-    #[test]
-    fn test_proof_to_slash_transaction() {
-        let producer = PublicKey::from_bytes([1u8; 32]);
-        let reporter = KeyPair::generate();
-
-        // Create test block headers
-        let header1 = BlockHeader {
-            version: 1,
-            prev_hash: Hash::ZERO,
-            merkle_root: Hash::ZERO,
-            presence_root: Hash::ZERO,
-            genesis_hash: Hash::ZERO,
-            timestamp: 0,
-            slot: 42,
-            producer,
-            vdf_output: VdfOutput { value: vec![] },
-            vdf_proof: VdfProof::empty(),
-            missed_producers: Vec::new(),
-            data_root: Hash::ZERO,
-            fork_id: Hash::ZERO,
-        };
-        let header2 = BlockHeader {
-            version: 1,
-            prev_hash: Hash::ZERO,
-            merkle_root: crypto::hash::hash(b"different"),
-            presence_root: Hash::ZERO,
-            genesis_hash: Hash::ZERO,
-            timestamp: 0,
-            slot: 42,
-            producer,
-            vdf_output: VdfOutput { value: vec![] },
-            vdf_proof: VdfProof::empty(),
-            missed_producers: Vec::new(),
-            data_root: Hash::ZERO,
-            fork_id: Hash::ZERO,
-        };
-
-        let proof = EquivocationProof {
-            producer,
-            block_header_1: header1.clone(),
-            block_header_2: header2.clone(),
-            slot: 42,
-        };
-
-        let slash_tx = proof.to_slash_transaction(&reporter);
-
-        assert!(slash_tx.is_slash_producer());
-        let slash_data = slash_tx.slash_data().unwrap();
-        assert_eq!(slash_data.producer_pubkey, producer);
-
-        let SlashingEvidence::DoubleProduction {
-            block_header_1,
-            block_header_2,
-        } = slash_data.evidence
-        else {
-            panic!("expected DoubleProduction evidence");
-        };
-        assert_eq!(block_header_1.slot, 42);
-        assert_eq!(block_header_2.slot, 42);
-        assert_eq!(block_header_1.hash(), header1.hash());
-        assert_eq!(block_header_2.hash(), header2.hash());
-    }
-
-    #[test]
-    fn test_eviction() {
-        let mut detector = EquivocationDetector::new();
-        detector.max_tracked = 10;
-
-        // Add more than max entries
-        for i in 0..20u32 {
-            let producer = PublicKey::from_bytes([i as u8; 32]);
-            let block = create_test_block(i, &producer, Hash::ZERO);
-            detector.check_block(&block);
-        }
-
-        // Should only have max_tracked entries
-        assert!(detector.tracked_count() <= 10);
-    }
-
-    #[test]
-    fn test_sliding_window_cleanup() {
-        let mut detector = EquivocationDetector::new();
-        let producer = PublicKey::from_bytes([1u8; 32]);
-
-        // Add entries at slots 100-109
-        for slot in 100..110u32 {
-            let block = create_test_block(slot, &producer, crypto::hash::hash(&slot.to_le_bytes()));
-            detector.check_block(&block);
-        }
-        assert_eq!(detector.tracked_count(), 10);
-
-        // Cleanup slots before 105
-        detector.cleanup_before_slot(105);
-        assert_eq!(detector.tracked_count(), 5);
-
-        // Entries at 100-104 should be gone
-        assert!(!detector.seen_blocks.contains_key(&(producer, 100)));
-        assert!(!detector.seen_blocks.contains_key(&(producer, 104)));
-
-        // Entries at 105-109 should still exist
-        assert!(detector.seen_blocks.contains_key(&(producer, 105)));
-        assert!(detector.seen_blocks.contains_key(&(producer, 109)));
-    }
-
-    #[test]
-    fn test_old_slots_evicted_on_check() {
-        let mut detector = EquivocationDetector::new();
-        let producer = PublicKey::from_bytes([1u8; 32]);
-
-        // Add entry at slot 10
-        let block = create_test_block(10, &producer, Hash::ZERO);
-        detector.check_block(&block);
-        assert_eq!(detector.tracked_count(), 1);
-
-        // Check a block at slot 10 + SLIDING_WINDOW_SLOTS + 1 → triggers cleanup
-        let far_slot = 10 + SLIDING_WINDOW_SLOTS + 1;
-        let producer2 = PublicKey::from_bytes([2u8; 32]);
-        let block2 = create_test_block(far_slot, &producer2, Hash::ZERO);
-        detector.check_block(&block2);
-
-        // Old slot 10 entry should be evicted
-        assert!(!detector.seen_blocks.contains_key(&(producer, 10)));
-        // New entry should exist
-        assert!(detector.seen_blocks.contains_key(&(producer2, far_slot)));
-    }
-
-    #[test]
-    fn test_cleanup_idempotent() {
-        let mut detector = EquivocationDetector::new();
-        let producer = PublicKey::from_bytes([1u8; 32]);
-
-        for slot in 0..5u32 {
-            let block = create_test_block(slot, &producer, crypto::hash::hash(&slot.to_le_bytes()));
-            detector.check_block(&block);
-        }
-
-        // Cleanup twice with same min_slot — second call is no-op
-        detector.cleanup_before_slot(3);
-        let count_after_first = detector.tracked_count();
-        detector.cleanup_before_slot(3);
-        assert_eq!(detector.tracked_count(), count_after_first);
-
-        // Cleanup with lower min_slot — also no-op
-        detector.cleanup_before_slot(1);
-        assert_eq!(detector.tracked_count(), count_after_first);
-    }
-}
+#[path = "equivocation_tests.rs"]
+mod tests;

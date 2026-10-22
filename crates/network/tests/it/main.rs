@@ -46,6 +46,7 @@ mod inc_i_237_m9_spec_sync;
 mod inc_i_237_tx_relay;
 mod inc_i_248_sync_wire;
 mod inc_i_255_m2_detector;
+mod inc_i_255_m5_detector;
 mod m3_protocol_session;
 mod m4_sink_seam;
 mod m4_wire_unchanged;

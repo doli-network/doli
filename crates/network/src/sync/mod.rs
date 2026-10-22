@@ -25,7 +25,7 @@ mod tests_inc_i236_run_a_resume;
 
 pub use bodies::BodyDownloader;
 pub use chunk_sink::{StagedUtxoMarker, UtxoChunkSink};
-pub use equivocation::{EquivocationDetector, EquivocationProof};
+pub use equivocation::{EquivocationDetector, EquivocationProof, MAX_EVIDENCE_CHECKS_AFTER_PROOF};
 pub use fork_recovery::CompletedRecovery;
 pub use headers::HeaderDownloader;
 pub use manager::{

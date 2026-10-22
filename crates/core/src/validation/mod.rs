@@ -69,7 +69,9 @@ pub use producer::{
     bootstrap_fallback_order, bootstrap_schedule_with_liveness, validate_producer_eligibility,
 };
 pub use rotate_bls::rotate_stateless;
-pub use slash_evidence::slash_fee_exempt;
+pub use slash_evidence::{
+    double_production_evidence_fits, evidence_header_admissible, slash_fee_exempt,
+};
 pub use slash_state::{
     bond_withdrawal_producer, slashes_first, validate_slash_target, SlashBlockBudget,
     SlashTargetState,

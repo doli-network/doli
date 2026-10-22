@@ -109,6 +109,10 @@ fn salted(
         data_root: Hash::ZERO,
         fork_id: Hash::ZERO,
     };
+    // A valid VDF: the INC-I-255 detector admits only evidence-admissible headers.
+    let iters = Network::Devnet.heartbeat_vdf_iterations();
+    header.vdf_output.value =
+        doli_core::tpop::heartbeat::hash_chain_vdf(&header.vdf_input(), iters).to_vec();
     sign(&mut header, producer, sig);
     Block::new(header, vec![coinbase])
 }

@@ -467,9 +467,11 @@ At and above the effective height, apply burns the bonds in the slash block itse
 
 #### 3.10.6 Detection and submission
 
-- The detector (`crates/network/src/sync/equivocation.rs`) keeps the first header per (producer, slot). It returns one proof per (producer, slot) and holds at most 64 pending proofs.
+- The detector (`crates/network/src/sync/equivocation.rs`, `check_block_with`) stores and pairs only headers that its admission predicate accepts (`detector_admits`, `bins/node/src/node/header_auth.rs`). At and above the gate (judged at `best_height + 1`) the predicate is the per-header evidence rule `evidence_header_admissible`: the genesis hash of the mempool's params, then the producer signature, then the VDF, as §3.10.2 applies them. Below the gate it accepts every header.
+- A pair of admitted headers is a proof only if its canonical SlashData fits 64 KiB (`double_production_evidence_fits`). For each (producer, slot) the detector keeps the smaller-encoded admitted header, so an oversize decoy cannot block a pair that fits. It holds at most one pending proof per (producer, slot) and at most 64 in total.
+- The detector has no "reported" latch. A re-delivered stored header costs no check. Before the first proof for a (producer, slot), each distinct header costs at most one evidence check (one VDF verification). After it, at most `MAX_EVIDENCE_CHECKS_AFTER_PROOF` (4) more headers for that (producer, slot) are checked. There is no count cap before a proof, because the accused could spend such a cap with decoys before the real pair arrives.
 - The handler (`bins/node/src/node/slash_submit.rs`) judges the gate at `best_height + 1`. It builds the canonical slash and submits it through normal mempool admission. It relays the transaction only after admission.
-- The handler submits nothing when the accused already has a resident slash or is in the reported set. The reported set holds at most 1,024 accused keys and is not persisted.
+- The handler submits nothing when the accused already has a resident slash or is in the reported set. The reported set is the only "reported" mark: the handler adds the accused only after local mempool admission, so repeat proofs for one accused add no second slash. It holds at most 1,024 accused keys and is not persisted.
 - Below the gate the handler only logs.
 
 ### 3.11 Epoch Reward Transaction

@@ -324,6 +324,8 @@ At and above the effective height, validators verify:
 
 **Reporter field**: `SlashData.reporter_signature` must be the all-zero signature at and above the gate. It is outside consensus: no node verifies or records a reporter, and no reporter gets a reward. A third party therefore cannot make a second transaction id for the same evidence.
 
+**Detector admission**: at and above the gate the detector stores and pairs only headers that pass the per-header evidence checks (rules 4 and 5 and the VDF, `evidence_header_admissible`), and it makes a proof only from a pair whose canonical SlashData fits 64 KiB. It keeps the smaller-encoded header per (producer, slot). Thus a decoy header from the accused (foreign genesis, bad VDF, or oversize) cannot block the valid pair. The detector has no "reported" latch; the handler's reported set, marked only after local mempool admission, is the only one. Cost: before a proof, at most one VDF verification per distinct header; after it, at most 4 more per (producer, slot). There is no count cap before a proof, because the accused could spend it with decoys. Full rules: `specs/protocol.md` §3.10.6.
+
 **Flood bounds**: at most `MAX_SLASH_TXS_PER_BLOCK` (8) slashes per block and one per accused. The mempool keeps one resident slash per accused. A slash that fails these rules is refused where a node first sees it, and that node does not relay it.
 
 **Why 100% Burn?**
@@ -544,8 +546,8 @@ The equivocation detector tracks block production to detect double-signing (the 
 - Evidence is cryptographically verifiable by any node
 
 **Detection Flow**:
-1. Block received → check if `(producer, slot)` exists in tracker
-2. If exists with different hash → **EQUIVOCATION DETECTED** (once per `(producer, slot)`)
+1. Block received → at and above the gate, drop the header from the detector unless it passes the per-header evidence checks (§4.2 "Detector admission")
+2. If `(producer, slot)` holds a different admitted header and the pair fits 64 KiB → **EQUIVOCATION DETECTED**; the smaller header stays stored
 3. Create `EquivocationProof` with both full `BlockHeader`s
 4. Below the effective slashing height (§4.2): log the proof only. No `SlashProducer`
    transaction is created, pooled or broadcast.

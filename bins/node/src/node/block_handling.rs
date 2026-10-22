@@ -173,9 +173,13 @@ impl Node {
         // Equivocation check (even for forks)
         let proof = {
             let mut detector = self.equivocation_detector.write().await;
-            // Earlier proofs were handled through check_block's return.
+            // Earlier proofs were handled through check_block_with's return.
             detector.take_pending_proofs();
-            detector.check_block(&block)
+            let gate = net.effective_slashing_activation_height();
+            let (chain, network) = (self.params.genesis_hash, self.config.network);
+            detector.check_block_with(&block, |h| {
+                super::header_auth::detector_admits(h, best_height + 1, gate, &chain, network)
+            })
         };
         if let Some(proof) = proof {
             self.handle_equivocation(proof).await;

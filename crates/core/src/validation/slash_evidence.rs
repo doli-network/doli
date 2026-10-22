@@ -5,9 +5,10 @@
 //! work over public inputs, so anyone can compute it for any producer.
 
 use bincode::Options;
-use crypto::Signature;
+use crypto::{Hash, PublicKey, Signature};
 
 use crate::block::BlockHeader;
+use crate::network::Network;
 use crate::transaction::{SlashData, SlashingEvidence, Transaction, TxType};
 
 use super::block::verify_block_signature;
@@ -170,26 +171,55 @@ fn validate_double_production(
 
     if signature_rule_active(ctx) {
         for (n, h) in [(1, h1), (2, h2)] {
-            if h.genesis_hash != ctx.params.genesis_hash {
-                return Err(ValidationError::InvalidSlash(format!(
-                    "evidence header {n} is from a different chain (genesis mismatch)"
-                )));
-            }
-            verify_block_signature(h).map_err(|e| {
-                ValidationError::InvalidSlash(format!(
-                    "evidence header {n} lacks a valid producer signature: {e}"
-                ))
-            })?;
+            check_header_origin(n, h, &ctx.params.genesis_hash)?;
         }
     }
 
     if verify_vdf {
-        validate_vdf(h1, ctx.network).map_err(|_| {
-            invalid("invalid VDF proof in first block header - evidence may be fabricated")
-        })?;
-        validate_vdf(h2, ctx.network).map_err(|_| {
-            invalid("invalid VDF proof in second block header - evidence may be fabricated")
-        })?;
+        check_header_vdf(h1, ctx.network, VDF_FIRST)?;
+        check_header_vdf(h2, ctx.network, VDF_SECOND)?;
     }
     Ok(())
+}
+
+const VDF_FIRST: &str = "invalid VDF proof in first block header - evidence may be fabricated";
+const VDF_SECOND: &str = "invalid VDF proof in second block header - evidence may be fabricated";
+
+fn check_header_origin(n: u8, h: &BlockHeader, genesis_hash: &Hash) -> Result<(), ValidationError> {
+    if h.genesis_hash != *genesis_hash {
+        return Err(ValidationError::InvalidSlash(format!(
+            "evidence header {n} is from a different chain (genesis mismatch)"
+        )));
+    }
+    verify_block_signature(h).map_err(|e| {
+        ValidationError::InvalidSlash(format!(
+            "evidence header {n} lacks a valid producer signature: {e}"
+        ))
+    })
+}
+
+fn check_header_vdf(h: &BlockHeader, network: Network, msg: &str) -> Result<(), ValidationError> {
+    validate_vdf(h, network).map_err(|_| invalid(msg))
+}
+
+/// The per-header DoubleProduction evidence checks (genesis, producer
+/// signature, VDF), in the order `validate_double_production` applies them.
+pub fn evidence_header_admissible(
+    header: &BlockHeader,
+    genesis_hash: &Hash,
+    network: Network,
+) -> Result<(), ValidationError> {
+    check_header_origin(1, header, genesis_hash)?;
+    check_header_vdf(header, network, VDF_FIRST)
+}
+
+/// `true` iff the canonical SlashData for this pair encodes within
+/// `MAX_SLASH_DATA_BYTES`.
+pub fn double_production_evidence_fits(
+    producer: &PublicKey,
+    h1: &BlockHeader,
+    h2: &BlockHeader,
+) -> bool {
+    let data = SlashData::double_production(*producer, h1.clone(), h2.clone());
+    bincode::serialized_size(&data).is_ok_and(|n| n <= MAX_SLASH_DATA_BYTES)
 }

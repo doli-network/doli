@@ -13,6 +13,19 @@ pub(super) fn gossip_header_authenticated(
         || doli_core::validation::verify_block_signature(header).is_ok()
 }
 
+/// Detector admission: every header below the slash gate; at or above it,
+/// only a header that passes the consensus per-header evidence checks.
+pub(super) fn detector_admits(
+    header: &BlockHeader,
+    prospective_height: u64,
+    slashing_gate: u64,
+    genesis_hash: &Hash,
+    network: Network,
+) -> bool {
+    prospective_height < slashing_gate
+        || doli_core::validation::evidence_header_admissible(header, genesis_hash, network).is_ok()
+}
+
 /// A fork block whose producer signature failed at its exact height.
 #[derive(Debug)]
 pub(crate) struct ForkSignatureRejected {
