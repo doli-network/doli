@@ -174,6 +174,12 @@ impl ProducerSet {
                 pubkey
             ))
         })?;
+        if !info.is_active() {
+            return Err(StorageError::AlreadyExists(format!(
+                "[STOR041] producer not slashable in status {:?} (pubkey={})",
+                info.status, pubkey
+            )));
+        }
 
         let slashed_amount = info.bond_amount;
         tracing::info!(

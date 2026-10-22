@@ -171,7 +171,12 @@ impl Node {
             return Ok(());
         }
         // Equivocation check (even for forks)
-        let proof = self.equivocation_detector.write().await.check_block(&block);
+        let proof = {
+            let mut detector = self.equivocation_detector.write().await;
+            // Earlier proofs were handled through check_block's return.
+            detector.take_pending_proofs();
+            detector.check_block(&block)
+        };
         if let Some(proof) = proof {
             self.handle_equivocation(proof).await;
         }
@@ -910,6 +915,7 @@ impl Node {
                                 }
                             }
                             utxo.add_transaction(tx, height, is_reward_tx, block.header.slot)?;
+                            self.slash_burn_in_utxo_set(tx, height, &mut utxo)?;
                         }
                         if genesis_blocks > 0 && height == genesis_blocks + 1 {
                             Self::consume_genesis_bond_utxos(

@@ -152,6 +152,8 @@ impl Node {
             }
         }
 
+        self.slash_burn_in_batch(tx, height, batch, undo_spent_utxos, undo_created_utxos)?;
+
         // Reject outputs with duplicate unique IDs (reads via batch overlay)
         for output in &tx.outputs {
             match output.output_type {

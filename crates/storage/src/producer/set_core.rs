@@ -232,6 +232,14 @@ impl ProducerSet {
             .collect()
     }
 
+    /// `true` when `pubkey` is Slashed or has a queued Slash.
+    pub fn is_slashed_or_slash_queued(&self, pubkey: &PublicKey) -> bool {
+        self.get_by_pubkey(pubkey).is_some_and(|p| p.is_slashed())
+            || self.pending_updates.iter().any(
+                |u| matches!(u, PendingProducerUpdate::Slash { pubkey: pk, .. } if pk == pubkey),
+            )
+    }
+
     /// INC-I-080: total bond count over in-flight queued `AddBond` updates
     /// for `pubkey`.
     ///

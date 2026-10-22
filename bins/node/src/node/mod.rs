@@ -66,6 +66,7 @@ pub use rollback::RollbackOutcome;
 mod rollback_authority;
 pub use rollback_authority::RollbackAuthority;
 mod rpc_broadcast;
+mod slash_reported;
 mod slash_submit;
 mod startup;
 mod state_root_serve;
@@ -170,6 +171,7 @@ pub struct Node {
     pub first_peer_connected: Option<Instant>,
     /// Equivocation detector for slashing double-signers
     pub equivocation_detector: Arc<RwLock<EquivocationDetector>>,
+    pub(crate) slash_reported: std::sync::Mutex<slash_reported::SlashReported>,
     /// VDF calibrator for dynamic iteration adjustment
     pub vdf_calibrator: Arc<RwLock<VdfCalibrator>>,
     /// Cache of blocks received during forks (for reorg execution)

@@ -2405,8 +2405,8 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
 - `EquivocationDetector` — tracks (producer, slot) → first header; LRU eviction; holds pending_proofs and sliding window state
 - `EquivocationProof` — double-signing evidence: `producer (PublicKey)`, `block_header_1`, `block_header_2`, `slot (u32)`
 - `EquivocationProof::to_slash_transaction(reporter_keypair)` — creates SlashProducer tx from proof
-- `EquivocationDetector::check_block(block)` — main entry point; returns Option<EquivocationProof>
-- `EquivocationDetector::take_pending_proofs()` / `has_pending_proofs()` — proof drain
+- `EquivocationDetector::check_block(block)` — main entry point; returns Option<EquivocationProof> for the first conflicting header per (producer, slot) only; pending proofs bounded at 64
+- `EquivocationDetector::take_pending_proofs()` / `has_pending_proofs()` — proof drain (gossip block intake drains before each check)
 - `EquivocationDetector::cleanup_before_slot(min_slot)` / `tracked_count()` / `clear()` — maintenance
 - `MAX_TRACKED_ENTRIES` = 10,000 — LRU cap on seen (producer, slot) pairs
 - `SLIDING_WINDOW_SLOTS` = 360 — slots retained in the sliding window (1 epoch)

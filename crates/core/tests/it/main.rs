@@ -36,5 +36,6 @@ mod inc_i_236_slash_evidence_authn;
 mod inc_i_248_quorum;
 mod inc_i_248_rel_m1_quorum;
 mod inc_i_255_gate;
+mod inc_i_255_m2_block_rules;
 mod inc_i_255_slash_evidence;
 mod inc_i_255_slash_fee;

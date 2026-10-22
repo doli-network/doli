@@ -2,6 +2,7 @@ use super::*;
 use crate::node::attestation::{commit, width};
 
 mod gossip_txs;
+mod slash_withdrawal;
 mod withdrawal_economics;
 
 impl Node {

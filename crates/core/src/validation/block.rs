@@ -156,9 +156,7 @@ pub fn validate_block_with_mode(
         verify_block_signature(&block.header)?;
     }
 
-    for tx in &block.transactions {
-        super::slash_state::validate_slash_target(tx, ctx)?;
-    }
+    super::slash_state::validate_block_slashes(&block.transactions, ctx)?;
 
     match mode {
         ValidationMode::Full => {

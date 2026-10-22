@@ -11,6 +11,7 @@ impl Node {
         height: u64,
         mode: ValidationMode,
     ) -> Result<()> {
+        self.check_slashed_withdrawals(block, height).await?;
         // Pre-mutation, all modes. Allowance mirrors apply at enqueue time:
         //   bond_count + pending AddBonds + AddBonds earlier in THIS block
         //   - withdrawal_pending_count - bonds charged by Exits and

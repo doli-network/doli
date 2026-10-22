@@ -344,6 +344,12 @@ impl Mempool {
             return Ok(());
         };
         let params = self.network.params();
+        crate::slash_admission::withdrawal_refusal(
+            &wd.producer_pubkey,
+            current_height.saturating_add(1),
+            params.effective_slashing_activation_height(),
+            &self.producer_holdings,
+        )?;
         let holdings_open = current_height >= params.withdrawal_holdings_gate_activation_height;
         // INV-VEST-011: the watermark, never the call slot. A slot that went
         // backwards must not turn an in-flight honest withdrawal into a
@@ -564,6 +570,11 @@ impl Mempool {
             .map_err(MempoolError::InvalidTransaction)?;
         let slash_ctx = crate::slash_admission::admission_ctx(&tx, &ctx, &self.producer_holdings)?;
         validate_transaction(&tx, &ctx)?;
+        crate::slash_admission::resident_refusal(
+            &tx,
+            slash_ctx.as_ref(),
+            self.entries.values().map(|e| &e.tx),
+        )?;
 
         // Validate input spending conditions: pubkey + signature for Normal/Bond,
         // covenant evaluation for conditioned outputs. Reject early to prevent
@@ -1488,6 +1499,12 @@ impl Mempool {
         }
 
         to_remove.extend(self.registrations_that_became_duplicates(current_height));
+        to_remove.extend(crate::slash_admission::stale_slashes(
+            self.entries.iter().map(|(h, e)| (h, &e.tx)),
+            current_height.saturating_add(1),
+            self.network.params().effective_slashing_activation_height(),
+            &self.producer_holdings,
+        ));
 
         for hash in to_remove {
             info!("Removing invalidated transaction {}", hash);

@@ -5,6 +5,7 @@ mod governance;
 mod helpers;
 mod oracle;
 mod post_commit;
+mod slash_burn;
 mod state_update;
 mod tx_processing;
 

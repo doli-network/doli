@@ -272,10 +272,15 @@ async fn inc_i_255_handler_skips_when_slash_already_resident() {
         "the handler must not add a second slash for a resident accused"
     );
     assert_eq!(resident_slashes(&w.node, &pk).await, vec![first.hash()]);
+    w.node
+        .mempool
+        .write()
+        .await
+        .remove_transaction(&first.hash());
     let r = admit(&w.node, &second).await;
     assert!(
         r.is_ok(),
-        "NON-VACUITY: admission accepts the withheld tx, so residency withheld it; got {r:?}"
+        "NON-VACUITY: once the first leaves, admission accepts the withheld tx; got {r:?}"
     );
 }
 

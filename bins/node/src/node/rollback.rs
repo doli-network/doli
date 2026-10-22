@@ -309,6 +309,7 @@ impl Node {
                             }
                         }
                         utxo.add_transaction(tx, height, is_reward_tx, block.header.slot)?;
+                        self.slash_burn_in_utxo_set(tx, height, &mut utxo)?;
                     }
                     if genesis_blocks > 0 && height == genesis_blocks + 1 {
                         Self::consume_genesis_bond_utxos(

@@ -10,7 +10,7 @@
 use crypto::{signature, KeyPair, PublicKey};
 use doli_core::transaction::{SlashData, SlashingEvidence};
 use doli_core::{Block, BlockHeader, Transaction};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use tracing::warn;
 
 /// Maximum number of entries to track for equivocation detection.
@@ -20,6 +20,9 @@ const MAX_TRACKED_ENTRIES: usize = 10_000;
 /// Number of slots to retain in the sliding window (1 epoch).
 /// Entries older than this are cleaned up to bound memory.
 const SLIDING_WINDOW_SLOTS: u32 = 360;
+
+/// Most proofs held until taken; further offences are still returned.
+const MAX_PENDING_EQUIVOCATION_PROOFS: usize = 64;
 
 /// Evidence of double production that can be used to create a slash transaction
 ///
@@ -92,6 +95,9 @@ pub struct EquivocationDetector {
     /// Detected equivocation proofs ready to be reported
     pending_proofs: Vec<EquivocationProof>,
 
+    /// Tracked (producer, slot) pairs whose equivocation was already returned
+    reported: HashSet<(PublicKey, u32)>,
+
     /// Oldest slot currently tracked (for sliding window cleanup)
     oldest_tracked_slot: u32,
 }
@@ -110,6 +116,7 @@ impl EquivocationDetector {
             lru_order: VecDeque::new(),
             max_tracked: MAX_TRACKED_ENTRIES,
             pending_proofs: Vec::new(),
+            reported: HashSet::new(),
             oldest_tracked_slot: 0,
         }
     }
@@ -118,7 +125,8 @@ impl EquivocationDetector {
     ///
     /// Returns Some(EquivocationProof) if this block represents double production
     /// by its producer (i.e., we've already seen a different block from the same
-    /// producer for the same slot).
+    /// producer for the same slot). Only the first conflict per (producer, slot)
+    /// is returned and queued.
     ///
     /// The proof includes full block headers with VDF proofs for cryptographic
     /// verification that the producer actually created both blocks.
@@ -135,7 +143,9 @@ impl EquivocationDetector {
         // Check if we've already seen a block for this (producer, slot)
         if let Some(existing_header) = self.seen_blocks.get(&key) {
             if existing_header.hash() != block_hash {
-                // EQUIVOCATION DETECTED!
+                if !self.reported.insert(key) {
+                    return None;
+                }
                 let proof = EquivocationProof {
                     producer,
                     block_header_1: existing_header.clone(),
@@ -151,8 +161,9 @@ impl EquivocationDetector {
                     block_hash
                 );
 
-                // Store for later retrieval
-                self.pending_proofs.push(proof.clone());
+                if self.pending_proofs.len() < MAX_PENDING_EQUIVOCATION_PROOFS {
+                    self.pending_proofs.push(proof.clone());
+                }
 
                 return Some(proof);
             }
@@ -171,6 +182,7 @@ impl EquivocationDetector {
         while self.seen_blocks.len() >= self.max_tracked {
             if let Some(old_key) = self.lru_order.pop_front() {
                 self.seen_blocks.remove(&old_key);
+                self.reported.remove(&old_key);
             } else {
                 break;
             }
@@ -203,6 +215,7 @@ impl EquivocationDetector {
         self.seen_blocks.clear();
         self.lru_order.clear();
         self.pending_proofs.clear();
+        self.reported.clear();
         self.oldest_tracked_slot = 0;
     }
 
@@ -220,6 +233,7 @@ impl EquivocationDetector {
             if front.1 < min_slot {
                 let old_key = self.lru_order.pop_front().unwrap();
                 self.seen_blocks.remove(&old_key);
+                self.reported.remove(&old_key);
             } else {
                 break;
             }

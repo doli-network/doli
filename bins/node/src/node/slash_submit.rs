@@ -10,8 +10,9 @@ use super::Node;
 
 impl Node {
     /// At/above the slash gate judged at best+1, admit and broadcast one
-    /// canonical slash for `proof`. `None` below the gate, when a slash for the
-    /// accused is already resident, or when admission refuses it.
+    /// canonical slash for `proof`. `None` below the gate, when the accused was
+    /// already reported or has a resident slash, or when admission refuses it.
+    /// The accused is marked reported only once its slash is admitted.
     pub(super) async fn submit_equivocation_slash(
         &self,
         proof: &EquivocationProof,
@@ -26,6 +27,10 @@ impl Node {
             return None;
         }
         let accused = proof.producer;
+        if self.slash_reported.lock().unwrap().contains(&accused) {
+            debug!("slash for {} already reported; not resubmitted", accused);
+            return None;
+        }
         let resident = self.mempool.read().await.iter().any(|(_, e)| {
             e.tx.slash_data()
                 .is_some_and(|d| d.producer_pubkey == accused)
@@ -47,6 +52,7 @@ impl Node {
             debug!("slash {} for {} not admitted", hash, accused);
             return None;
         }
+        self.slash_reported.lock().unwrap().mark(accused);
         match permit {
             Some(send) => send(tx),
             None => debug!("slash {} admitted; no broadcast slot", hash),

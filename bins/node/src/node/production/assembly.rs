@@ -280,6 +280,7 @@ impl Node {
             let total_mempool = mempool_txs.len();
             let mut included_count = 0usize;
             let mut included_txs: Vec<&Transaction> = Vec::new();
+            let mut slash_budget = validation::SlashBlockBudget::default();
             for tx in &mempool_txs {
                 if Instant::now() > deadline {
                     warn!(
@@ -362,6 +363,13 @@ impl Node {
                     );
                     continue;
                 }
+                if !slash_budget.fits(tx, &utxo_ctx) {
+                    debug!(
+                        "Skipping slash {} — block slash cap or accused taken",
+                        tx.hash()
+                    );
+                    continue;
+                }
                 // INC-I-180 M2 / S1 (INV-PROD-003): last skip gate, so the
                 // in-block accounting below counts only what was included.
                 if let Err(reason) = wd_parity.allow(tx, &utxo) {
@@ -375,6 +383,7 @@ impl Node {
                     continue;
                 }
                 wd_parity.accept(tx);
+                slash_budget.accept(tx, &utxo_ctx);
                 cumulative_user_bytes += tx_size;
                 included_count += 1;
                 included_txs.push(tx);

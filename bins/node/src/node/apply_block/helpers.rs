@@ -24,6 +24,7 @@ pub(super) fn block_mutates_producer_set(block: &Block) -> bool {
                 | TxType::DelegateBond
                 | TxType::RevokeDelegation
                 | TxType::RotateBlsKey
+                | TxType::SlashProducer
         )
     })
 }
@@ -253,11 +254,11 @@ mod rotation_tests {
             | TxType::ClaimWithdrawal
             | TxType::DelegateBond
             | TxType::RevokeDelegation
-            | TxType::RotateBlsKey => true,
+            | TxType::RotateBlsKey
+            | TxType::SlashProducer => true,
             TxType::Transfer
             | TxType::ClaimReward
             | TxType::ClaimBond
-            | TxType::SlashProducer
             | TxType::Coinbase
             | TxType::EpochReward
             | TxType::RemoveMaintainer
