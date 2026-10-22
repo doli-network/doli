@@ -337,7 +337,7 @@ At and above the effective height, validators verify:
 - Removes gaming opportunities from slashing mechanism
 - Deflationary: at and above the effective height, a mined slash reduces total supply by exactly the burned amount. Below it nothing is burned.
 
-**Exclusion point**: apply burns the bonds in the slash block. The producer-set change (status Slashed, delegations removed) applies at the next epoch boundary, or at the next block in epoch 0. From the slash block on, a RequestWithdrawal by the accused is refused. After the flush, the producer has no attester weight. A rollback or reorg of the slash block restores the bonds and the producer set.
+**Exclusion point**: apply burns the bonds in the slash block. The producer-set change (status Slashed, delegations removed) applies at the next epoch boundary, or at the next block in epoch 0. From the slash block on, a RequestWithdrawal by the accused is refused. In the slash block, a block that holds the slash cannot also hold a RequestWithdrawal that names the accused, in either order. The builder keeps the slash and drops the withdrawal. The mempool evicts or refuses the withdrawal. A RequestWithdrawal mined in an earlier block than the slash is not reversed: the burn takes only the bonds that are still live. After the flush, the producer has no attester weight. A rollback or reorg of the slash block restores the bonds and the producer set.
 
 #### 4.2.1 Delegator Slashing — Tezos LPoS Equivalence (INC-I-078)
 

@@ -337,18 +337,16 @@ impl Mempool {
         vesting_lane: bool,
         count_residents: bool,
     ) -> Result<(), String> {
-        if tx.tx_type != TxType::RequestWithdrawal {
-            return Ok(());
-        }
-        let Some(wd) = tx.withdrawal_request_data() else {
+        let Some(producer) = doli_core::validation::bond_withdrawal_producer(tx) else {
             return Ok(());
         };
         let params = self.network.params();
         crate::slash_admission::withdrawal_refusal(
-            &wd.producer_pubkey,
+            &producer,
             current_height.saturating_add(1),
             params.effective_slashing_activation_height(),
             &self.producer_holdings,
+            self.entries.values().map(|e| &e.tx),
         )?;
         let holdings_open = current_height >= params.withdrawal_holdings_gate_activation_height;
         // INV-VEST-011: the watermark, never the call slot. A slot that went
@@ -369,13 +367,13 @@ impl Mempool {
             return Ok(());
         }
         // INV-VEST-008: ONE resolution feeds both arms.
-        let owner = withdrawal_holdings::address_of(&wd.producer_pubkey);
+        let owner = withdrawal_holdings::address_of(&producer);
         let resolved = resolve_withdrawal_inputs(tx, utxo_set, &owner);
         if holdings_open {
             let resident = if count_residents {
                 withdrawal_holdings::resident_withdrawn(
                     self.entries.values().map(|e| &e.tx),
-                    &wd.producer_pubkey,
+                    &producer,
                 )
             } else {
                 0
@@ -384,7 +382,7 @@ impl Mempool {
                 tx,
                 utxo_set,
                 &resolved,
-                self.producer_holdings.lookup(&wd.producer_pubkey),
+                self.producer_holdings.lookup(&producer),
                 resident,
                 current_height,
             )?;
@@ -883,6 +881,10 @@ impl Mempool {
         self.by_fee_rate.insert((fee_rate, tx_hash));
         self.total_size += tx_size;
         self.entries.insert(tx_hash, entry);
+        let beside = self.entries.iter().map(|(h, e)| (h, &e.tx));
+        for hash in crate::slash_admission::withdrawals_for_slash(&tx, slash_ctx.as_ref(), beside) {
+            self.remove_transaction(&hash);
+        }
 
         debug!(
             "Added transaction {} to mempool (fee_rate: {})",

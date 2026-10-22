@@ -70,8 +70,25 @@ pub fn validate_slash_target(
     Ok(())
 }
 
+/// The producer whose Bond UTXOs `tx` may spend: the producer a
+/// RequestWithdrawal names. `None` for any other type.
+pub fn bond_withdrawal_producer(tx: &Transaction) -> Option<PublicKey> {
+    tx.withdrawal_request_data().map(|d| d.producer_pubkey)
+}
+
+/// Builder candidate order: at/above the slash rule every slash comes first
+/// (stable); below it the order of `txs` is kept.
+pub fn slashes_first<'a>(txs: &'a [Transaction], ctx: &ValidationContext) -> Vec<&'a Transaction> {
+    let mut order: Vec<&Transaction> = txs.iter().collect();
+    if slash_rule_active(ctx) {
+        order.sort_by_key(|tx| tx.tx_type != TxType::SlashProducer);
+    }
+    order
+}
+
 /// Block-level slash rules: at most `MAX_SLASH_TXS_PER_BLOCK` slashes and one
-/// per accused, counted before any evidence check; then each target's state.
+/// per accused, counted before any evidence check; no RequestWithdrawal naming
+/// an accused; then each target's state.
 pub(super) fn validate_block_slashes(
     txs: &[Transaction],
     ctx: &ValidationContext,
@@ -99,6 +116,15 @@ pub(super) fn validate_block_slashes(
                 ));
             }
         }
+        if txs
+            .iter()
+            .filter_map(bond_withdrawal_producer)
+            .any(|p| accused.contains(&p))
+        {
+            return Err(ValidationError::InvalidSlash(
+                "block holds a slash and a bond withdrawal for one producer".to_string(),
+            ));
+        }
     }
     for tx in txs {
         validate_slash_target(tx, ctx)?;
@@ -114,10 +140,17 @@ pub struct SlashBlockBudget {
 }
 
 impl SlashBlockBudget {
-    /// True when `tx` is not a slash, the slash rule is inactive, or the block
-    /// has room for a slash naming a not-yet-picked accused.
+    /// True when the slash rule is inactive; for a RequestWithdrawal, when it
+    /// names no picked accused; for a slash, when the block has room for a
+    /// not-yet-picked accused; true for any other type.
     pub fn fits(&self, tx: &Transaction, ctx: &ValidationContext) -> bool {
-        if tx.tx_type != TxType::SlashProducer || !slash_rule_active(ctx) {
+        if !slash_rule_active(ctx) {
+            return true;
+        }
+        if let Some(producer) = bond_withdrawal_producer(tx) {
+            return !self.accused.contains(&producer);
+        }
+        if tx.tx_type != TxType::SlashProducer {
             return true;
         }
         let Ok(data) = decode_slash_data(&tx.extra_data, ctx) else {

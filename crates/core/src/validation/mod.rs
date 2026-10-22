@@ -70,7 +70,10 @@ pub use producer::{
 };
 pub use rotate_bls::rotate_stateless;
 pub use slash_evidence::slash_fee_exempt;
-pub use slash_state::{validate_slash_target, SlashBlockBudget, SlashTargetState};
+pub use slash_state::{
+    bond_withdrawal_producer, slashes_first, validate_slash_target, SlashBlockBudget,
+    SlashTargetState,
+};
 pub use transaction::{validate_transaction, validate_transaction_skip_registration_vdf};
 pub use tx_types::{check_addbond_cap, count_bond_outputs};
 pub use types::{

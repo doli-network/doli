@@ -281,7 +281,7 @@ impl Node {
             let mut included_count = 0usize;
             let mut included_txs: Vec<&Transaction> = Vec::new();
             let mut slash_budget = validation::SlashBlockBudget::default();
-            for tx in &mempool_txs {
+            for tx in validation::slashes_first(&mempool_txs, &utxo_ctx) {
                 if Instant::now() > deadline {
                     warn!(
                         "Block building deadline reached: including {}/{} mempool TXs",
@@ -365,7 +365,8 @@ impl Node {
                 }
                 if !slash_budget.fits(tx, &utxo_ctx) {
                     debug!(
-                        "Skipping slash {} — block slash cap or accused taken",
+                        "Skipping {:?} {} — slash cap, accused taken, or bond withdrawal by an accused",
+                        tx.tx_type,
                         tx.hash()
                     );
                     continue;

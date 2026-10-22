@@ -3,7 +3,8 @@
 
 use crypto::{Hash, PublicKey};
 use doli_core::validation::{
-    validate_slash_target, SlashTargetState, ValidationContext, ValidationError,
+    bond_withdrawal_producer, validate_slash_target, SlashTargetState, ValidationContext,
+    ValidationError,
 };
 use doli_core::{Transaction, TxType};
 use storage::{PendingProducerUpdate, ProducerSet};
@@ -63,17 +64,28 @@ pub(crate) fn admission_ctx(
     Ok(Some(mined_at))
 }
 
-/// RequestWithdrawal mirror of the block rule, judged at `mined_at`: refused
-/// when the producer is Slashed or has a queued Slash. Fail open when the live
-/// producer set cannot be read without blocking.
-pub(crate) fn withdrawal_refusal(
+/// RequestWithdrawal mirror of the block rules, judged at `mined_at`: refused
+/// when its producer has a slash in `resident`, is Slashed, or has a queued
+/// Slash. The producer-set arm fails open when the live set is locked.
+pub(crate) fn withdrawal_refusal<'a>(
     producer: &PublicKey,
     mined_at: u64,
     gate: u64,
     sources: &HoldingsSources,
+    resident: impl IntoIterator<Item = &'a Transaction>,
 ) -> Result<(), String> {
     if mined_at < gate {
         return Ok(());
+    }
+    let beside_slash = resident
+        .into_iter()
+        .filter_map(Transaction::slash_data)
+        .any(|d| d.producer_pubkey == *producer);
+    if beside_slash {
+        return Err(format!(
+            "RequestWithdrawal by producer {} with a resident slash",
+            producer
+        ));
     }
     let refused = sources
         .live
@@ -89,6 +101,32 @@ pub(crate) fn withdrawal_refusal(
     Ok(())
 }
 
+/// The accused of slash `tx` when judged at/above the slash gate at
+/// `mined_at` (from `admission_ctx`).
+fn gated_accused(tx: &Transaction, mined_at: Option<&ValidationContext>) -> Option<PublicKey> {
+    let mined_at = mined_at?;
+    if mined_at.current_height < mined_at.inc_i_255_slashing_activation_height {
+        return None;
+    }
+    tx.slash_data().map(|d| d.producer_pubkey)
+}
+
+/// Resident RequestWithdrawals naming the gated accused of slash `tx`.
+pub(crate) fn withdrawals_for_slash<'a>(
+    tx: &Transaction,
+    mined_at: Option<&ValidationContext>,
+    resident: impl IntoIterator<Item = (&'a Hash, &'a Transaction)>,
+) -> Vec<Hash> {
+    let Some(accused) = gated_accused(tx, mined_at) else {
+        return Vec::new();
+    };
+    resident
+        .into_iter()
+        .filter(|(_, r)| bond_withdrawal_producer(r) == Some(accused))
+        .map(|(hash, _)| *hash)
+        .collect()
+}
+
 /// At/above the slash gate judged at `mined_at` (from `admission_ctx`),
 /// refuse a slash whose accused already has one resident.
 pub(crate) fn resident_refusal<'a>(
@@ -96,13 +134,7 @@ pub(crate) fn resident_refusal<'a>(
     mined_at: Option<&ValidationContext>,
     resident: impl IntoIterator<Item = &'a Transaction>,
 ) -> Result<(), ValidationError> {
-    let Some(mined_at) = mined_at else {
-        return Ok(());
-    };
-    if mined_at.current_height < mined_at.inc_i_255_slashing_activation_height {
-        return Ok(());
-    }
-    let Some(accused) = tx.slash_data().map(|d| d.producer_pubkey) else {
+    let Some(accused) = gated_accused(tx, mined_at) else {
         return Ok(());
     };
     let taken = resident
