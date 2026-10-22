@@ -63,14 +63,6 @@ Baseline given by the user: v6.44.2 is stable but unsigned. `git log` archeology
 | M2 | Intake-path coverage + binding + slash evidence | bins/node/src/node/{block_handling,fork_recovery,wedge_escape,snapshot_install,apply_block}, crates/network/src/sync/manager, crates/rpc (backfill), crates/storage/src/archiver.rs, crates/core/src/validation | REQ-AUTH-016, REQ-AUTH-017, REQ-AUTH-018, REQ-AUTH-019, REQ-AUTH-020, REQ-AUTH-021, REQ-AUTH-022, REQ-AUTH-023 | M1 |
 | M3 | Gauntlet scenario + records | scripts/gauntlet*, .omega/memory.db records, docs | REQ-AUTH-024, REQ-AUTH-025 | M2 |
 
-## Constraints (from the brief)
-- Commit locally only, `--author "Antonio Lozada <antonio@omegacortex.ai>"`. No push, no PR, no tag, no release.
-- Never commit `.claude/`, `CLAUDE.md`, `AGENTS.md`, `docs/.workflow/`.
-- No host, node or operator names, local paths or timelines in commits, docs, tests or comments.
-- No `CURRENT_PROTOCOL_VERSION` bump. No `HardForkSchedule` entry. No genesis reset.
-- Stop own processes by PID only. Throwaway keys only. No SSH.
-- Known flakes not caused by this work: INC-I-251 (`inc_i_237_m2_verdict_path::f_13`), INC-I-252 (devnet genesis hash).
-
 ━━━ TRIAGE VERDICT ━━━
 Path: DEEP (resumed incident; diagnosis complete at conf 0.97 in run 567, artifacts restored to docs/.workflow/)
 Confidence: conf(0.95, measured — prior VERDICT + 5 commits that already pass RED→GREEN on the old base)

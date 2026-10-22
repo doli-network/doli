@@ -57,9 +57,7 @@ fn ensure_callsites_hot() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
         let sink = DetectorWarns::default();
-        let _ = tracing::subscriber::set_global_default(
-            tracing_subscriber::registry().with(sink),
-        );
+        let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry().with(sink));
     });
 }
 
