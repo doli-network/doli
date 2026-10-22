@@ -295,25 +295,36 @@ The bond serves multiple security functions:
 
 | Violation | Penalty | Proof Required |
 |-----------|---------|----------------|
-| Double production | 100% bond burned | Two valid BlockHeaders for same slot |
+| Double production | 100% of the accused's Bond UTXOs burned (at and above the slashing gate) | Two validly signed BlockHeaders for the same slot |
 | Invalid block | None (slot lost) | N/A - Block rejected by network |
 | Inactivity | None | N/A - Natural consequence (missed rewards) |
 
 **Important**: Slashing is reserved ONLY for double production (equivocation). This is the only offense that cannot happen by accident - it requires intentionally signing two different blocks for the same slot.
 
+**Activation gate**: `inc_i_255_slashing_activation_height`. Mainnet and testnet: `u64::MAX`. Devnet: 0, with the devnet-only override `DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT`. The rules apply at `NetworkParams::effective_slashing_activation_height()`, the maximum of this gate, the INC-I-236 block-signature gate and the INC-I-181 pending-root gate. Thus slashing can never start before blocks are signed. Below the effective height no SlashProducer can be mined, because the fee floor refuses its fee of 0. Full rules: `specs/protocol.md` §3.10.
+
 **Slashing Evidence Requirements**:
 ```rust
 SlashingEvidence::DoubleProduction {
-    block_header_1: BlockHeader,  // Full header with VDF proof
-    block_header_2: BlockHeader,  // Full header with VDF proof
+    block_header_1: BlockHeader,  // Full header with the producer signature
+    block_header_2: BlockHeader,  // Full header with the producer signature
 }
 ```
 
-Validators verify:
-1. Both headers have the same producer public key
+**Authorship proof**: the block signature, under INV-AUTH-003. A header is authentic only if it carries a valid strict Ed25519 signature by `header.producer` over the domain-separated header hash (`signing_message()`). The VDF does not prove authorship. It only proves sequential work over public inputs, so anyone can compute it for any producer.
+
+At and above the effective height, validators verify:
+1. Both headers have the same producer public key, and it is the accused key
 2. Both headers have the same slot number
 3. Both headers have different hashes
-4. Both headers have valid VDF outputs (proving actual computation)
+4. Each header has a valid producer signature (INV-AUTH-003)
+5. Each header carries the genesis hash of this chain, so evidence from another chain fails
+6. The encoded evidence is at most 64 KiB, is canonical (no trailing bytes) and lists the headers in ascending hash order
+7. The accused is a registered producer, Active or Unbonding, not Slashed, and has no queued Slash
+
+**Reporter field**: `SlashData.reporter_signature` must be the all-zero signature at and above the gate. It is outside consensus: no node verifies or records a reporter, and no reporter gets a reward. A third party therefore cannot make a second transaction id for the same evidence.
+
+**Flood bounds**: at most `MAX_SLASH_TXS_PER_BLOCK` (8) slashes per block and one per accused. The mempool keeps one resident slash per accused. A slash that fails these rules is refused where a node first sees it, and that node does not relay it.
 
 **Why 100% Burn?**
 - Invalid blocks are NOT slashed - the natural penalty (losing the slot and its reward) is sufficient
@@ -324,7 +335,9 @@ Validators verify:
 - Prevents incentivizing false accusations
 - Eliminates collusion between accusers and validators
 - Removes gaming opportunities from slashing mechanism
-- Deflationary: reduces total supply
+- Deflationary: at and above the effective height, a mined slash reduces total supply by exactly the burned amount. Below it nothing is burned.
+
+**Exclusion point**: apply burns the bonds in the slash block. The producer-set change (status Slashed, delegations removed) applies at the next epoch boundary, or at the next block in epoch 0. From the slash block on, a RequestWithdrawal by the accused is refused. After the flush, the producer has no attester weight. A rollback or reorg of the slash block restores the bonds and the producer set.
 
 #### 4.2.1 Delegator Slashing — Tezos LPoS Equivalence (INC-I-078)
 
@@ -336,9 +349,12 @@ consensus-forced UTXO destruction for delegated bonds would be the
 first and only exception to this invariant.
 
 When `slash_producer` runs, `cleanup_all_delegations` (in
-`crates/storage/src/producer/set_lifecycle.rs:165-178`) returns every
+`crates/storage/src/producer/set_lifecycle.rs`) returns every
 delegator's principal to them — they lose only the *weight*
-contribution they had assigned to the slashed producer.
+contribution they had assigned to the slashed producer. The burn
+(`bins/node/src/node/apply_block/slash_burn.rs`) selects Bond UTXOs by
+owner. It burns the bonds the accused owns, also those it delegated to
+another producer. It never burns a delegator's own bonds.
 
 This is functionally equivalent to **Tezos LPoS slashing** ("the
 delegate alone is slashed for the validator's misbehavior" — Tezos
@@ -515,31 +531,34 @@ The equivocation detector tracks block production to detect double-signing (the 
 │  EQUIVOCATION DETECTOR                                          │
 ├─────────────────────────────────────────────────────────────────┤
 │  Storage: HashMap<(PublicKey, Slot), BlockHeader>               │
-│  LRU Cache: MAX_TRACKED_SLOTS = 1000                            │
+│  Cap: MAX_TRACKED_ENTRIES = 10,000, window 360 slots            │
+│  Pending proofs: at most 64; one proof per (producer, slot)     │
 │  Data Stored: Full BlockHeader (not just hash)                  │
-│  Purpose: Enable VDF verification in slashing evidence          │
+│  Purpose: Carry the producer signatures into slashing evidence  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 **Why Full Headers?**
-- Block headers contain VDF output and proof
-- Validators must verify the producer actually computed valid VDFs for both blocks
-- Prevents fabricated evidence attacks (can't invent fake block hashes)
+- Each header carries the producer block signature (INC-I-236)
+- Validators verify both signatures against the accused key, so nobody can forge evidence
 - Evidence is cryptographically verifiable by any node
 
 **Detection Flow**:
 1. Block received → check if `(producer, slot)` exists in tracker
-2. If exists with different hash → **EQUIVOCATION DETECTED**
+2. If exists with different hash → **EQUIVOCATION DETECTED** (once per `(producer, slot)`)
 3. Create `EquivocationProof` with both full `BlockHeader`s
-4. Log the proof. No `SlashProducer` transaction is created, pooled, or broadcast:
-   a SlashProducer tx fails `InsufficientFee` at every height, and its evidence is
-   forgeable because headers are unsigned (INC-I-173 C1, INC-I-237)
+4. Below the effective slashing height (§4.2): log the proof only. No `SlashProducer`
+   transaction is created, pooled or broadcast.
+5. At and above it: the handler (`bins/node/src/node/slash_submit.rs`) builds the one
+   canonical slash and submits it through mempool admission. It relays the slash only
+   after admission, and only when the accused has no resident slash and was not
+   reported before (reported set bounded at 1,024 keys).
 
 **Slashing Evidence Structure**:
 ```rust
 SlashingEvidence::DoubleProduction {
-    block_header_1: BlockHeader,  // Full header with VDF
-    block_header_2: BlockHeader,  // Full header with VDF
+    block_header_1: BlockHeader,  // Full header, signed by the producer
+    block_header_2: BlockHeader,  // Full header, signed by the producer
 }
 ```
 

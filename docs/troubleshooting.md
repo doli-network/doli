@@ -548,6 +548,27 @@ doli balance
 ps aux | grep doli-node
 ```
 
+**Slashing log lines (INC-I-255).** Slashing is active only at and above
+`effective_slashing_activation_height()`. On mainnet and testnet that height is
+`u64::MAX`, so only the two `EQUIVOCATION` lines can appear there.
+
+| Level | Log text | Meaning |
+|-------|----------|---------|
+| WARN | `EQUIVOCATION DETECTED: Producer <hash> created two blocks for slot <slot>: <hash1> and <hash2>` | The detector saw two headers for one (producer, slot). Logged once per pair. |
+| WARN | `EQUIVOCATION: producer <hash> made two headers for slot <slot>: <hash1> and <hash2>` | The handler got the proof. Below the gate it does nothing else. |
+| INFO | `slash <tx> for <producer> admitted` | The handler's slash entered the local mempool. The node broadcasts it when a broadcast slot is free (else DEBUG `slash <tx> admitted; no broadcast slot`). |
+| DEBUG | `slash <tx> for <producer> not admitted` / `slash for <producer> already resident; not resubmitted` / `slash for <producer> already reported; not resubmitted` | The handler did not submit a new slash. |
+| — | `invalid slash: <reason>` | Error text inside a refusal from admission, the builder or block validation. |
+| WARN | `Queued SLASH for producer <hash> at height <h> (deferred to epoch boundary)` | A block with a slash applied. The producer-set change waits for the flush. |
+| WARN | `[SLASH] burned <amount> bond units owned by <owner> at h=<h>` | Apply burned the accused's Bond UTXOs. `<amount>` is the summed bond amount in base units. |
+| INFO | `[PRODUCER] Exit initiated: pk_hash=<hash> reason=slashed` | The flush set the producer to Slashed. |
+| WARN | `Deferred slash failed: <error>` | The flush could not slash the producer, for example because it is already Slashed (`[STOR041] producer not slashable in status ...`). |
+| — | `[ECON_WITHDRAWAL_SLASHED] RequestWithdrawal at height=<h> for slashed or slash-queued producer=<hash>` | Block validation refused a withdrawal by a slashed producer. |
+
+```bash
+grep -E 'EQUIVOCATION|Queued SLASH|\[SLASH\]|reason=slashed|Deferred slash failed|invalid slash|ECON_WITHDRAWAL_SLASHED' <data_dir>/*.log | tail -20
+```
+
 ---
 
 ### 2.5. AddBond Rejected — Cap Exceeded (INC-I-080)

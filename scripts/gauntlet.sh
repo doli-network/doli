@@ -136,6 +136,11 @@
 #     STANDALONE ONLY: this runner SKIPs its tokens. It stands up an ephemeral
 #     mixed HEAD/pre-fix devnet and injects forged and unsigned blocks on gossip;
 #     run scripts/gauntlet-gs026.sh directly.
+#   * GS-027 (working equivocation slashing, INC-I-255) is STANDALONE ONLY:
+#     this runner SKIPs its tokens. It stands up an ephemeral multi-producer
+#     devnet, publishes a second block signed by a scheduled producer for a slot
+#     it already filled, and checks the slash on every node; run
+#     scripts/gauntlet-gs027.sh directly.
 #
 # Assertions key off STRUCTURED telemetry fields (gap=, rollback_depth=,
 # sync_fails=, state=) and distinct-event phrases — NEVER raw keywords that also
@@ -744,6 +749,8 @@ assert(){
       ok=2; why="$t: standalone scenario, run scripts/gauntlet-gs025.sh (not part of gauntlet.sh)" ;;
     gs026-mixed-below-height-equal-tips|gs026-crossing-height-no-fork|gs026-forged-rejected|gs026-unsigned-rejected)
       ok=2; why="$t: standalone scenario, run scripts/gauntlet-gs026.sh (not part of gauntlet.sh)" ;;
+    gs027-one-slash-mined|gs027-producer-slashed-everywhere|gs027-bond-burned-once|gs027-tips-equal|gs027-production-continues|gs027-mempool-slash-bounded|gs027-one-shared-slash-id)
+      ok=2; why="$t: standalone scenario, run scripts/gauntlet-gs027.sh (not part of gauntlet.sh)" ;;
     *)
       why="unknown assertion token '$t'" ;;
   esac

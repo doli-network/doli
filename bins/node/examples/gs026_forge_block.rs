@@ -2,20 +2,27 @@
 //! publish it on the gossip blocks topic. Models the raw gossipsub publisher in
 //! `bins/node/tests/inc_i_237_m5_soak.rs`.
 //!
-//! The forger never holds the named producer's key: `--kind unsigned` leaves
+//! For GS-026 the forger never holds the named producer's key: `--kind unsigned` leaves
 //! `vdf_proof.pi` empty, `--kind forged` signs the header with a throwaway key.
 //! Both are rejected above the signature activation height by a HEAD node and
 //! accepted by a pre-fix node. Every other field (coinbase, VDF, genesis hash)
 //! is built valid so the signature is the only reason a HEAD node rejects it.
 //!
-//! Usage: `gs026_forge_block --kind forged|unsigned --tip-b64 <b64> --height <h>
+//! `--kind sibling` (GS-027) signs with the scheduled producer's OWN key, read
+//! from `--key-file <wallet.json>`: a second block for the slot the producer
+//! already filled, on the same parent, valid in coinbase, VDF, chainspec genesis
+//! and signature, whose hash differs from `--differ-from <hash>`. Extra args:
+//! `--chainspec <path> --key-file <path> [--differ-from <hex>]`; `--slot` is used.
+//!
+//! Usage: `gs026_forge_block --kind forged|unsigned|sibling --tip-b64 <b64> --height <h>
 //! --slot <s> --producer <hex> --genesis-time <t> --slot-duration <d>
 //! --dial <multiaddr>[,<multiaddr>...]`. Prints `INJECTED kind=… hash=… slot=…`.
 
 use std::time::{Duration, Instant};
 
-use crypto::{Hash, KeyPair, PublicKey};
+use crypto::{Hash, KeyPair, PrivateKey, PublicKey};
 use doli_core::block::{Block, BlockBuilder};
+use doli_core::chainspec::ChainSpec;
 use doli_core::consensus::{construct_vdf_input, reward_pool_pubkey_hash, ConsensusParams};
 use doli_core::network::Network;
 use doli_core::tpop::heartbeat::{hash_chain_vdf, heartbeat_vdf_iterations_for_network};
@@ -124,6 +131,80 @@ fn forge(args: &[String]) -> (Block, u32) {
     (Block::new(header, txs), slot)
 }
 
+fn die(code: i32, msg: &str) -> ! {
+    eprintln!("gs026 forge: {msg}");
+    std::process::exit(code);
+}
+
+/// Keypair of the wallet's first address; no key byte is ever printed.
+fn load_wallet_keypair(path: &str) -> KeyPair {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|_| die(2, "key file unreadable"));
+    let wallet: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or_else(|_| die(2, "key file is not wallet JSON"));
+    let hex_key = wallet["addresses"][0]["private_key"]
+        .as_str()
+        .unwrap_or_else(|| die(2, "key file has no first address key"));
+    let key = PrivateKey::from_hex(hex_key).unwrap_or_else(|_| die(2, "key file key is malformed"));
+    KeyPair::from_private_key(key)
+}
+
+/// A second, validly signed block by `--producer` for `--slot` on the tip parent.
+fn forge_sibling(args: &[String]) -> (Block, u32) {
+    use base64::Engine;
+    let tip_bytes = base64::engine::general_purpose::STANDARD
+        .decode(req(args, "--tip-b64").trim())
+        .unwrap_or_else(|_| die(2, "tip base64"));
+    let tip = Block::deserialize(&tip_bytes).unwrap_or_else(|| die(2, "tip block bincode"));
+    let height: u64 = req(args, "--height").parse().expect("height");
+    let slot: u32 = req(args, "--slot").parse().expect("slot");
+    let producer = PublicKey::from_hex(&req(args, "--producer")).expect("producer hex");
+    let differ = arg(args, "--differ-from").and_then(|h| Hash::from_hex(&h));
+    let spec = ChainSpec::load(req(args, "--chainspec")).unwrap_or_else(|_| die(2, "chainspec"));
+
+    let mut params = ConsensusParams::devnet();
+    params.apply_chainspec(&spec);
+    if params.genesis_hash != tip.header.genesis_hash {
+        die(3, "chainspec genesis differs from the tip block genesis");
+    }
+    let keypair = load_wallet_keypair(&req(args, "--key-file"));
+    if *keypair.public_key() != producer {
+        die(2, "key file does not belong to --producer");
+    }
+    if slot <= tip.header.slot {
+        die(3, "--slot must be above the tip slot");
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let slot_start = params.slot_to_timestamp(slot);
+    let iterations = Network::Devnet.heartbeat_vdf_iterations();
+    for timestamp in slot_start..slot_start + params.slot_duration {
+        if timestamp > now || timestamp <= tip.header.timestamp {
+            continue;
+        }
+        let mut builder = BlockBuilder::new(tip.header.hash(), tip.header.slot, producer)
+            .with_params(params.clone())
+            .with_fork_id(tip.header.fork_id);
+        builder.add_coinbase(height, slot, reward_pool_pubkey_hash());
+        let Some((mut header, txs)) = builder.build(timestamp) else {
+            continue;
+        };
+        header.genesis_hash = params.genesis_hash;
+        header.vdf_output = VdfOutput {
+            value: hash_chain_vdf(&header.vdf_input(), iterations).to_vec(),
+        };
+        let msg = header.signing_message();
+        header.vdf_proof.pi =
+            crypto::signature::sign(msg.as_bytes(), keypair.private_key()).to_vec();
+        if header.slot == slot && Some(header.hash()) != differ {
+            return (Block::new(header, txs), slot);
+        }
+    }
+    die(3, "no in-slot timestamp yields a distinct sibling yet");
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -134,7 +215,11 @@ async fn main() {
         .map(|s| s.parse().expect("dial multiaddr"))
         .collect();
 
-    let (block, slot) = forge(&args);
+    let (block, slot) = if kind == "sibling" {
+        forge_sibling(&args)
+    } else {
+        forge(&args)
+    };
     let bytes = block.serialize();
     let hash = block.hash().to_hex();
 

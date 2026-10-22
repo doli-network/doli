@@ -158,7 +158,7 @@ crypto ──► wallet (shared wallet library, NO vdf/doli-core)
 3. Exit (2) - Producer exit
 4. ClaimReward (3) - DEPRECATED (replaced by automatic EpochReward)
 5. ClaimBond (4) - DEPRECATED (replaced by automatic withdrawal)
-6. SlashProducer (5) - Slash equivocator (100% bond burn)
+6. SlashProducer (5) - Slash equivocator (burns 100% of the accused's Bond UTXOs at and above `inc_i_255_slashing_activation_height`; see §8.2)
 7. Coinbase (6) - DEAD CODE (enum variant exists but `new_coinbase()` creates TxType::Transfer)
 8. AddBond (7) - Bond stacking (creates Bond UTXOs with creation_slot in extra_data)
 9. RequestWithdrawal (8) - Instant bond withdrawal with FIFO vesting penalty
@@ -375,13 +375,14 @@ dup_cache entries=<n>|absent                                             (doli_g
 | `holdings.rs` | Producer-holdings channel: live `ProducerSet` handle + published snapshot (INC-I-180) |
 | `addbond_cap.rs` | Shared `MAX_BONDS_PER_PRODUCER` verdict for builder, admission and revalidate (INC-I-203) |
 | `withdrawal_holdings.rs` | Single-tx withdrawal rules against current state (INC-I-180) |
+| `slash_admission.rs` | SlashProducer admission at `best_height + 1`: accused-state rules, one resident slash per accused, eviction of stale slashes, RequestWithdrawal refusal for a slashed producer (INC-I-255) |
 
 **Key behaviors:**
 - **Fee-based prioritization**: Transactions selected by descending fee rate
 - **CPFP support**: Child-Pays-For-Parent via ancestor tracking
 - **Eviction policy**: Removes lowest fee rate transactions without descendants
 - **Dynamic fees**: Minimum fee increases when pool >90% full
-- **System transactions**: SlashProducer is rejected (InsufficientFee) at every height (INC-I-173), and the node no longer generates it (INC-I-237)
+- **SlashProducer**: below `effective_slashing_activation_height()` the fee floor refuses it (`FeeTooLow`) and the node only logs equivocation. At and above it, a slash whose evidence verifies is fee-exempt on the normal lane, and `slash_admission.rs` applies the accused-state and residency rules (§8.2)
 - **14-day expiration**: Old transactions automatically removed
 - **Revalidation**: After chain reorg, invalid transactions are purged. Registrations
   whose producer has since become active or pending are also evicted (INC-I-147) —
@@ -1260,16 +1261,72 @@ and is explicitly NOT in the slashing path.
 
 When `slash_producer` runs for a double-signing producer:
 
-- The offender's self-bond burns and the offender is removed from the
-  active set.
+- The offender's status becomes Slashed and the offender leaves the
+  active set. Its own Bond UTXOs were already burned when the slash
+  block applied (§8.2).
 - `cleanup_all_delegations` (in
-  `crates/storage/src/producer/set_lifecycle.rs:165-178`) returns every
+  `crates/storage/src/producer/set_lifecycle.rs`) returns every
   delegator's principal to them — they lose only the *weight*
   contribution.
 
 Polkadot-NPoS / Cosmos-SDK style proportional burning of delegator
 principal does NOT port to DOLI and is removed from the
 delegation-mitigation menu (`specs/delegation-architecture.md` §7.2.1).
+
+### 8.2. Slash Path (INC-I-255)
+
+The slash rules apply at and above
+`NetworkParams::effective_slashing_activation_height()`: the maximum of
+`inc_i_255_slashing_activation_height`, the INC-I-236 block-signature gate
+and the INC-I-181 pending-root gate. Mainnet and testnet: `u64::MAX` (not
+active). Devnet: 0. Below that height every path keeps its old verdict.
+Full rules: `specs/protocol.md` §3.10.
+
+```
+Two signed headers, same producer + slot
+    │  EquivocationDetector::check_block (network/sync/equivocation.rs)
+    ▼
+handle_equivocation → submit_equivocation_slash (node/slash_submit.rs)
+    │  gate at best+1; canonical SlashData::double_production
+    ▼
+Mempool admission (pool.rs + slash_admission.rs) ──► relay only if admitted
+    │
+    ▼
+Builder (production/assembly.rs): validate_slash_target, SlashBlockBudget
+    │
+    ▼
+Block validation (validation/block.rs → slash_state.rs), before the mode split
+    │
+    ▼
+apply_block: slash_burn.rs (burn + undo) ; tx_processing.rs (queue Slash)
+    │
+    ▼
+Epoch-boundary flush (state_update.rs → slash_producer): status Slashed
+```
+
+| Stage | Code | Behavior |
+|-------|------|----------|
+| Detection | `crates/network/src/sync/equivocation.rs` | One proof per (producer, slot). At most 64 pending proofs. |
+| Submission | `bins/node/src/node/slash_submit.rs`, `slash_reported.rs` | One canonical slash per accused. Skipped when a slash is resident or the accused is already reported (bounded at 1,024, not persisted). Broadcast only after admission. |
+| Evidence | `crates/core/src/validation/slash_evidence.rs` | Shared check for every path. `slash_fee_exempt` is consulted only at the two fee floors (`validation/utxo.rs`, the mempool normal lane). |
+| Mempool | `crates/mempool/src/slash_admission.rs` | Judged at `best_height + 1`. Accused-state rules, one resident slash per accused, revalidation evicts a slash whose accused is Slashed or slash-queued. The state rules fail open only when the live producer set is absent or its lock is busy. |
+| Builder | `bins/node/src/node/production/assembly.rs` | `validate_slash_target` before the UTXO check. `SlashBlockBudget`: at most `MAX_SLASH_TXS_PER_BLOCK` (8) and one per accused. |
+| Block rules | `crates/core/src/validation/slash_state.rs` | Cap and one-per-accused counted before any evidence check, then `validate_slash_target`. Runs before the Full/Light/Replay split. |
+| Burn | `bins/node/src/node/apply_block/slash_burn.rs` | Spends every Bond UTXO the accused owns through the block batch and records each in `undo_spent_utxos`. No output, no pool credit, no reporter reward. |
+| Queue | `bins/node/src/node/apply_block/tx_processing.rs` | Queues `PendingProducerUpdate::Slash` (deferred). |
+| Exclusion | `bins/node/src/node/apply_block/state_update.rs`, `crates/storage/src/producer/set_lifecycle.rs` | The flush at the next epoch boundary (epoch 0: the same block) calls `slash_producer`. It refuses a status other than Active or Unbonding. |
+| Attester weight | `bins/node/src/node/attestation/ingress.rs` | A Slashed member gives no weight. |
+| Withdrawal | `bins/node/src/node/validation_checks/slash_withdrawal.rs` | Refuses a RequestWithdrawal by a Slashed or slash-queued producer. |
+
+**Rollback and reorg parity.** `block_mutates_producer_set`
+(`apply_block/helpers.rs`) lists SlashProducer. The slash block therefore
+stores a ProducerSet snapshot at every height (node-local undo data). Undo
+restores the burned bonds from `undo_spent_utxos` and a producer set without
+the queued Slash. Blocks without undo data use the rebuild-from-blocks UTXO
+loops in `rollback.rs` and `execute_reorg` (`block_handling.rs`). Both call
+`slash_burn_in_utxo_set`, so they burn the same bonds as forward apply. The
+burn goes only through the block batch, so the RocksDB and in-memory UTXO
+backends hold the same set and the same state root.
 
 ---
 

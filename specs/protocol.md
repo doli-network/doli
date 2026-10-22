@@ -347,23 +347,125 @@ slash_tx = {
     version: 1,
     type: 5,
     inputs: [],
-    outputs: [],                 // Bond is burned
-    extra_data: {
-        producer_pubkey: 32 bytes,
+    outputs: [],                 // Nothing is created. Apply burns the bonds.
+    fee: 0,                      // Exempt only when the evidence verifies (§3.10.3)
+    extra_data: bincode(SlashData {
+        producer_pubkey: 32 bytes,   // The accused producer
         evidence: evidence_data,
-        reporter_signature: 64 bytes
-    }
+        reporter_signature: 64 bytes // All zero at and above the gate
+    })
 }
 
 evidence_data = SlashingEvidence::DoubleProduction {
-    block_header_1: BlockHeader,  // Full header with VDF proof
-    block_header_2: BlockHeader,  // Full header with VDF proof (must differ)
-    // Both headers must have same producer + same slot + different hashes
-    // Full headers required so validators can verify VDF proofs
+    block_header_1: BlockHeader,  // Full header. Producer signature in vdf_proof.pi
+    block_header_2: BlockHeader,  // Full header. Hash order: hash(h1) < hash(h2)
+    // Same producer, same slot, different hashes
 }
 ```
 
-Burns 100% of producer's bond. This is the only slashable offense because it's the only one that cannot happen by accident.
+This is the only slashable offense because it is the only one that cannot happen by accident.
+
+#### 3.10.1 Activation
+
+| Network | `inc_i_255_slashing_activation_height` | Override |
+|---------|----------------------------------------|----------|
+| Mainnet | `u64::MAX` | None |
+| Testnet | `u64::MAX` | None |
+| Devnet | 0 | `DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT` (devnet only) |
+
+The slash rules use the effective height
+`NetworkParams::effective_slashing_activation_height()`:
+
+```
+effective = max(inc_i_255_slashing_activation_height,
+                inc_i_236_block_signature_activation_height,
+                inc_i_181_pending_root_activation_height)
+```
+
+- Evidence is authentic only when blocks carry the INC-I-236 producer signature.
+- At and above the INC-I-181 gate, the pending producer-update queue (which holds a queued Slash) is part of the state root.
+- An env override therefore cannot put the slash rules below either gate.
+- On mainnet and testnet the effective height is `u64::MAX`. Slashing is not active there.
+
+Block validation, the builder and apply judge the rules at the height of the block that holds the transaction. Mempool admission and the equivocation handler judge them at `best_height + 1`.
+
+**Below the effective height every verdict and state transition is unchanged.** The fee floor refuses the fee-0 transaction (`InsufficientFee`, or `FeeTooLow` in the mempool). Apply burns nothing. The equivocation handler only logs.
+
+#### 3.10.2 Evidence rules
+
+`crates/core/src/validation/slash_evidence.rs` checks the evidence. At and above the effective height, a SlashProducer is valid only when all of these hold. Each failure gives `InvalidSlash` on every path (mempool, builder, block validation, apply).
+
+1. The transaction has no inputs, no outputs and a non-empty `extra_data`.
+2. `extra_data` is at most 64 KiB and decodes as `SlashData` with a bounded decoder.
+3. The evidence is `DoubleProduction`. `PriceAttestationEquivocation` evidence is refused.
+4. The encoding is canonical: re-encoding the decoded `SlashData` gives exactly `extra_data`. Trailing bytes are refused.
+5. `reporter_signature` is the default (all-zero) signature.
+6. Both headers name the same producer, and that producer is `producer_pubkey`.
+7. Both headers have the same slot and different hashes.
+8. The headers are in ascending hash order.
+9. Each header carries the `genesis_hash` of this chain.
+10. Each header carries a valid strict Ed25519 signature by `header.producer` over `signing_message()` (`verify_block_signature`).
+
+The full transaction validator (mempool admission, Full block validation) also checks the evidence VDFs. The VDF is not the authorship proof: the producer signature is.
+
+`SlashData::double_production` (`crates/core/src/transaction/slash_canonical.rs`) builds the one canonical form. Thus one header pair gives one transaction id, whoever reports it.
+
+#### 3.10.3 Fee exemption
+
+`slash_fee_exempt(tx, ctx)` is true only when all of these hold:
+
+- The type is SlashProducer.
+- The slash rule is active at the height in `ctx`.
+- The evidence check of §3.10.2 passes (VDF excluded).
+
+Only two sites consult it: the consensus fee floor in `validate_transaction_with_utxos` (`crates/core/src/validation/utxo.rs`) and the fee floor of the mempool normal lane (`crates/mempool/src/pool.rs`). SlashProducer is not in the general fee-exempt list (`is_native_fee_exempt`). `allows_empty_io`, `is_state_only` and lane routing do not change. A slash with bad evidence must pay the normal floor, so no block can include it.
+
+#### 3.10.4 Accused-state rules and per-block cap
+
+`validate_slash_target` (`crates/core/src/validation/slash_state.rs`) refuses a slash when the accused:
+
+- is not a registered producer,
+- is already Slashed,
+- already has a queued Slash in the pending producer updates, or
+- has a status other than Active or Unbonding.
+
+`validate_block_with_mode` runs the block rules (`validate_block_slashes`) before the mode split. Full, Light and Replay therefore give one verdict:
+
+- A block holds at most `MAX_SLASH_TXS_PER_BLOCK` = 8 SlashProducer transactions (`crates/core/src/consensus/constants.rs`).
+- A block holds at most one slash per accused.
+- The two counts run before any evidence check. Then each slash must pass `validate_slash_target`.
+
+The other paths mirror these rules:
+
+- **Builder**: runs `validate_slash_target` before the UTXO check. `SlashBlockBudget` picks at most the cap and one slash per accused.
+- **Mempool**: admission runs the accused-state rules at `best_height + 1` and keeps at most one resident slash per accused. Revalidation evicts a slash whose accused became Slashed or slash-queued. When the producer-set lock is busy, admission skips the state rules (fail open). The builder and block validation still enforce them.
+
+#### 3.10.5 Effect
+
+At and above the effective height, apply burns the bonds in the slash block itself (`bins/node/src/node/apply_block/slash_burn.rs`):
+
+- It spends every Bond UTXO whose owner is the accused's address. This includes bonds that the accused delegated to another producer.
+- It never spends a delegator's own Bond UTXOs.
+- It creates no output. It credits nothing to the reward pool. It pays no reporter reward.
+- The coin supply drops by exactly the burned amount (100% of the accused's Bond UTXOs).
+- Each burned bond goes into the undo data of the block.
+
+**Exclusion point.** Apply also queues `PendingProducerUpdate::Slash`. The deferred flush applies it at the next epoch boundary. In epoch 0 the flush runs at the end of every block, so the accused leaves scheduling from the next block. `slash_producer` sets the status to Slashed, removes all delegations in both directions and records exit history. It refuses a producer whose status is not Active or Unbonding, so a second flush cannot slash a Slashed producer again.
+
+**After the slash** (at and above the effective height):
+
+- A Slashed producer gives no attester weight.
+- Block validation (`[ECON_WITHDRAWAL_SLASHED]`) and mempool admission refuse a RequestWithdrawal by a Slashed or slash-queued producer.
+- This check reads the producer set as it was before the block. It does not catch a RequestWithdrawal in the same block as the slash. If that withdrawal comes first, it can spend bonds before the burn.
+
+**Rollback and reorg.** `block_mutates_producer_set` lists SlashProducer, so the slash block stores a ProducerSet snapshot. Undo restores the bonds, the supply and a producer set without the queued Slash. Both rebuild-from-blocks UTXO fallbacks (`rollback.rs`, `execute_reorg`) apply the same burn (`slash_burn_in_utxo_set`).
+
+#### 3.10.6 Detection and submission
+
+- The detector (`crates/network/src/sync/equivocation.rs`) keeps the first header per (producer, slot). It returns one proof per (producer, slot) and holds at most 64 pending proofs.
+- The handler (`bins/node/src/node/slash_submit.rs`) judges the gate at `best_height + 1`. It builds the canonical slash and submits it through normal mempool admission. It relays the transaction only after admission.
+- The handler submits nothing when the accused already has a resident slash or is in the reported set. The reported set holds at most 1,024 accused keys and is not persisted.
+- Below the gate the handler only logs.
 
 ### 3.11 Epoch Reward Transaction
 
@@ -2380,6 +2482,8 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | Fee-exempt coinbase credit (`inc_i_233_activation_height`, §3.6) | 612,000 | 94,500 | 0 | Non-mainnet (`DOLI_INC_I_233_ACTIVATION_HEIGHT`) |
 | Output-Creation Authority (`inc_i_234_activation_height`, §3.22.1) | 612,000 | 78,199 | 0 | Non-mainnet (`DOLI_INC_I_234_ACTIVATION_HEIGHT`) |
 | Pending-updates state-root cover (`inc_i_181_pending_root_activation_height`) | 612,000 | 97,886 | 0 | Non-mainnet (`DOLI_INC_I_181_PENDING_ROOT_ACTIVATION_HEIGHT`) |
+| Block producer signature (`inc_i_236_block_signature_activation_height`) | `u64::MAX` | `u64::MAX` | 0 | Devnet only (`DOLI_INC_I_236_BLOCK_SIGNATURE_ACTIVATION_HEIGHT`) |
+| Equivocation slashing (`inc_i_255_slashing_activation_height`, §3.10.1) | `u64::MAX` | `u64::MAX` | 0 | Devnet only (`DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT`) |
 | Data Directory | `~/.doli/mainnet/` | `~/.doli/testnet/` | `~/.doli/devnet/` | - |
 | Config File | `.env` in data dir | `.env` in data dir | `.env` in data dir | - |
 
