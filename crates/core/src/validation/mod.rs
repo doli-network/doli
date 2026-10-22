@@ -41,6 +41,7 @@ mod registration;
 mod rewards_legacy;
 pub mod rotate_bls;
 mod slash_evidence;
+mod slash_state;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -68,6 +69,8 @@ pub use producer::{
     bootstrap_fallback_order, bootstrap_schedule_with_liveness, validate_producer_eligibility,
 };
 pub use rotate_bls::rotate_stateless;
+pub use slash_evidence::slash_fee_exempt;
+pub use slash_state::{validate_slash_target, SlashTargetState};
 pub use transaction::{validate_transaction, validate_transaction_skip_registration_vdf};
 pub use tx_types::{check_addbond_cap, count_bond_outputs};
 pub use types::{

@@ -1,26 +1,19 @@
-//! INC-I-237 — SlashProducer flood. TDD RED.
-//!
-//! Consensus makes every 0-in/0-out SlashProducer invalid in a block: it is not
-//! in `TxType::allows_empty_io` (INC-I-173 C1 — headers are unsigned and the
-//! hash-chain VDF is public, so double-production evidence is forgeable) and it
-//! is not fee-exempt, so `validate_transaction_with_utxos` returns
-//! InsufficientFee at every height. A node that builds and broadcasts such a
-//! tx injects a message no peer can admit or mine; gossip relays it forever.
+//! INC-I-237 — SlashProducer flood. Devnet node: the INC-I-255 slash gate is 0,
+//! so one equivocation yields exactly one canonical slash tx, never more.
 //!
 //! OUTPUT CONTRACT
 //!   fn Node::handle_equivocation(&mut self, EquivocationProof)
 //!     O1 receiver: mempool SlashProducer count (broadcast is gated on it)
-//!     O2 log only
 //!   fn Node::handle_new_block(&mut self, Block, PeerId) — equivocation arm
 //!     O1 receiver: mempool SlashProducer count
-//!     O2 detector still records the proof (detection is kept, for logs)
+//!     O2 detector still records the proof
 //!   fn Node::handle_gossip_txs(&self, Vec<Transaction>) -> Verdict (M2)
 //!     O1 receiver: mempool membership   O3 verdict (relay is gated on it)
 //!
 //! INPUT PARTITIONS
-//!   P1 VDF-committed pair (merkle_root differs)   -> no slash tx anywhere
-//!   P2 presence_root-only pair (same VDF input)   -> no slash tx anywhere
-//!   P3 slash tx arriving by gossip                -> not admitted
+//!   P1 VDF-committed pair (merkle_root differs)   -> exactly one slash tx
+//!   P2 presence_root-only pair (same VDF input)   -> exactly one slash tx
+//!   P3 reporter-signed slash tx arriving by gossip -> not admitted
 
 use super::*;
 use doli_core::tpop::heartbeat::verify_hash_chain_vdf;
@@ -79,7 +72,7 @@ async fn slash_count(node: &Node) -> usize {
         .count()
 }
 
-// T1 — handle_equivocation must not build a tx that consensus cannot mine.
+// T1 — handle_equivocation builds exactly one canonical slash tx.
 #[tokio::test]
 async fn test_handle_equivocation_creates_no_unmineable_slash_tx() {
     let producers: Vec<KeyPair> = (0..3).map(|_| KeyPair::generate()).collect();
@@ -113,9 +106,9 @@ async fn test_handle_equivocation_creates_no_unmineable_slash_tx() {
     n.handle_equivocation(proof).await;
     let got = slash_count(&n).await;
     assert_eq!(
-        got, 0,
-        "INC-I-237: handle_equivocation put {got} SlashProducer tx(s) in the mempool \
-         (and broadcast them); consensus rejects every such tx (InsufficientFee)"
+        got, 1,
+        "INC-I-237: handle_equivocation put {got} SlashProducer tx(s) in the mempool; \
+         exactly one canonical tx is allowed"
     );
 }
 
@@ -154,8 +147,8 @@ async fn test_handle_new_transaction_does_not_admit_gossiped_slash() {
     );
 }
 
-// T3 — through the real block entry point, neither pair shape yields a slash
-// tx; detection itself still runs (the detector records the proof).
+// T3 — through the real block entry point, each pair shape yields exactly one
+// slash tx; the detector records the proof.
 #[tokio::test]
 async fn test_handle_new_block_equivocation_yields_no_slash_tx() {
     let producers: Vec<KeyPair> = (0..3).map(|_| KeyPair::generate()).collect();
@@ -188,7 +181,7 @@ async fn test_handle_new_block_equivocation_yields_no_slash_tx() {
         assert_eq!(detected, 1, "{name}: setup — equivocation must be detected");
         let got = slash_count(&n).await;
         assert_eq!(
-            got, 0,
+            got, 1,
             "INC-I-237 {name}: produced {got} SlashProducer tx(s)"
         );
     }

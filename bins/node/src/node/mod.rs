@@ -66,6 +66,7 @@ pub use rollback::RollbackOutcome;
 mod rollback_authority;
 pub use rollback_authority::RollbackAuthority;
 mod rpc_broadcast;
+mod slash_submit;
 mod startup;
 mod state_root_serve;
 pub mod state_session;

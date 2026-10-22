@@ -59,7 +59,7 @@ impl Node {
         // Phase 3: validation reads via batch overlay (UtxoProvider impl on BlockBatch).
         if !is_reward_tx {
             let utxo_ctx = validation::ValidationContext::new(
-                ConsensusParams::for_network(self.config.network),
+                self.params.clone(),
                 self.config.network,
                 0, // wall-clock not needed for UTXO validation
                 height,
@@ -112,6 +112,12 @@ impl Node {
                     .network
                     .params()
                     .inc_i_236_block_signature_activation_height,
+            )
+            .with_inc_i_255_slashing_activation_height(
+                self.config
+                    .network
+                    .params()
+                    .effective_slashing_activation_height(),
             )
             .with_oracle_activation_height(self.config.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(

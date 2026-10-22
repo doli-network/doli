@@ -5,9 +5,10 @@
 //! work over public inputs, so anyone can compute it for any producer.
 
 use bincode::Options;
+use crypto::Signature;
 
 use crate::block::BlockHeader;
-use crate::transaction::{SlashData, SlashingEvidence, Transaction};
+use crate::transaction::{SlashData, SlashingEvidence, Transaction, TxType};
 
 use super::block::verify_block_signature;
 use super::producer::validate_vdf;
@@ -24,6 +25,18 @@ fn invalid(msg: &str) -> ValidationError {
 
 fn signature_rule_active(ctx: &ValidationContext) -> bool {
     ctx.current_height >= ctx.inc_i_236_block_signature_activation_height
+}
+
+pub(super) fn slash_rule_active(ctx: &ValidationContext) -> bool {
+    signature_rule_active(ctx) && ctx.current_height >= ctx.inc_i_255_slashing_activation_height
+}
+
+/// Fee-floor exemption: a SlashProducer whose evidence passes the shared check
+/// while the slash rule is active. Evidence VDFs are left to the caller's check.
+pub fn slash_fee_exempt(tx: &Transaction, ctx: &ValidationContext) -> bool {
+    tx.tx_type == TxType::SlashProducer
+        && slash_rule_active(ctx)
+        && validate_slash(tx, ctx, false).is_ok()
 }
 
 /// Decode `SlashData` with `bincode::deserialize` semantics; from the AH the
@@ -55,7 +68,7 @@ pub(super) fn validate_slash_data(
     tx: &Transaction,
     ctx: &ValidationContext,
 ) -> Result<(), ValidationError> {
-    validate_slash(tx, ctx, true)
+    validate_slash(tx, ctx, true).map(|_| ())
 }
 
 /// Same as `validate_slash_data` but skips evidence VDFs (verified in the
@@ -64,14 +77,14 @@ pub(super) fn validate_slash_data_skip_vdf(
     tx: &Transaction,
     ctx: &ValidationContext,
 ) -> Result<(), ValidationError> {
-    validate_slash(tx, ctx, false)
+    validate_slash(tx, ctx, false).map(|_| ())
 }
 
-fn validate_slash(
+pub(super) fn validate_slash(
     tx: &Transaction,
     ctx: &ValidationContext,
     verify_vdf: bool,
-) -> Result<(), ValidationError> {
+) -> Result<SlashData, ValidationError> {
     if !tx.inputs.is_empty() {
         return Err(invalid("slash transaction must have no inputs"));
     }
@@ -82,6 +95,9 @@ fn validate_slash(
         return Err(invalid("missing slash data"));
     }
     let slash_data = decode_slash_data(&tx.extra_data, ctx)?;
+    if slash_rule_active(ctx) {
+        check_canonical(tx, &slash_data)?;
+    }
 
     match &slash_data.evidence {
         SlashingEvidence::DoubleProduction {
@@ -93,7 +109,7 @@ fn validate_slash(
             block_header_2,
             ctx,
             verify_vdf,
-        ),
+        )?,
         SlashingEvidence::PriceAttestationEquivocation {
             attestation_1,
             attestation_2,
@@ -102,8 +118,22 @@ fn validate_slash(
             &slash_data.producer_pubkey,
             attestation_1,
             attestation_2,
-        ),
+        )?,
     }
+    Ok(slash_data)
+}
+
+fn check_canonical(tx: &Transaction, data: &SlashData) -> Result<(), ValidationError> {
+    if !matches!(data.evidence, SlashingEvidence::DoubleProduction { .. }) {
+        return Err(invalid("slash evidence must be DoubleProduction"));
+    }
+    if bincode::serialize(data).ok().as_deref() != Some(tx.extra_data.as_slice()) {
+        return Err(invalid("non-canonical slash data encoding"));
+    }
+    if data.reporter_signature != Signature::default() {
+        return Err(invalid("reporter signature must be the default (all zero)"));
+    }
+    Ok(())
 }
 
 fn validate_double_production(
@@ -123,13 +153,19 @@ fn validate_double_production(
             "double production evidence must have same slot in both headers",
         ));
     }
-    if h1.hash() == h2.hash() {
+    let (hash_1, hash_2) = (h1.hash(), h2.hash());
+    if hash_1 == hash_2 {
         return Err(invalid(
             "double production evidence must have different block hashes",
         ));
     }
     if h1.producer != *accused {
         return Err(invalid("evidence producer does not match slash target"));
+    }
+    if slash_rule_active(ctx) && hash_1.as_bytes() > hash_2.as_bytes() {
+        return Err(invalid(
+            "double production evidence header order must be ascending by hash",
+        ));
     }
 
     if signature_rule_active(ctx) {

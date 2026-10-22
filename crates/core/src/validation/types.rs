@@ -258,6 +258,8 @@ pub struct ValidationContext {
     pub inc_i_234_activation_height: u64,
     /// INC-I-236 block-signature gate. Default `u64::MAX` (fail-closed).
     pub inc_i_236_block_signature_activation_height: u64,
+    pub inc_i_255_slashing_activation_height: u64,
+    pub slash_targets: std::collections::HashMap<PublicKey, super::SlashTargetState>,
 }
 
 impl ValidationContext {
@@ -302,6 +304,8 @@ impl ValidationContext {
             bls_key_rotation_activation_height: u64::MAX,
             inc_i_234_activation_height: u64::MAX,
             inc_i_236_block_signature_activation_height: u64::MAX,
+            inc_i_255_slashing_activation_height: u64::MAX,
+            slash_targets: std::collections::HashMap::new(),
         }
     }
 

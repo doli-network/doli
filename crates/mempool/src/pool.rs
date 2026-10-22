@@ -548,6 +548,9 @@ impl Mempool {
                     .params()
                     .inc_i_236_block_signature_activation_height,
             )
+            .with_inc_i_255_slashing_activation_height(
+                self.network.params().effective_slashing_activation_height(),
+            )
             .with_oracle_activation_height(self.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
@@ -559,6 +562,7 @@ impl Mempool {
         // validator, so it is the verdict and not a second opinion.
         crate::rotation_filter::rotation_admissible(&tx, &ctx)
             .map_err(MempoolError::InvalidTransaction)?;
+        let slash_ctx = crate::slash_admission::admission_ctx(&tx, &ctx, &self.producer_holdings)?;
         validate_transaction(&tx, &ctx)?;
 
         // Validate input spending conditions: pubkey + signature for Normal/Bond,
@@ -748,7 +752,10 @@ impl Mempool {
         // INC-I-233: the six fee-exempt types skip the floor, like consensus
         // (one shared list); with native-only inputs they would otherwise be
         // rejected here while consensus accepts them (INC-I-147 class).
-        let fee_exempt = doli_core::validation::coinbase_credit::is_native_fee_exempt(tx.tx_type);
+        let fee_exempt = doli_core::validation::coinbase_credit::is_native_fee_exempt(tx.tx_type)
+            || slash_ctx
+                .as_ref()
+                .is_some_and(|c| doli_core::validation::slash_fee_exempt(&tx, c));
         if !amm_gated && !fee_exempt {
             // Require fee >= minimum_fee (base + per-byte for output extra_data)
             let min_fee = tx.minimum_fee();
@@ -1003,6 +1010,9 @@ impl Mempool {
                 self.network
                     .params()
                     .inc_i_236_block_signature_activation_height,
+            )
+            .with_inc_i_255_slashing_activation_height(
+                self.network.params().effective_slashing_activation_height(),
             )
             .with_oracle_activation_height(self.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(

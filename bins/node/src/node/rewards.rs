@@ -438,23 +438,17 @@ impl Node {
     // NOTE: build_presence_commitment removed in deterministic scheduler model
     // Rewards go 100% to block producer via coinbase, no presence tracking needed
 
-    /// Handle a detected equivocation (two headers, same producer and slot).
-    ///
-    /// INC-I-237: log only. Consensus rejects every SlashProducer in a block —
-    /// it is 0-in/0-out, not in `TxType::allows_empty_io` (INC-I-173 C1: headers
-    /// are unsigned and the hash-chain VDF is public, so this evidence is
-    /// forgeable) and not fee-exempt, so `validate_transaction_with_utxos`
-    /// returns InsufficientFee. Building and broadcasting one injected a tx no
-    /// peer could admit or mine, which gossip relayed without end.
+    /// Handle a detected equivocation (two headers, same producer and slot):
+    /// log it; at/above the slash gate also submit one canonical slash.
     pub async fn handle_equivocation(&mut self, proof: EquivocationProof) {
         warn!(
-            "EQUIVOCATION: producer {} made two headers for slot {}: {} and {} \
-             (logged only; no slash tx - INC-I-237)",
+            "EQUIVOCATION: producer {} made two headers for slot {}: {} and {}",
             crypto_hash(proof.producer.as_bytes()),
             proof.slot,
             proof.block_header_1.hash(),
             proof.block_header_2.hash()
         );
+        self.submit_equivocation_slash(&proof).await;
     }
 
     /// Rebuild the producer set by replaying all producer-modifying transactions

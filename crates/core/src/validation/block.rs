@@ -156,6 +156,10 @@ pub fn validate_block_with_mode(
         verify_block_signature(&block.header)?;
     }
 
+    for tx in &block.transactions {
+        super::slash_state::validate_slash_target(tx, ctx)?;
+    }
+
     match mode {
         ValidationMode::Full => {
             // Full validation: all checks including time-based header validation and VDF.

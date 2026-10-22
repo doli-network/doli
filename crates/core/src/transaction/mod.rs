@@ -5,6 +5,7 @@ mod data;
 mod input;
 mod output;
 mod rotate_bls;
+mod slash_canonical;
 mod types;
 
 pub mod legacy;

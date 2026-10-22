@@ -132,6 +132,12 @@ impl Node {
                 .params()
                 .inc_i_236_block_signature_activation_height,
         )
+        .with_inc_i_255_slashing_activation_height(
+            self.config
+                .network
+                .params()
+                .effective_slashing_activation_height(),
+        )
         .with_epoch_producer_list(if self.epoch_state.active_list.is_empty() {
             self.epoch_state.producer_list.clone()
         } else {
@@ -208,6 +214,8 @@ impl Node {
             .map(|p| p.public_key)
             .collect();
         let pending_keys = producers.pending_registration_keys();
+        let slash_targets =
+            mempool::slash_admission::slash_targets(&producers, &block.transactions);
         drop(producers);
 
         // Bond weights from epoch-locked snapshot (single source of truth).
@@ -362,6 +370,13 @@ impl Node {
                 .params()
                 .inc_i_236_block_signature_activation_height,
         )
+        .with_inc_i_255_slashing_activation_height(
+            self.config
+                .network
+                .params()
+                .effective_slashing_activation_height(),
+        )
+        .with_slash_targets(slash_targets)
         .with_inc_i_026_scheduler_activation_height(
             self.config
                 .network

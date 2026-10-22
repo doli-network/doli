@@ -202,6 +202,8 @@ impl Node {
             wd_parity.load(&producers, &mempool_txs);
             drop(producers);
         }
+        let slash_targets =
+            mempool::slash_admission::slash_targets(&*self.producer_set.read().await, &mempool_txs);
         {
             let deadline = Instant::now() + Duration::from_millis(self.params.slot_duration * 600); // 60% of slot
             let utxo = self.utxo_set.read().await;
@@ -263,6 +265,13 @@ impl Node {
                     .params()
                     .inc_i_236_block_signature_activation_height,
             )
+            .with_inc_i_255_slashing_activation_height(
+                self.config
+                    .network
+                    .params()
+                    .effective_slashing_activation_height(),
+            )
+            .with_slash_targets(slash_targets)
             .with_oracle_activation_height(self.config.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
@@ -288,7 +297,9 @@ impl Node {
                     );
                     continue;
                 }
-                if let Err(e) = validation::validate_transaction_with_utxos(tx, &utxo_ctx, &*utxo) {
+                if let Err(e) = validation::validate_slash_target(tx, &utxo_ctx).and_then(|()| {
+                    validation::validate_transaction_with_utxos(tx, &utxo_ctx, &*utxo)
+                }) {
                     warn!(
                         "Skipping mempool tx {} — UTXO validation failed: {}",
                         tx.hash(),
