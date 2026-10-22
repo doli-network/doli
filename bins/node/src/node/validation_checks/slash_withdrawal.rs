@@ -32,4 +32,21 @@ impl Node {
         }
         Ok(())
     }
+
+    /// From the slashing activation height, a block that holds a slash for p
+    /// spends no Bond UTXO owned by p, in every mode. Holds only the UTXO guard.
+    pub(super) async fn check_slash_bond_spend(&self, block: &Block, height: u64) -> Result<()> {
+        let params = self.config.network.params();
+        let ctx =
+            validation::ValidationContext::new(self.params.clone(), self.config.network, 0, height)
+                .with_inc_i_236_block_signature_activation_height(
+                    params.inc_i_236_block_signature_activation_height,
+                )
+                .with_inc_i_255_slashing_activation_height(
+                    params.effective_slashing_activation_height(),
+                );
+        let utxo = self.utxo_set.read().await;
+        validation::validate_slash_bond_spends(&block.transactions, &ctx, &*utxo)?;
+        Ok(())
+    }
 }

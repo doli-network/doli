@@ -3,13 +3,14 @@
 
 use std::collections::HashSet;
 
-use crypto::PublicKey;
+use crypto::hash::hash_with_domain;
+use crypto::{Hash, PublicKey, ADDRESS_DOMAIN};
 
 use crate::consensus::MAX_SLASH_TXS_PER_BLOCK;
-use crate::transaction::{Transaction, TxType};
+use crate::transaction::{OutputType, Transaction, TxType};
 
 use super::slash_evidence::{decode_slash_data, slash_rule_active, validate_slash};
-use super::{ValidationContext, ValidationError};
+use super::{UtxoProvider, ValidationContext, ValidationError};
 
 /// Producer-set facts about one accused key. A key absent from
 /// `ValidationContext::slash_targets` is not a registered producer.
@@ -76,6 +77,73 @@ pub fn bond_withdrawal_producer(tx: &Transaction) -> Option<PublicKey> {
     tx.withdrawal_request_data().map(|d| d.producer_pubkey)
 }
 
+/// Owner of the Bond UTXOs that a slash of `producer` burns.
+pub fn bond_owner(producer: &PublicKey) -> Hash {
+    hash_with_domain(ADDRESS_DOMAIN, producer.as_bytes())
+}
+
+/// True when an input of `tx` spends a Bond UTXO in `utxos` owned by one of
+/// `owners`. No lookup when `owners` is empty.
+pub fn spends_owned_bond<U: UtxoProvider + ?Sized>(
+    tx: &Transaction,
+    owners: &HashSet<Hash>,
+    utxos: &U,
+) -> bool {
+    !owners.is_empty()
+        && tx.inputs.iter().any(|input| {
+            utxos
+                .get_utxo(&input.prev_tx_hash, input.output_index)
+                .is_some_and(|u| {
+                    u.output.output_type == OutputType::Bond
+                        && owners.contains(&u.output.pubkey_hash)
+                })
+        })
+}
+
+/// From the slash rule, a block that holds a slash for p spends no Bond UTXO
+/// owned by p: neither one in the pre-block `utxos` nor one created by an
+/// earlier tx of the block. Any tx type, any order.
+pub fn validate_slash_bond_spends<U: UtxoProvider + ?Sized>(
+    txs: &[Transaction],
+    ctx: &ValidationContext,
+    utxos: &U,
+) -> Result<(), ValidationError> {
+    if !slash_rule_active(ctx) {
+        return Ok(());
+    }
+    let owners: HashSet<Hash> = txs
+        .iter()
+        .filter(|tx| tx.tx_type == TxType::SlashProducer)
+        .filter_map(|tx| decode_slash_data(&tx.extra_data, ctx).ok())
+        .map(|data| bond_owner(&data.producer_pubkey))
+        .collect();
+    if owners.is_empty() {
+        return Ok(());
+    }
+    let mut created: HashSet<(Hash, u32)> = HashSet::new();
+    for tx in txs {
+        let spends_created = tx
+            .inputs
+            .iter()
+            .any(|i| created.contains(&(i.prev_tx_hash, i.output_index)));
+        if spends_created || spends_owned_bond(tx, &owners, utxos) {
+            return Err(ValidationError::InvalidSlash(
+                "block holds a slash and a spend of the accused's bond".to_string(),
+            ));
+        }
+        let bonds: Vec<u32> = (0u32..)
+            .zip(&tx.outputs)
+            .filter(|(_, o)| o.output_type == OutputType::Bond && owners.contains(&o.pubkey_hash))
+            .map(|(index, _)| index)
+            .collect();
+        if !bonds.is_empty() {
+            let hash = tx.hash();
+            created.extend(bonds.into_iter().map(|index| (hash, index)));
+        }
+    }
+    Ok(())
+}
+
 /// Builder candidate order: at/above the slash rule every slash comes first
 /// (stable); below it the order of `txs` is kept.
 pub fn slashes_first<'a>(txs: &'a [Transaction], ctx: &ValidationContext) -> Vec<&'a Transaction> {
@@ -133,10 +201,11 @@ pub(super) fn validate_block_slashes(
 }
 
 /// Builder mirror of the block slash rules: the accused already picked for
-/// the block under construction.
+/// the block under construction, and the owner of their Bond UTXOs.
 #[derive(Debug, Default)]
 pub struct SlashBlockBudget {
     accused: HashSet<PublicKey>,
+    owners: HashSet<Hash>,
 }
 
 impl SlashBlockBudget {
@@ -160,6 +229,15 @@ impl SlashBlockBudget {
             && !self.accused.contains(&data.producer_pubkey)
     }
 
+    /// True when `tx` spends a Bond UTXO in `utxos` owned by a picked accused.
+    pub fn spends_accused_bond<U: UtxoProvider + ?Sized>(
+        &self,
+        tx: &Transaction,
+        utxos: &U,
+    ) -> bool {
+        spends_owned_bond(tx, &self.owners, utxos)
+    }
+
     /// Record `tx` as included in the block.
     pub fn accept(&mut self, tx: &Transaction, ctx: &ValidationContext) {
         if tx.tx_type != TxType::SlashProducer || !slash_rule_active(ctx) {
@@ -167,6 +245,7 @@ impl SlashBlockBudget {
         }
         if let Ok(data) = decode_slash_data(&tx.extra_data, ctx) {
             self.accused.insert(data.producer_pubkey);
+            self.owners.insert(bond_owner(&data.producer_pubkey));
         }
     }
 }

@@ -363,9 +363,10 @@ impl Node {
                     );
                     continue;
                 }
-                if !slash_budget.fits(tx, &utxo_ctx) {
+                if !slash_budget.fits(tx, &utxo_ctx) || slash_budget.spends_accused_bond(tx, &*utxo)
+                {
                     debug!(
-                        "Skipping {:?} {} — slash cap, accused taken, or bond withdrawal by an accused",
+                        "Skipping {:?} {} — slash cap, accused taken, or bond spend by an accused",
                         tx.tx_type,
                         tx.hash()
                     );

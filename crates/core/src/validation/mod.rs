@@ -73,8 +73,8 @@ pub use slash_evidence::{
     double_production_evidence_fits, evidence_header_admissible, slash_fee_exempt,
 };
 pub use slash_state::{
-    bond_withdrawal_producer, slashes_first, validate_slash_target, SlashBlockBudget,
-    SlashTargetState,
+    bond_owner, bond_withdrawal_producer, slashes_first, spends_owned_bond,
+    validate_slash_bond_spends, validate_slash_target, SlashBlockBudget, SlashTargetState,
 };
 pub use transaction::{validate_transaction, validate_transaction_skip_registration_vdf};
 pub use tx_types::{check_addbond_cap, count_bond_outputs};

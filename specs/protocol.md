@@ -436,13 +436,20 @@ Only two sites consult it: the consensus fee floor in `validate_transaction_with
 - A block that holds a slash for accused p holds no RequestWithdrawal that names p, in either order. The error is `InvalidSlash("block holds a slash and a bond withdrawal for one producer")`.
 - The counts and the withdrawal rule run before any evidence check. Then each slash must pass `validate_slash_target`.
 
-Only a RequestWithdrawal can spend a Bond UTXO in a block: Exit has no inputs, and only RequestWithdrawal and Exit pass the Bond lock. The withdrawal rule uses the producer that the withdrawal names (`bond_withdrawal_producer`). The holdings rule R3 (`withdrawal_holdings_gate_activation_height`, Full and Light) refuses a RequestWithdrawal with a Bond input that the named producer does not own. On mainnet and testnet the holdings gate is below the effective slashing height, and a future pin of the slashing height must stay at or above it. On devnet the defaults put the effective slashing height at 0 and the holdings gate at 20. Between them, a withdrawal that names another producer but spends the accused's bonds is not caught by this rule.
+The withdrawal rule uses the producer that the withdrawal names (`bond_withdrawal_producer`). It does not cover every spend of a bond: any transaction type (for example a Transfer) can spend a Bond UTXO once `height >= lock_until`. A Bond output with a finite `lock_until` is still accepted at creation (AUDIT-P1-003; the registration and Bond-output rules do not change here). For this reason the next rule keys on the spent UTXO, not on the transaction type.
+
+**Bond-spend rule.** At and above the effective height, a block that holds a slash for p holds no transaction, of any type and in any order, that spends a Bond UTXO owned by p. This is the burn's own selection: `output_type == Bond` and owner `hash_with_domain(ADDRESS_DOMAIN, p)`. Each input is resolved in the pre-block UTXO set, or as an output of an earlier transaction of the same block. The error is `InvalidSlash("block holds a slash and a spend of the accused's bond")`.
+
+- The predicate is `validate_slash_bond_spends` (`slash_state.rs`). `check_slash_bond_spend` (`bins/node/src/node/validation_checks/slash_withdrawal.rs`) calls it at the start of `check_withdrawal_economics`, before apply, in Full, Light and Replay. It runs before the transaction loop, so the Replay tolerance of UTXO-stage errors cannot skip it. All three modes give the same text.
+- A block with no slash costs no UTXO lookup. The RequestWithdrawal rule above runs first and keeps its own error.
+- A withdrawal that names another producer but spends the accused's bonds is refused by this rule.
 
 The other paths mirror these rules:
 
-- **Builder**: runs `validate_slash_target` before the UTXO check. At and above the effective height, `slashes_first` puts every slash before all other candidates (stable order). The slash wins: `SlashBlockBudget` picks at most the cap and one slash per accused, and then skips a RequestWithdrawal that names a picked accused. Below the effective height the candidate order and the selection do not change.
+- **Builder**: runs `validate_slash_target` before the UTXO check. At and above the effective height, `slashes_first` puts every slash before all other candidates (stable order). The slash wins: `SlashBlockBudget` picks at most the cap and one slash per accused, and then skips a RequestWithdrawal that names a picked accused. It also skips a transaction with an input that is a Bond UTXO owned by a picked accused (`SlashBlockBudget::spends_accused_bond`, against the committed UTXO set; the builder does not pack in-block chains). Below the effective height the candidate order and the selection do not change.
 - **Mempool**: admission runs the accused-state rules at `best_height + 1` and keeps at most one resident slash per accused. Revalidation evicts a slash whose accused became Slashed or slash-queued. When the producer-set lock is busy, admission skips the state rules (fail open). The builder and block validation still enforce them.
 - **Mempool, withdrawal beside a slash** (judged at `best_height + 1`, at and above the effective height): admission of a slash for p evicts every resident RequestWithdrawal that names p. Admission refuses a RequestWithdrawal that names p while a slash for p is resident (`InvalidTransaction`, "RequestWithdrawal by producer … with a resident slash"). Revalidation evicts a resident RequestWithdrawal that names a producer with a resident slash.
+- **Mempool, bond spend beside a slash** (same height and gate): admission of a slash for p evicts every resident transaction with an input that is a Bond UTXO owned by p. Admission refuses such a transaction while a slash for p is resident (`InvalidTransaction`, "… spend of the accused's bond with a resident slash"). Revalidation evicts it. A slash that is already mined needs no mempool rule: its burn spent those UTXOs.
 
 #### 3.10.5 Effect
 
@@ -460,8 +467,8 @@ At and above the effective height, apply burns the bonds in the slash block itse
 
 - A Slashed producer gives no attester weight.
 - Block validation (`[ECON_WITHDRAWAL_SLASHED]`) and mempool admission refuse a RequestWithdrawal by a Slashed or slash-queued producer.
-- This check reads the producer set as it was before the block. The §3.10.4 withdrawal rule covers the slash block itself: a block cannot hold a slash for p and a RequestWithdrawal that names p.
-- Residual: a RequestWithdrawal by p that is mined in an earlier block than the slash still spends its bonds. The burn takes only the accused's Bond UTXOs that are still live in the slash block.
+- This check reads the producer set as it was before the block. The §3.10.4 withdrawal and bond-spend rules cover the slash block itself: a block cannot hold a slash for p together with a RequestWithdrawal that names p, or with any transaction that spends a Bond UTXO owned by p.
+- Residual: a transaction mined in an earlier block than the slash (a RequestWithdrawal by p, or any spend of a lock-expired Bond UTXO of p) still spends those bonds. The burn takes only the accused's Bond UTXOs that are still live in the slash block.
 
 **Rollback and reorg.** `block_mutates_producer_set` lists SlashProducer, so the slash block stores a ProducerSet snapshot. Undo restores the bonds, the supply and a producer set without the queued Slash. Both rebuild-from-blocks UTXO fallbacks (`rollback.rs`, `execute_reorg`) apply the same burn (`slash_burn_in_utxo_set`).
 

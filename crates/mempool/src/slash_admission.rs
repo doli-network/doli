@@ -1,13 +1,15 @@
 //! SlashProducer admission: the accused's producer-set state, and the slash
 //! rules judged at the height the transaction would be mined at.
 
+use std::collections::HashSet;
+
 use crypto::{Hash, PublicKey};
 use doli_core::validation::{
-    bond_withdrawal_producer, validate_slash_target, SlashTargetState, ValidationContext,
-    ValidationError,
+    bond_owner, bond_withdrawal_producer, spends_owned_bond, validate_slash_target,
+    SlashTargetState, ValidationContext, ValidationError,
 };
 use doli_core::{Transaction, TxType};
-use storage::{PendingProducerUpdate, ProducerSet};
+use storage::{PendingProducerUpdate, ProducerSet, UtxoSet};
 
 use crate::holdings::HoldingsSources;
 use crate::MempoolError;
@@ -111,20 +113,58 @@ fn gated_accused(tx: &Transaction, mined_at: Option<&ValidationContext>) -> Opti
     tx.slash_data().map(|d| d.producer_pubkey)
 }
 
-/// Resident RequestWithdrawals naming the gated accused of slash `tx`.
+/// Resident RequestWithdrawals naming the gated accused of slash `tx`, and
+/// resident txs spending a Bond UTXO in `utxo_set` owned by that accused.
 pub(crate) fn withdrawals_for_slash<'a>(
     tx: &Transaction,
     mined_at: Option<&ValidationContext>,
     resident: impl IntoIterator<Item = (&'a Hash, &'a Transaction)>,
+    utxo_set: &UtxoSet,
 ) -> Vec<Hash> {
     let Some(accused) = gated_accused(tx, mined_at) else {
         return Vec::new();
     };
+    let owners = HashSet::from([bond_owner(&accused)]);
     resident
         .into_iter()
-        .filter(|(_, r)| bond_withdrawal_producer(r) == Some(accused))
+        .filter(|(_, r)| {
+            bond_withdrawal_producer(r) == Some(accused) || spends_owned_bond(r, &owners, utxo_set)
+        })
         .map(|(hash, _)| *hash)
         .collect()
+}
+
+/// Bond owners of the accused of the slashes in `resident`, judged at
+/// `mined_at`; empty below `gate`.
+pub(crate) fn slash_bond_owners<'a>(
+    resident: impl IntoIterator<Item = &'a Transaction>,
+    mined_at: u64,
+    gate: u64,
+) -> HashSet<Hash> {
+    if mined_at < gate {
+        return HashSet::new();
+    }
+    resident
+        .into_iter()
+        .filter_map(Transaction::slash_data)
+        .map(|d| bond_owner(&d.producer_pubkey))
+        .collect()
+}
+
+/// Refuses `tx` when it spends a Bond UTXO in `utxo_set` owned by one of
+/// `owners` (from `slash_bond_owners`).
+pub(crate) fn bond_spend_refusal(
+    tx: &Transaction,
+    owners: &HashSet<Hash>,
+    utxo_set: &UtxoSet,
+) -> Result<(), String> {
+    if spends_owned_bond(tx, owners, utxo_set) {
+        return Err(format!(
+            "tx {} is a spend of the accused's bond with a resident slash",
+            tx.hash()
+        ));
+    }
+    Ok(())
 }
 
 /// At/above the slash gate judged at `mined_at` (from `admission_ctx`),

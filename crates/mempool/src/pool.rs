@@ -445,6 +445,15 @@ impl Mempool {
     /// `validate_registration_data_inner` — which is unreachable for every
     /// other transaction type, so every other type keeps a bit-identical
     /// `Vec::new()` and pays no traversal.
+    /// Bond owners of the accused of the resident slashes, judged at the next height.
+    fn slash_bond_owners(&self, current_height: BlockHeight) -> HashSet<Hash> {
+        crate::slash_admission::slash_bond_owners(
+            self.entries.values().map(|e| &e.tx),
+            current_height.saturating_add(1),
+            self.network.params().effective_slashing_activation_height(),
+        )
+    }
+
     fn pending_keys_for(&self, tx: &Transaction, exclude: Option<&Hash>) -> Vec<crypto::PublicKey> {
         if tx.tx_type != TxType::Registration {
             return Vec::new();
@@ -687,6 +696,9 @@ impl Mempool {
         // two independently gated arms.
         self.withdrawal_verdict(&tx, utxo_set, current_height, true, true)
             .map_err(MempoolError::InvalidTransaction)?;
+        let slash_owners = self.slash_bond_owners(current_height);
+        crate::slash_admission::bond_spend_refusal(&tx, &slash_owners, utxo_set)
+            .map_err(MempoolError::InvalidTransaction)?;
 
         // INC-I-203 M2: same verdict the builder applies (REQ-BOND-004).
         self.addbond_holdings_verdict(&tx, current_height)
@@ -882,7 +894,13 @@ impl Mempool {
         self.total_size += tx_size;
         self.entries.insert(tx_hash, entry);
         let beside = self.entries.iter().map(|(h, e)| (h, &e.tx));
-        for hash in crate::slash_admission::withdrawals_for_slash(&tx, slash_ctx.as_ref(), beside) {
+        let evicted = crate::slash_admission::withdrawals_for_slash(
+            &tx,
+            slash_ctx.as_ref(),
+            beside,
+            utxo_set,
+        );
+        for hash in evicted {
             self.remove_transaction(&hash);
         }
 
@@ -1456,6 +1474,7 @@ impl Mempool {
     ) {
         self.slot_watermark = self.slot_watermark.max(current_slot);
         let mut to_remove = Vec::new();
+        let slash_owners = self.slash_bond_owners(current_height);
 
         for (hash, entry) in &self.entries {
             let tx = &entry.tx;
@@ -1482,6 +1501,14 @@ impl Mempool {
                     self.withdrawal_verdict(tx, utxo_set, current_height, false, false)
                 {
                     warn!("INC-I-180: evicting withdrawal {} — {}", hash, reason);
+                    valid = false;
+                }
+            }
+            if valid {
+                if let Err(reason) =
+                    crate::slash_admission::bond_spend_refusal(tx, &slash_owners, utxo_set)
+                {
+                    warn!("INC-I-255: evicting {} — {}", hash, reason);
                     valid = false;
                 }
             }
