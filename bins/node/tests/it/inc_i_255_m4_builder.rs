@@ -25,6 +25,7 @@ use doli_core::validation::ValidationMode;
 
 use super::inc_i_255_m1_common::{full_block_with, in_child, run_in_child, slash_recorded, tip};
 use super::inc_i_255_m4_common::*;
+use crate::inc_i_156_m1_harness::apply_plain_up_to;
 
 const GATE: u64 = 2;
 
@@ -54,21 +55,19 @@ async fn run(case: Case) -> Seen {
         FEE_TIE
     };
     let mut r = m4(fee).await;
-    let (b, _) = full_block_with(&mut r.w.node, &[]).await;
-    let adv = r.w.node.apply_block(b, ValidationMode::Full).await;
-    assert!(
-        adv.is_ok(),
-        "FIXTURE: advance one block; got {}",
-        err_text(&adv)
-    );
+    // Dense slots up to the gate: the next block has one block of tenure and
+    // the evidence (slot SLOT) is not older than the parent slot.
+    let keys = [r.w.reporter.clone(), r.w.accused.clone()];
+    let params = r.w.node.params.clone();
+    apply_plain_up_to(&mut r.w.node, &keys, GATE, &params).await;
     let h = tip(&r.w.node).await.0;
-    assert_eq!(h + 1, GATE, "FIXTURE: the next block is at the gate");
+    assert_eq!(h, GATE, "FIXTURE: the next block is one above the gate");
     let (slash, wd) = (r.slash.clone(), r.wd.clone());
     let n = &r.w.node;
     let order: Vec<(&Transaction, u64)> = match case {
-        Case::Control => vec![(&wd, h - 1)],
-        Case::TieSlashFirst | Case::WdOutbids => vec![(&slash, h), (&wd, h - 1)],
-        Case::TieWdFirst => vec![(&wd, h - 1), (&slash, h)],
+        Case::Control => vec![(&wd, h - 2)],
+        Case::TieSlashFirst | Case::WdOutbids => vec![(&slash, h), (&wd, h - 2)],
+        Case::TieWdFirst => vec![(&wd, h - 2), (&slash, h)],
     };
     for (tx, at) in order {
         let res = admit_at(n, tx, at).await;

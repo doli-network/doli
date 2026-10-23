@@ -30,7 +30,7 @@
 //   mode: Full | Light | Replay
 
 use crypto::KeyPair;
-use doli_core::validation::ValidationMode;
+use doli_core::validation::{ValidationError, ValidationMode};
 use mempool::MempoolError;
 
 use super::inc_i_255_m1_common::*;
@@ -155,6 +155,13 @@ async fn inc_i_255_n4_admission_evaluates_gate_at_next_height() {
         EDGE_GATE - 1,
         "PRECONDITION: best = gate - 1"
     );
+    let r = admit(&w.node, &tx).await;
+    assert!(
+        matches!(&r, Err(MempoolError::Validation(ValidationError::InvalidSlash(m))) if m.contains("predates")),
+        "N4: at best = gate - 1 admission judges the slash rule at the gate (no tenure in the activation block), not the fee floor; got {r:?}"
+    );
+
+    apply_plain_up_to(&mut w.node, &keys, EDGE_GATE, &params).await;
     let admitted = w.node.handle_new_transaction(tx.clone()).await;
     let why = if admitted {
         None
@@ -163,6 +170,6 @@ async fn inc_i_255_n4_admission_evaluates_gate_at_next_height() {
     };
     assert!(
         admitted,
-        "N4: at best = gate - 1 the slash is mined at the gate, so admission must accept; verdict {why:?}"
+        "N4: at best = gate the slash is mined one block above the gate, so admission must accept; verdict {why:?}"
     );
 }

@@ -20,6 +20,7 @@ mod inc_i_256_m1_fixture;
 mod inc_i_256_m1_slash_busy;
 mod inc_i_256_m1_slash_eviction;
 mod inc_i_256_m1_stale_slashes;
+mod inc_i_256_m2_expiry;
 mod inc_i_257_m1_mempool_lock;
 mod inc_i_257_m25_mempool_height;
 mod inc_i_257_m2_slash_admission;

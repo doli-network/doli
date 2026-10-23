@@ -51,6 +51,7 @@ pub fn slash_targets<'a>(
                 slashed: info.is_slashed(),
                 slash_queued,
                 locked_collateral,
+                registered_at: info.registered_at,
             };
             Some((pk, state))
         })

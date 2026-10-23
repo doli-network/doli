@@ -28,6 +28,8 @@ use super::inc_i_255_slash_evidence::{ctx_at, header, sign, HEIGHT};
 const SLASH_CAP: usize = 8;
 const BLOCK_SLOT: u32 = 5_000;
 const EVIDENCE_SLOT: u32 = 4_990;
+/// Slash gate 20 blocks below `HEIGHT`: tenure 20 exceeds the evidence age 10.
+const OPEN_GATE: u64 = HEIGHT - 20;
 const MODES: [ValidationMode; 3] = [
     ValidationMode::Full,
     ValidationMode::Light,
@@ -86,14 +88,20 @@ fn block_of(txs: Vec<Transaction>) -> Block {
     block
 }
 
+/// Parent at `BLOCK_SLOT - 1`, devnet unbonding period: evidence age 10.
 fn ctx(slash_gate: u64, accused_keys: impl IntoIterator<Item = PublicKey>) -> ValidationContext {
     let active = SlashTargetState {
         active: true,
         ..Default::default()
     };
-    ctx_at(HEIGHT, slash_gate, HEIGHT)
+    let mut c = ctx_at(HEIGHT, slash_gate, HEIGHT)
+        .with_prev_slot(BLOCK_SLOT - 1)
         .with_producers_weighted(vec![(*block_producer().public_key(), 1)])
-        .with_slash_targets(accused_keys.into_iter().map(|pk| (pk, active)))
+        .with_slash_targets(accused_keys.into_iter().map(|pk| (pk, active)));
+    c.unbonding_period = doli_core::network::Network::Devnet
+        .params()
+        .unbonding_period;
+    c
 }
 
 fn keys(n: usize) -> Vec<PublicKey> {
@@ -141,7 +149,7 @@ fn inc_i_255_m2_block_over_cap_rejected_in_every_mode() {
 #[test]
 fn inc_i_255_m2_block_at_cap_not_refused() {
     let block = block_of(distinct(SLASH_CAP));
-    let c = ctx(HEIGHT, keys(SLASH_CAP));
+    let c = ctx(OPEN_GATE, keys(SLASH_CAP));
     for mode in MODES {
         let r = validate_block_with_mode(&block, &c, mode);
         assert!(
@@ -156,10 +164,10 @@ fn inc_i_255_m2_block_at_cap_not_refused() {
 fn inc_i_255_m2_block_duplicate_accused_rejected_in_every_mode() {
     let kp = accused(0);
     let block = block_of(vec![slash(&kp, (0xA1, 0xB2)), slash(&kp, (0xC3, 0xD4))]);
-    refused_in_every_mode(&block, &ctx(HEIGHT, keys(1)), "duplicate accused");
+    refused_in_every_mode(&block, &ctx(OPEN_GATE, keys(1)), "duplicate accused");
 
     let pair = block_of(distinct(2));
-    let r = validate_block_with_mode(&pair, &ctx(HEIGHT, keys(2)), ValidationMode::Light);
+    let r = validate_block_with_mode(&pair, &ctx(OPEN_GATE, keys(2)), ValidationMode::Light);
     assert!(
         r.is_ok(),
         "NON-VACUITY: two distinct accused validate; got {r:?}"

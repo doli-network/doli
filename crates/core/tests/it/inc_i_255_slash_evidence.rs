@@ -74,6 +74,23 @@ pub(super) fn armed_ctxs() -> Vec<ValidationContext> {
     ]
 }
 
+/// `armed_ctxs()` with an open evidence window for a pair at `SLOT`: parent
+/// slot `SLOT` (age 1), the devnet unbonding period, and at least 20 blocks
+/// of tenure above the slash gate.
+pub(super) fn armed_target_ctxs() -> Vec<ValidationContext> {
+    armed_ctxs()
+        .into_iter()
+        .map(|mut ctx| {
+            ctx.prev_slot = SLOT;
+            ctx.unbonding_period = NETWORK.params().unbonding_period;
+            ctx.current_height = ctx
+                .current_height
+                .max(ctx.inc_i_255_slashing_activation_height + 20);
+            ctx
+        })
+        .collect()
+}
+
 pub(super) fn accused() -> KeyPair {
     KeyPair::from_seed([0x55; 32])
 }
@@ -449,7 +466,7 @@ fn inc_i_255_slash_target_inactive_producer_refused() {
         active: true,
         ..SlashTargetState::default()
     };
-    for ctx in armed_ctxs() {
+    for ctx in armed_target_ctxs() {
         let h = ctx.current_height;
         let ok = validate_slash_target(&tx, &ctx.clone().with_slash_targets([(pk, active)]));
         assert_eq!(ok, Ok(()), "NON-VACUITY at h={h}: an active accused passes");

@@ -98,10 +98,11 @@ async fn inc_i_255_m4_probe_7_revalidate_evicts_wd() {
     let r = m4(FEE_TIE).await;
     let n = &r.w.node;
     assert_eq!(tip(n).await.0, 0, "FIXTURE: genesis tip");
-    let s = admit_at(n, &r.slash, GATE - 1).await;
+    // Judged one block above the gate: the activation block has no tenure.
+    let s = admit_at(n, &r.slash, GATE).await;
     assert!(
         s.is_ok(),
-        "PRECONDITION: Slash(p) judged at the gate admitted; got {s:?}"
+        "PRECONDITION: Slash(p) judged above the gate admitted; got {s:?}"
     );
     for tx in [&r.wd, &r.other_wd] {
         let res = admit_at(n, tx, 0).await;

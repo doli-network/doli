@@ -256,9 +256,10 @@ fn inc_i_255_m2_mempool_revalidate_keeps_slash_below_gate() {
     let x = KeyPair::generate();
     let mut r = rig(&[&x]);
     let tx = slash(&x, (0xA1, 0xB2));
+    // best + 1 = gate + 1: one block of tenure above the floor, so only the queue can evict.
     r.pool
-        .add_transaction(tx.clone(), &r.utxo, gate - 1, 0)
-        .expect("PRECONDITION: admitted when best + 1 reaches the gate");
+        .add_transaction(tx.clone(), &r.utxo, gate, 0)
+        .expect("PRECONDITION: admitted one block above the gate");
     queue_slash(&r.producers, &x);
 
     r.pool.revalidate(&r.utxo, gate - 2, 0);
@@ -266,10 +267,10 @@ fn inc_i_255_m2_mempool_revalidate_keeps_slash_below_gate() {
         r.pool.contains(&tx.hash()),
         "below the gate revalidate must keep a slash whose accused is queued"
     );
-    r.pool.revalidate(&r.utxo, gate - 1, 0);
+    r.pool.revalidate(&r.utxo, gate, 0);
     assert!(
         !r.pool.contains(&tx.hash()),
-        "NON-VACUITY: at the gate the same slash is evicted"
+        "NON-VACUITY: above the gate the same slash is evicted"
     );
 }
 

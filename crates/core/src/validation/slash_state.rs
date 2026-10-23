@@ -10,6 +10,7 @@ use crate::consensus::MAX_SLASH_TXS_PER_BLOCK;
 use crate::transaction::{Output, OutputType, Transaction, TxType};
 
 use super::slash_evidence::{decode_slash_data, slash_rule_active, validate_slash};
+use super::slash_window::validate_slash_window;
 use super::{UtxoProvider, ValidationContext, ValidationError};
 
 /// Producer-set facts about one accused key. A key absent from
@@ -24,6 +25,8 @@ pub struct SlashTargetState {
     pub slash_queued: bool,
     /// The bond owner holds an Unbonding UTXO still locked at the judged height.
     pub locked_collateral: bool,
+    /// Height of the accused's current registration.
+    pub registered_at: u64,
 }
 
 /// True when a slash at `height` burns `output`: every Bond, and an Unbonding
@@ -57,8 +60,8 @@ impl ValidationContext {
 }
 
 /// Evidence check (VDF excluded) then the accused's state: registered, not
-/// Slashed, no queued Slash, Active or Unbonding or holding locked collateral.
-/// `Ok` for any other tx type and below the slash rule.
+/// Slashed, no queued Slash, Active or Unbonding or holding locked collateral;
+/// then the evidence window. `Ok` for any other tx type and below the slash rule.
 pub fn validate_slash_target(
     tx: &Transaction,
     ctx: &ValidationContext,
@@ -66,7 +69,8 @@ pub fn validate_slash_target(
     if tx.tx_type != TxType::SlashProducer || !slash_rule_active(ctx) {
         return Ok(());
     }
-    let accused = validate_slash(tx, ctx, false)?.producer_pubkey;
+    let data = validate_slash(tx, ctx, false)?;
+    let accused = data.producer_pubkey;
     let refuse = |msg: &str| Err(ValidationError::InvalidSlash(msg.to_string()));
     let Some(state) = ctx.slash_targets.get(&accused) else {
         return refuse("slash target is not a registered producer");
@@ -80,7 +84,7 @@ pub fn validate_slash_target(
     if !state.active && !state.locked_collateral {
         return refuse("slash target is not an active or unbonding producer");
     }
-    Ok(())
+    validate_slash_window(&data.evidence, state, ctx)
 }
 
 /// The producer whose Bond UTXOs `tx` may spend: the producer a

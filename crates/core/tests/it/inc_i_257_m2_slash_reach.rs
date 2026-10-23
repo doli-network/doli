@@ -26,7 +26,7 @@ use doli_core::validation::{
     is_slash_burnable, validate_slash_target, SlashTargetState, ValidationError,
 };
 
-use super::inc_i_255_slash_evidence::{accused, armed_ctxs, canonical_tx};
+use super::inc_i_255_slash_evidence::{accused, armed_ctxs, armed_target_ctxs, canonical_tx};
 
 const L: u64 = 100;
 const M: u64 = u64::MAX;
@@ -116,7 +116,7 @@ fn target_msg(r: &Result<(), ValidationError>) -> Option<String> {
 fn inc_i_257_m2_req_unbond_011_target_admits_inactive_with_locked_collateral() {
     let tx = canonical_tx();
     let pk = *accused().public_key();
-    for ctx in armed_ctxs() {
+    for ctx in armed_target_ctxs() {
         let h = ctx.current_height;
         let judge = |s| validate_slash_target(&tx, &ctx.clone().with_slash_targets([(pk, s)]));
         let none = judge(state(false, false));

@@ -224,8 +224,7 @@ impl Node {
             let deadline = Instant::now() + Duration::from_millis(self.params.slot_duration * 600); // 60% of slot
             let utxo = self.utxo_set.read().await;
             let mut cumulative_user_bytes: usize = 0;
-            // Use self.params which already has chainspec overrides applied
-            // (ConsensusParams::for_network() ignores chainspec env vars for bond_unit)
+            // self.params has the chainspec overrides (for_network() ignores them)
             let utxo_ctx = validation::ValidationContext::new(
                 self.params.clone(),
                 self.config.network,
@@ -295,6 +294,7 @@ impl Node {
                 self.config.network.params().unbonding_period,
             )
             .with_inc_i_182_producer_auth(pauth_gate)
+            .with_prev_slot(prev_slot)
             .with_slash_targets(slash_targets)
             .with_oracle_activation_height(self.config.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(

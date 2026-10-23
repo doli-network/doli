@@ -436,7 +436,14 @@ Only two sites consult it: the consensus fee floor in `validate_transaction_with
 - already has a queued Slash in the pending producer updates, or
 - has a status other than Active or Unbonding and holds no locked collateral (`SlashTargetState::locked_collateral`: an Unbonding output owned by its bond owner with judged height < `lock_until`, §3.13.1).
 
-The accused's state comes from one function, `mempool::slash_admission::slash_targets(producers, utxos, height, txs)`. Mempool admission judges at tip + 1, the builder at the height it builds, block validation at the block height against the parent UTXO set. It does at most one owner lookup per accused and at most `MAX_SLASH_TXS_PER_BLOCK` per call; past that budget `locked_collateral` is false.
+**Evidence window.** After the state rules, two time rules run in this order (`crates/core/src/validation/slash_window.rs`). `judged = prev_slot + 1` (saturating), where `prev_slot` is the slot of the parent block. `age = judged − offence slot` (saturating, in slots; the offence slot is the slot of the two evidence headers). `height` is the judged height.
+
+1. `age >= unbonding_period`: `InvalidSlash("slash evidence expired: offence older than the unbonding period")`.
+2. `age >= height − max(registered_at, effective height)` (saturating): `InvalidSlash("slash evidence predates the accused's current registration")`. `registered_at` is the height of the accused's current registration.
+
+Every path judges with the parent slot: mempool admission and revalidation with the tip slot that the caller passes, the builder with the parent slot (not the slot of the block it builds), and block validation with the parent slot. `unbonding_period` is a block count and `age` is a slot count. A block takes at least one slot, so the slot window expires no later than the block window. At the effective height itself the tenure is 0, so no slash is valid in the activation block. The tenure rule is sound but not complete: it can refuse an offence inside the tenure when many slots since the floor were missed (security model §4.2). It never accepts an offence before the floor.
+
+The accused's state comes from one function, `mempool::slash_admission::slash_targets(producers, utxos, height, txs)`, which also reads `registered_at`. Mempool admission judges at tip + 1, the builder at the height it builds, block validation at the block height against the parent UTXO set. It does at most one owner lookup per accused and at most `MAX_SLASH_TXS_PER_BLOCK` per call; past that budget `locked_collateral` is false.
 
 `validate_block_with_mode` runs the block rules (`validate_block_slashes`) before the mode split. Full, Light and Replay therefore give one verdict:
 
@@ -471,7 +478,7 @@ At and above the effective height, apply burns the bonds in the slash block itse
 - The coin supply drops by exactly the burned amount (100% of the accused's Bond UTXOs and locked Unbonding outputs).
 - Each burned entry goes into the undo data of the block with its full UtxoEntry, so rollback restores its type and `lock_until`.
 
-**Exclusion point.** Apply also queues `PendingProducerUpdate::Slash`. The deferred flush applies it at the next epoch boundary. In epoch 0 the flush runs at the end of every block, so the accused leaves scheduling from the next block. `slash_producer` sets the status to Slashed, removes all delegations in both directions and records exit history. It refuses a producer whose status is not Active or Unbonding, so a second flush cannot slash a Slashed producer again.
+**Exclusion point.** Apply also queues `PendingProducerUpdate::Slash`. The deferred flush applies it at the next epoch boundary. In epoch 0 the flush runs at the end of every block, so the accused leaves scheduling from the next block. `slash_producer` sets the status to Slashed from any other status (Active, Unbonding or Exited), removes all delegations in both directions and records exit history. It refuses only a producer that is already Slashed, so a second flush cannot slash it again. Slashed is terminal: a Slashed key can never register again, and a second slash for one offence is refused (`slash target is already slashed`, or `slash target already has a pending slash` while the first one is queued).
 
 **After the slash** (at and above the effective height):
 

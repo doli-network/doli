@@ -357,23 +357,23 @@ impl Mempool {
         )
     }
 
-    /// Admission context at `current_height` (the tip) for every tx type.
+    /// Admission context on the tip `(height, slot)` for every tx type.
     fn admission_base_ctx(
         &self,
-        current_height: BlockHeight,
+        (current_height, current_slot): (BlockHeight, u32),
         pending_keys: Vec<crypto::PublicKey>,
     ) -> ValidationContext {
-        // AUDIT-P1-001: pull active_producers snapshot so validate_transaction's
-        // contains-check at transaction.rs:242 sees the live set instead of
-        // an empty Vec. Snapshot may be empty pre-activation (no real
-        // producer set wired) — that is harmless because oracle_activation_height
-        // = u64::MAX rejects PriceAttestation at the height gate first.
+        // AUDIT-P1-001: the active_producers snapshot lets validate_transaction's
+        // contains-check (transaction.rs:242) see the live set. It may be empty
+        // pre-activation (no producer set wired); oracle_activation_height =
+        // u64::MAX rejects PriceAttestation at the height gate first.
         let active_producers_snapshot = self
             .active_producers_weighted
             .read()
             .map(|g| g.clone())
             .unwrap_or_default();
         ValidationContext::new(self.params.clone(), self.network, 0, current_height)
+            .with_prev_slot(current_slot)
             .with_sig_verification_height(self.network.params().sig_verification_height)
             .with_encrypted_content_activation_height(
                 self.network.params().encrypted_content_activation_height,
@@ -456,7 +456,7 @@ impl Mempool {
         // yet in `entries` (the AlreadyExists guard above returned otherwise),
         // so the exclusion is defensive.
         let pending_keys = self.pending_keys_for(&tx, Some(&tx_hash));
-        let ctx = self.admission_base_ctx(current_height, pending_keys);
+        let ctx = self.admission_base_ctx((current_height, current_slot), pending_keys);
         // INC-I-217 M6: the named rotation verdict runs BEFORE the generic
         // validator, so it is the verdict and not a second opinion.
         crate::rotation_filter::rotation_admissible(&tx, &ctx)
@@ -1417,7 +1417,7 @@ impl Mempool {
         to_remove.extend(self.registrations_that_became_duplicates(current_height));
         to_remove.extend(crate::slash_admission::stale_slashes(
             self.entries.iter().map(|(h, e)| (h, &e.tx)),
-            &self.admission_base_ctx(current_height, Vec::new()),
+            &self.admission_base_ctx((current_height, current_slot), Vec::new()),
             &self.producer_holdings,
             utxo_set,
         ));

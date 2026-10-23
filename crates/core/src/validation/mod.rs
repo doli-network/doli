@@ -43,6 +43,7 @@ mod rewards_legacy;
 pub mod rotate_bls;
 mod slash_evidence;
 mod slash_state;
+mod slash_window;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

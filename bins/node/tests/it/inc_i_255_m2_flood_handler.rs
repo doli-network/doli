@@ -22,11 +22,11 @@
 //   gate: devnet default | env-raised then crossed
 
 use crypto::KeyPair;
-use doli_core::validation::ValidationMode;
 
 use super::inc_i_236_m4_common::{feed, header_block};
 use super::inc_i_255_m1_common::*;
 use super::inc_i_255_m2_flood_common::*;
+use crate::inc_i_156_m1_harness::apply_plain_up_to;
 
 const MOD: &str = "inc_i_255_m2_flood_handler::";
 const RAISED_GATE: u64 = 2;
@@ -163,13 +163,12 @@ async fn inc_i_255_m2_handler_gate_crossing_creates_after_refusal() {
         resident_slashes(&w.node, &w.accused_pk()).await.is_empty(),
         "below the gate (next height 1 < {RAISED_GATE}) the handler must create no tx"
     );
-    let (block, _) = full_block_with(&mut w.node, &[]).await;
-    let r = w.node.apply_block(block, ValidationMode::Full).await;
-    assert!(
-        r.is_ok(),
-        "FIXTURE: an empty block applies; got {:?}",
-        r.err()
-    );
+    // Dense slots up to the gate: next height gate + 1 has one block of tenure
+    // and the evidence (slot SLOT) is not older than the parent slot.
+    let keys = [w.reporter.clone(), w.accused.clone()];
+    let params = w.node.params.clone();
+    apply_plain_up_to(&mut w.node, &keys, RAISED_GATE, &params).await;
+    assert_eq!(tip(&w.node).await.0, RAISED_GATE, "FIXTURE: best = gate");
     w.node.handle_equivocation(proof).await;
     assert_eq!(
         resident_slashes(&w.node, &w.accused_pk()).await,
