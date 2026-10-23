@@ -97,6 +97,35 @@ pub(super) fn check_unbonding_outputs(
     check_withdrawal_payout(tx, ctx.current_height, ctx.unbonding_period)
 }
 
+/// At/above the gate, Bond outputs appear only in Registration and AddBond,
+/// each owned by `bond_owner(producer)` and worth one network bond unit.
+pub(super) fn check_bond_outputs(
+    tx: &Transaction,
+    ctx: &ValidationContext,
+) -> Result<(), ValidationError> {
+    let has_bond = tx.outputs.iter().any(|o| o.output_type == OutputType::Bond);
+    if ctx.current_height < ctx.inc_i_257_unbonding_activation_height || !has_bond {
+        return Ok(());
+    }
+    let producer = match tx.tx_type {
+        TxType::Registration => tx.registration_data().map(|d| d.public_key),
+        TxType::AddBond => tx.add_bond_data().map(|d| d.producer_pubkey),
+        other => return Err(err("008", format!("{other:?} may not create Bond outputs"))),
+    }
+    .ok_or_else(|| err("009", "Bond outputs need valid producer data".to_string()))?;
+    let (owner, unit) = (bond_owner(&producer), ctx.network.bond_unit());
+    let bad = (0usize..).zip(&tx.outputs).find(|(_, o)| {
+        o.output_type == OutputType::Bond && (o.pubkey_hash != owner || o.amount != unit)
+    });
+    if let Some((i, _)) = bad {
+        return Err(err(
+            "009",
+            format!("bond output {i} must be owned by the producer and worth {unit}"),
+        ));
+    }
+    Ok(())
+}
+
 fn check_withdrawal_payout(
     tx: &Transaction,
     height: BlockHeight,

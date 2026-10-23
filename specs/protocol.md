@@ -434,7 +434,9 @@ Only two sites consult it: the consensus fee floor in `validate_transaction_with
 - is not a registered producer,
 - is already Slashed,
 - already has a queued Slash in the pending producer updates, or
-- has a status other than Active or Unbonding.
+- has a status other than Active or Unbonding and holds no locked collateral (`SlashTargetState::locked_collateral`: an Unbonding output owned by its bond owner with judged height < `lock_until`, §3.13.1).
+
+The accused's state comes from one function, `mempool::slash_admission::slash_targets(producers, utxos, height, txs)`. Mempool admission judges at tip + 1, the builder at the height it builds, block validation at the block height against the parent UTXO set. It does at most one owner lookup per accused and at most `MAX_SLASH_TXS_PER_BLOCK` per call; past that budget `locked_collateral` is false.
 
 `validate_block_with_mode` runs the block rules (`validate_block_slashes`) before the mode split. Full, Light and Replay therefore give one verdict:
 
@@ -462,11 +464,11 @@ The other paths mirror these rules:
 
 At and above the effective height, apply burns the bonds in the slash block itself (`bins/node/src/node/apply_block/slash_burn.rs`):
 
-- It spends every Bond UTXO whose owner is the accused's address. This includes bonds that the accused delegated to another producer.
+- It spends every UTXO whose owner is the accused's address and that is slash-burnable at the block height H (`is_slash_burnable`): each Bond, and each Unbonding output with H < `lock_until`. This includes bonds that the accused delegated to another producer. An Unbonding output at or past its `lock_until` is not burned. Below the unbonding gate no Unbonding output exists, so the burn takes the Bonds only.
 - It never spends a delegator's own Bond UTXOs.
 - It creates no output. It credits nothing to the reward pool. It pays no reporter reward.
-- The coin supply drops by exactly the burned amount (100% of the accused's Bond UTXOs).
-- Each burned bond goes into the undo data of the block.
+- The coin supply drops by exactly the burned amount (100% of the accused's Bond UTXOs and locked Unbonding outputs).
+- Each burned entry goes into the undo data of the block with its full UtxoEntry, so rollback restores its type and `lock_until`.
 
 **Exclusion point.** Apply also queues `PendingProducerUpdate::Slash`. The deferred flush applies it at the next epoch boundary. In epoch 0 the flush runs at the end of every block, so the accused leaves scheduling from the next block. `slash_producer` sets the status to Slashed, removes all delegations in both directions and records exit history. It refuses a producer whose status is not Active or Unbonding, so a second flush cannot slash a Slashed producer again.
 
@@ -475,7 +477,7 @@ At and above the effective height, apply burns the bonds in the slash block itse
 - A Slashed producer gives no attester weight.
 - Block validation (`[ECON_WITHDRAWAL_SLASHED]`) and mempool admission refuse a RequestWithdrawal by a Slashed or slash-queued producer.
 - This check reads the producer set as it was before the block. The §3.10.4 withdrawal and bond-spend rules cover the slash block itself: a block cannot hold a slash for p together with a RequestWithdrawal that names p, or with any transaction that spends a Bond UTXO owned by p.
-- Residual: a transaction mined in an earlier block than the slash (a RequestWithdrawal by p, or any spend of a lock-expired Bond UTXO of p) still spends those bonds. The burn takes only the accused's Bond UTXOs that are still live in the slash block. At and above `inc_i_257_unbonding_activation_height` the withdrawn value stays in a locked Unbonding output of p (§3.13.1); burning that locked output in a later slash is a separate, later step.
+- Residual: a transaction mined in an earlier block than the slash (a RequestWithdrawal by p, or any spend of a lock-expired Bond UTXO of p) still spends those bonds. The burn takes only the accused's Bond UTXOs that are still live in the slash block. At and above `inc_i_257_unbonding_activation_height` the withdrawn value stays in a locked Unbonding output of p (§3.13.1), and a later slash burns it while it is still locked, also when p is already Exited (§3.10.4).
 
 **Rollback and reorg.** `block_mutates_producer_set` lists SlashProducer, so the slash block stores a ProducerSet snapshot. Undo restores the bonds, the supply and a producer set without the queued Slash. Both rebuild-from-blocks UTXO fallbacks (`rollback.rs`, `execute_reorg`) apply the same burn (`slash_burn_in_utxo_set`).
 
@@ -1117,6 +1119,18 @@ mempool judges at `best_height + 1`, for UTXO-set inputs and in-mempool parents)
   (`[ERRTX-UNBOND001]`), whatever the Bond's `lock_until`;
 - an Unbonding input never skips the lock check, for any transaction type,
   including RequestWithdrawal and Exit (`OutputLocked`).
+
+Bond-output rule at block height `H >= gate` (`check_bond_outputs`, reached from
+the output placement rule on mempool, builder and apply):
+- a Bond output may appear only in a Registration or an AddBond; any other type
+  with a Bond output is refused (`[ERRTX-UNBOND008]`);
+- each Bond output has `pubkey_hash == bond_owner(producer)`, where the producer
+  is the key in the registration or add-bond data, and `amount ==
+  Network::bond_unit()` (`[ERRTX-UNBOND009]`; also when that data does not decode);
+- `lock_until` is not constrained by this rule.
+
+Below the gate the Bond-output rule does not apply. Genesis bonds are inserted
+into the UTXO set directly and are not transactions.
 
 The DOLI CLI builds the gated shape when `best_height + 1 >= gate`: payout to the
 producer's own address (another `--destination` is refused), fee taken from the

@@ -24,12 +24,14 @@ fn is_amm(ty: TxType) -> bool {
     )
 }
 
-/// Stateless placement rule: Pool only at output[0] of an AMM tx (exactly one); coinbase is Normal-only.
+/// Stateless placement rule: Unbonding and Bond outputs (INC-I-257); Pool only at
+/// output[0] of an AMM tx (exactly one); coinbase is Normal-only.
 pub fn check_output_placement(
     tx: &Transaction,
     ctx: &ValidationContext,
 ) -> Result<(), ValidationError> {
     super::unbonding::check_unbonding_outputs(tx, ctx)?;
+    super::unbonding::check_bond_outputs(tx, ctx)?;
     if inactive(ctx) {
         return Ok(());
     }

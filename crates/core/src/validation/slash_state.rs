@@ -7,7 +7,7 @@ use crypto::hash::hash_with_domain;
 use crypto::{Hash, PublicKey, ADDRESS_DOMAIN};
 
 use crate::consensus::MAX_SLASH_TXS_PER_BLOCK;
-use crate::transaction::{OutputType, Transaction, TxType};
+use crate::transaction::{Output, OutputType, Transaction, TxType};
 
 use super::slash_evidence::{decode_slash_data, slash_rule_active, validate_slash};
 use super::{UtxoProvider, ValidationContext, ValidationError};
@@ -22,6 +22,18 @@ pub struct SlashTargetState {
     pub slashed: bool,
     /// A Slash for this key is queued in the pending producer updates.
     pub slash_queued: bool,
+    /// The bond owner holds an Unbonding UTXO still locked at the judged height.
+    pub locked_collateral: bool,
+}
+
+/// True when a slash at `height` burns `output`: every Bond, and an Unbonding
+/// output while `height < lock_until`.
+pub fn is_slash_burnable(output: &Output, height: u64) -> bool {
+    match output.output_type {
+        OutputType::Bond => true,
+        OutputType::Unbonding => height < output.lock_until,
+        _ => false,
+    }
 }
 
 impl ValidationContext {
@@ -45,8 +57,8 @@ impl ValidationContext {
 }
 
 /// Evidence check (VDF excluded) then the accused's state: registered, not
-/// Slashed, no queued Slash, Active or Unbonding. `Ok` for any other tx type
-/// and below the slash rule.
+/// Slashed, no queued Slash, Active or Unbonding or holding locked collateral.
+/// `Ok` for any other tx type and below the slash rule.
 pub fn validate_slash_target(
     tx: &Transaction,
     ctx: &ValidationContext,
@@ -65,7 +77,7 @@ pub fn validate_slash_target(
     if state.slash_queued {
         return refuse("slash target already has a pending slash");
     }
-    if !state.active {
+    if !state.active && !state.locked_collateral {
         return refuse("slash target is not an active or unbonding producer");
     }
     Ok(())

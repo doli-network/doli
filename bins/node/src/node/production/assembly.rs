@@ -202,8 +202,12 @@ impl Node {
             wd_parity.load(&producers, &mempool_txs);
             drop(producers);
         }
-        let slash_targets =
-            mempool::slash_admission::slash_targets(&*self.producer_set.read().await, &mempool_txs);
+        let slash_targets = mempool::slash_admission::slash_targets(
+            &*self.producer_set.read().await,
+            &*self.utxo_set.read().await,
+            height,
+            &mempool_txs,
+        );
         {
             let deadline = Instant::now() + Duration::from_millis(self.params.slot_duration * 600); // 60% of slot
             let utxo = self.utxo_set.read().await;

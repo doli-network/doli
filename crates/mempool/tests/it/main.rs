@@ -15,6 +15,8 @@ mod inc_i_203_admission_gap;
 mod inc_i_236_m2_ctx_parity;
 mod inc_i_255_m2_slash_residency;
 mod inc_i_257_m1_mempool_lock;
+mod inc_i_257_m2_slash_admission;
+mod inc_i_257_m2_slash_targets;
 
 /// INC-I-203 M2 outcome metric. Root-level because libtest's `--exact` matches
 /// the full `module::fn` name and the milestone command addresses it bare.

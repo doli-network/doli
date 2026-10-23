@@ -295,7 +295,7 @@ The bond serves multiple security functions:
 
 | Violation | Penalty | Proof Required |
 |-----------|---------|----------------|
-| Double production | 100% of the accused's Bond UTXOs burned (at and above the slashing gate) | Two validly signed BlockHeaders for the same slot |
+| Double production | 100% of the accused's Bond UTXOs burned (at and above the slashing gate), plus its Unbonding outputs still locked (at and above the unbonding gate) | Two validly signed BlockHeaders for the same slot |
 | Invalid block | None (slot lost) | N/A - Block rejected by network |
 | Inactivity | None | N/A - Natural consequence (missed rewards) |
 
@@ -320,7 +320,7 @@ At and above the effective height, validators verify:
 4. Each header has a valid producer signature (INV-AUTH-003)
 5. Each header carries the genesis hash of this chain, so evidence from another chain fails
 6. The encoded evidence is at most 64 KiB, is canonical (no trailing bytes) and lists the headers in ascending hash order
-7. The accused is a registered producer, Active or Unbonding, not Slashed, and has no queued Slash
+7. The accused is a registered producer, not Slashed, has no queued Slash, and is Active or Unbonding or still holds locked collateral (an Unbonding output owned by its bond owner with judged height < `lock_until`)
 
 **Reporter field**: `SlashData.reporter_signature` must be the all-zero signature at and above the gate. It is outside consensus: no node verifies or records a reporter, and no reporter gets a reward. A third party therefore cannot make a second transaction id for the same evidence.
 
@@ -341,7 +341,9 @@ At and above the effective height, validators verify:
 
 **Exclusion point**: apply burns the bonds in the slash block. The producer-set change (status Slashed, delegations removed) applies at the next epoch boundary, or at the next block in epoch 0. From the slash block on, a RequestWithdrawal by the accused is refused. A block that holds the slash cannot also hold a RequestWithdrawal that names the accused. It also cannot hold any transaction, of any type, that spends a Bond UTXO owned by the accused, whether that UTXO is in the pre-block set or was created earlier in the same block. Both rules hold in either order and in Full, Light and Replay. The bond-spend rule keys on the spent UTXO, not on the transaction type, because below the unbonding gate any type can spend a Bond UTXO once its `lock_until` has passed, and a Bond output with a finite `lock_until` is still accepted at creation (AUDIT-P1-003). The builder keeps the slash and drops the withdrawal or spend. The mempool evicts or refuses it. A spend mined in an earlier block than the slash is not reversed: the burn takes only the bonds that are still live. After the flush, the producer has no attester weight. A rollback or reorg of the slash block restores the bonds and the producer set.
 
-**Cross-block withdrawal escape (AUDIT-P2-540, INC-I-257)**: below `inc_i_257_unbonding_activation_height` a RequestWithdrawal pays a Normal output that is spendable in the next block. A producer that has signed two blocks for one slot can withdraw its bonds before the slash is mined. The withdrawn value leaves the slashable set at once, the later slash finds no live Bond to burn, and the producer keeps the funds. An accused that the withdrawal has already moved to `Exited` stays `Exited`. At and above the gate the payout is one Unbonding output owned by the producer's own address and locked for at least `unbonding_period` blocks (mainnet 60,480, testnet 72, devnet 60). No transaction type can spend it before `lock_until`, and at and above the gate only RequestWithdrawal can spend a Bond (`specs/protocol.md` §3.13.1). The value therefore stays at a known owner for the whole period. Burning those locked Unbonding outputs in a slash, and admitting a slash against an exited accused that still holds them, is a separate, later step; until it ships, the lock alone does not burn the withdrawn value. The gate is `u64::MAX` (not scheduled) on mainnet and testnet and `0` on devnet.
+**Cross-block withdrawal escape (AUDIT-P2-540, INC-I-257)**: below `inc_i_257_unbonding_activation_height` a RequestWithdrawal pays a Normal output that is spendable in the next block. A producer that has signed two blocks for one slot can withdraw its bonds before the slash is mined. The withdrawn value leaves the slashable set at once, the later slash finds no live Bond to burn, and the producer keeps the funds. An accused that the withdrawal has already moved to `Exited` stays `Exited`. At and above the gate the payout is one Unbonding output owned by the producer's own address and locked for at least `unbonding_period` blocks (mainnet 60,480, testnet 72, devnet 60). No transaction type can spend it before `lock_until`, and at and above the gate only RequestWithdrawal can spend a Bond (`specs/protocol.md` §3.13.1). The value therefore stays at a known owner for the whole period. A slash mined at height H burns every UTXO of the accused's bond owner that is slash-burnable at H (`is_slash_burnable`): each Bond, and each Unbonding output with H < `lock_until`. Burnable is the exact opposite of spendable for Unbonding, so the burn never races a legal spend. Supply drops by the burned amount, and rollback restores the burned entries with their type and `lock_until`. An accused that the withdrawal has moved to `Exited` stays slashable while it holds locked collateral; it stays `Exited` after the burn. Once every Unbonding output has unlocked (H >= `lock_until`), a slash of an exited accused is refused at admission, never selected by the builder, and makes a block invalid. Mempool (judged at tip + 1), builder (at the height built) and block validation (at the block height, against the parent UTXO set) read the same population function, `mempool::slash_admission::slash_targets`. It does at most one owner lookup per accused and at most `MAX_SLASH_TXS_PER_BLOCK` per call; an accused past that budget counts as holding no collateral. The gate is `u64::MAX` (not scheduled) on mainnet and testnet and `0` on devnet.
+
+**Bond-output rule (AUDIT-P1-003, INC-I-257)**: at and above `inc_i_257_unbonding_activation_height`, a Bond output may appear only in a Registration or an AddBond. Each one must be owned by `bond_owner(producer)` (the key named in the registration or add-bond data) and must be worth exactly one network bond unit (`Network::bond_unit()`, the unit the producer set counts). Any other transaction type with a Bond output is refused, and so is a foreign-owner or non-unit Bond. Thus every Bond that adds selection weight is one the slash of that producer can find. `lock_until` is not constrained by this rule. Genesis bonds are written straight to the UTXO set and do not pass through transaction validation. Below the gate the rule does not apply.
 
 #### 4.2.1 Delegator Slashing — Tezos LPoS Equivalence (INC-I-078)
 
@@ -356,7 +358,8 @@ When `slash_producer` runs, `cleanup_all_delegations` (in
 `crates/storage/src/producer/set_lifecycle.rs`) returns every
 delegator's principal to them — they lose only the *weight*
 contribution they had assigned to the slashed producer. The burn
-(`bins/node/src/node/apply_block/slash_burn.rs`) selects Bond UTXOs by
+(`bins/node/src/node/apply_block/slash_burn.rs`) selects the accused's
+slash-burnable UTXOs (Bonds, and Unbonding outputs still locked) by
 owner. It burns the bonds the accused owns, also those it delegated to
 another producer. It never burns a delegator's own bonds.
 

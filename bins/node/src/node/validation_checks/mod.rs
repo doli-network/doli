@@ -222,8 +222,12 @@ impl Node {
             .map(|p| p.public_key)
             .collect();
         let pending_keys = producers.pending_registration_keys();
-        let slash_targets =
-            mempool::slash_admission::slash_targets(&producers, &block.transactions);
+        let slash_targets = mempool::slash_admission::slash_targets(
+            &producers,
+            &*self.utxo_set.read().await,
+            height,
+            &block.transactions,
+        );
         drop(producers);
 
         // Bond weights from epoch-locked snapshot (single source of truth).

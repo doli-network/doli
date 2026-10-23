@@ -580,7 +580,8 @@ impl Mempool {
         // validator, so it is the verdict and not a second opinion.
         crate::rotation_filter::rotation_admissible(&tx, &ctx)
             .map_err(MempoolError::InvalidTransaction)?;
-        let slash_ctx = crate::slash_admission::admission_ctx(&tx, &ctx, &self.producer_holdings)?;
+        let slash_ctx =
+            crate::slash_admission::admission_ctx(&tx, &ctx, &self.producer_holdings, utxo_set)?;
         validate_transaction(&tx, &ctx)?;
         crate::slash_admission::resident_refusal(
             &tx,

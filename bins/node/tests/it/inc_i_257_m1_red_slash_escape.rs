@@ -14,6 +14,9 @@
 // INPUT PARTITIONS:
 //   slash distance k: inside the epoch | past the boundary
 //   payout shape: gated (type byte 16, lock N + 60) once it decodes, else the production constructor
+// covers: slash_state, unbonding, output_authority, tx_types, transaction, registration, utxo, types,
+//   error, lib, mod, slash_admission, pool, holdings, slash_burn, tx_processing, assembly,
+//   slash_withdrawal, rollback, set, in_memory, batch, queries, protocol, security_model
 
 use storage::ProducerStatus;
 
@@ -78,6 +81,10 @@ async fn escape_case(k: u64) -> Seen {
 }
 
 fn assert_burned(s: &Seen, case: &str) {
+    println!(
+        "OUTCOME {case}: supply_drop={} bond_amount={}",
+        s.supply_drop, s.bond_amount
+    );
     let bond = i128::from(s.bond_amount);
     assert_eq!(
         s.supply_drop, bond,
@@ -91,7 +98,6 @@ fn assert_burned(s: &Seen, case: &str) {
 
 // REQ-UNBOND-002 — Decision: a failure means a slash mined in the same epoch as the accused's full withdrawal burns nothing, so the offender keeps its bond.
 #[tokio::test]
-#[ignore = "needs the slash burn of locked unbonding outputs"]
 async fn inc_i_257_m1_req_unbond_002_slash_in_epoch_burns_withdrawn_bond() {
     let s = escape_case(2).await;
     assert_eq!(
@@ -104,7 +110,6 @@ async fn inc_i_257_m1_req_unbond_002_slash_in_epoch_burns_withdrawn_bond() {
 
 // REQ-UNBOND-002 — Decision: a failure means a slash mined after the boundary that exits the accused is refused or burns nothing, so the offender keeps its bond.
 #[tokio::test]
-#[ignore = "needs the slash burn of locked unbonding outputs"]
 async fn inc_i_257_m1_req_unbond_002_slash_after_boundary_burns_withdrawn_bond() {
     let s = escape_case(EPOCH).await;
     assert_ne!(

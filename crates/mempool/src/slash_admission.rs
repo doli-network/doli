@@ -4,9 +4,11 @@
 use std::collections::HashSet;
 
 use crypto::{Hash, PublicKey};
+use doli_core::consensus::MAX_SLASH_TXS_PER_BLOCK;
+use doli_core::transaction::OutputType;
 use doli_core::validation::{
-    bond_owner, bond_withdrawal_producer, spends_owned_bond, validate_slash_target,
-    SlashTargetState, ValidationContext, ValidationError,
+    bond_owner, bond_withdrawal_producer, is_slash_burnable, spends_owned_bond,
+    validate_slash_target, SlashTargetState, ValidationContext, ValidationError,
 };
 use doli_core::{Transaction, TxType};
 use storage::{PendingProducerUpdate, ProducerSet, UtxoSet};
@@ -14,12 +16,17 @@ use storage::{PendingProducerUpdate, ProducerSet, UtxoSet};
 use crate::holdings::HoldingsSources;
 use crate::MempoolError;
 
-/// Producer-set state of the accused of every SlashProducer in `txs`. A key
-/// that is not a registered producer is left out.
+/// Producer-set state of the accused of every SlashProducer in `txs`, with
+/// `locked_collateral` judged at `height`. A key that is not a registered
+/// producer is left out. One owner lookup per registered accused, at most
+/// `MAX_SLASH_TXS_PER_BLOCK` per call; past that `locked_collateral` is false.
 pub fn slash_targets<'a>(
     producers: &ProducerSet,
+    utxos: &UtxoSet,
+    height: u64,
     txs: impl IntoIterator<Item = &'a Transaction>,
 ) -> Vec<(PublicKey, SlashTargetState)> {
+    let mut lookups = 0usize;
     txs.into_iter()
         .filter_map(|tx| tx.slash_data())
         .filter_map(|data| {
@@ -29,10 +36,21 @@ pub fn slash_targets<'a>(
                 .pending_updates_for(&pk)
                 .iter()
                 .any(|u| matches!(u, PendingProducerUpdate::Slash { .. }));
+            let locked_collateral = lookups < MAX_SLASH_TXS_PER_BLOCK && {
+                lookups += 1;
+                utxos
+                    .get_by_pubkey_hash(&bond_owner(&pk))
+                    .iter()
+                    .any(|(_, e)| {
+                        e.output.output_type == OutputType::Unbonding
+                            && is_slash_burnable(&e.output, height)
+                    })
+            };
             let state = SlashTargetState {
                 active: info.is_active(),
                 slashed: info.is_slashed(),
                 slash_queued,
+                locked_collateral,
             };
             Some((pk, state))
         })
@@ -47,6 +65,7 @@ pub(crate) fn admission_ctx(
     tx: &Transaction,
     ctx: &ValidationContext,
     sources: &HoldingsSources,
+    utxo_set: &UtxoSet,
 ) -> Result<Option<ValidationContext>, MempoolError> {
     if tx.tx_type != TxType::SlashProducer {
         return Ok(None);
@@ -57,7 +76,7 @@ pub(crate) fn admission_ctx(
         .live
         .as_ref()
         .and_then(|set| set.try_read().ok())
-        .map(|producers| slash_targets(&producers, [tx]));
+        .map(|producers| slash_targets(&producers, utxo_set, mined_at.current_height, [tx]));
     let Some(targets) = targets else {
         return Ok(Some(mined_at));
     };

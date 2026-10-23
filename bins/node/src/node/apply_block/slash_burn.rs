@@ -1,7 +1,8 @@
-//! SlashProducer UTXO effect: every Bond UTXO owned by the accused is spent
-//! and nothing is created.
+//! SlashProducer UTXO effect: every UTXO owned by the accused that is
+//! slash-burnable at the block height is spent and nothing is created.
 
 use super::*;
+use doli_core::validation::is_slash_burnable;
 use storage::{BlockBatch, Outpoint, UtxoEntry};
 
 impl Node {
@@ -38,19 +39,19 @@ impl Node {
         };
         let mut burned = 0u64;
         for (outpoint, entry) in batch.get_utxos_by_pubkey(&owner) {
-            if entry.output.output_type != doli_core::OutputType::Bond {
+            if !is_slash_burnable(&entry.output, height) {
                 continue;
             }
             batch
                 .spend_utxo(&outpoint)
-                .map_err(|e| anyhow::anyhow!("slash bond burn failed at h={}: {}", height, e))?;
+                .map_err(|e| anyhow::anyhow!("slash burn failed at h={}: {}", height, e))?;
             burned = burned.saturating_add(entry.output.amount);
             if !created_in_block.contains(&outpoint) {
                 undo_spent.push((outpoint, entry));
             }
         }
         warn!(
-            "[SLASH] burned {} bond units owned by {} at h={}",
+            "[SLASH] burned {} units of collateral owned by {} at h={}",
             burned, owner, height
         );
         Ok(())
@@ -66,8 +67,10 @@ impl Node {
         let Some(owner) = self.slash_burn_owner(tx, height) else {
             return Ok(());
         };
-        for (outpoint, _, _) in utxo.get_bond_entries(&owner) {
-            utxo.remove(&outpoint)?;
+        for (outpoint, entry) in utxo.get_by_pubkey_hash(&owner) {
+            if is_slash_burnable(&entry.output, height) {
+                utxo.remove(&outpoint)?;
+            }
         }
         Ok(())
     }
