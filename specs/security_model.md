@@ -446,6 +446,10 @@ already count the verdict they *would* reach in
 height but is not itself a defense. Pinning it changes consensus rules and is a
 separate decision session.
 
+**Signer binding (INC-I-182)**: from `inc_i_182_producer_auth_activation_height`, a
+RequestWithdrawal also needs the named producer's own signature, so no third party
+can force a producer's full exit (`specs/protocol.md` §3.13.2).
+
 ---
 
 ## 5. Consensus Security

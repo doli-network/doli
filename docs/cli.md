@@ -798,6 +798,13 @@ so a registration that has mined but not yet crossed the epoch boundary is invis
 A second registration inside that window is rejected by block validation and poisons the next
 block your producer builds (INC-I-147).
 
+**Producer signature (INC-I-182).** After the inputs and outputs are final, the CLI signs the
+transaction with the producer key and appends that signature to `extra_data`, with the chain
+genesis hash from `getChainInfo`. It does this at every height. Nodes require it from
+`inc_i_182_producer_auth_activation_height` (devnet `0`; mainnet and testnet not yet scheduled)
+and refuse an unsigned or foreign-signed transaction with `[ERRTX-PAUTH001]`. `add-bond`,
+`request-withdrawal` and `exit` append the same signature. See `specs/protocol.md` §3.13.2.
+
 **Retention verification.** `sendTransaction` returning OK only means the node accepted the
 transaction — it can be evicted moments later. After submitting, the CLI re-queries the same node
 with `getTransaction` (a short bounded poll) and only then prints the success line and the
@@ -1003,6 +1010,9 @@ AddBond with `[ADDBOND_CAP_EXCEEDED]` (see `docs/troubleshooting.md` §2.5) — 
 an older CLI is still blocked at the node; this check only moves the refusal
 earlier, before the operator's funds are touched.
 
+**Producer signature (INC-I-182).** The CLI appends the producer signature, as for
+`producer register` (§4.1).
+
 **WHITEPAPER Reference:** Section 6.3 (Bond Stacking) - More bonds = more block production slots in deterministic rotation.
 
 ---
@@ -1035,7 +1045,11 @@ doli producer request-withdrawal --count 2 --destination doli1abc...
 withdrawals), **aborts** if that disagrees with the wallet's Bond-UTXO count (a
 ledger mismatch — retry after the next epoch boundary flushes pending bond
 changes), prints both numbers before submitting, and selects Bond inputs by
-**count**, not by value. `doli producer exit` applies the same guard for a full drain.
+**count**, not by value. `doli producer exit` applies the same guard for a full drain,
+except when the wallet holds no live Bond UTXO (§4.8).
+
+**Producer signature (INC-I-182).** The CLI appends the producer signature, as for
+`producer register` (§4.1).
 
 **INC-I-171:** the payout printed below is computed with
 `doli_core::validation::vesting::penalized_bond_net` — the SAME core function the consensus
@@ -1138,6 +1152,20 @@ doli producer exit --force
 ```
 
 Without `--force`, the command shows the current penalty and time remaining before allowing exit.
+
+**What `exit` builds.** `exit` withdraws the producer's whole ProducerSet allowance in one
+RequestWithdrawal, built by the same builder as `request-withdrawal`, and appends the producer
+signature (§4.1). The bond count comes from the ProducerSet, never from the UTXO-derived
+`bondCount`. When the wallet holds Bond UTXOs, their count must equal that allowance, or the
+command aborts with `Ledger mismatch`.
+
+**Exit with no live Bond UTXO (INC-I-182).** When the ProducerSet still lists bonds but the
+wallet holds no live Bond UTXO, `exit` still works: it builds the full exit with no Bond input.
+The wallet's spendable Normal outputs pay the fee and fund the payout. If their total does not
+exceed the fee, the command refuses to build (`insufficient spendable balance`). When the next
+block is at or above `inc_i_257_unbonding_activation_height`, the payout is one Unbonding output
+to the producer's own address, and the CLI prints its lock height and the unbonding period. Below
+that gate it is one Normal output to the same address. See `specs/protocol.md` §3.13.2.
 
 **WHITEPAPER Reference:** Section 6.4 (Bond Lifecycle)
 - Penalty burns are permanent (deflationary)

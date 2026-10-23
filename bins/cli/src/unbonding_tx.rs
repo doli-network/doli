@@ -41,8 +41,22 @@ pub fn unbonding_lock_until(params: &NetworkParams, best_height: u64) -> u64 {
         .saturating_add(UNBONDING_LOCK_MARGIN)
 }
 
+/// Appends `utxos` in order while their total is below `target`; returns the total.
+fn take_fee_inputs(utxos: &[FeeUtxo], target: u64, inputs: &mut Vec<Input>) -> u64 {
+    let mut total = 0u64;
+    for utxo in utxos {
+        if total >= target {
+            break;
+        }
+        inputs.push(Input::new(utxo.tx_hash, utxo.output_index));
+        total = total.saturating_add(utxo.amount);
+    }
+    total
+}
+
 /// Builds the unsigned withdrawal: one locked Unbonding output to the
 /// producer's own address at/above the gate, today's Normal payout below it.
+/// At/above the gate with no Bond inputs, fee UTXOs fund the fee and the payout.
 pub fn build_withdrawal_tx(
     params: &NetworkParams,
     best_height: u64,
@@ -62,10 +76,22 @@ pub fn build_withdrawal_tx(
                     .to_string(),
             );
         }
-        if spec.total_net <= spec.fee {
+        let mut gross = spec.total_net;
+        if spec.bond_inputs.is_empty() {
+            // A zero-value payout is refused, so the inputs must EXCEED the fee.
+            let paid_in = take_fee_inputs(&spec.fee_utxos, spec.fee.saturating_add(1), &mut inputs);
+            if paid_in <= spec.fee {
+                return Err(format!(
+                    "insufficient spendable balance for the tx fee and payout: need more than {}, have {}",
+                    spec.fee, paid_in
+                ));
+            }
+            gross = gross.saturating_add(paid_in);
+        }
+        if gross <= spec.fee {
             return Err(format!(
                 "withdrawn amount {} does not cover the fee {}",
-                spec.total_net, spec.fee
+                gross, spec.fee
             ));
         }
         let mut tx = Transaction::new_request_withdrawal(
@@ -73,11 +99,11 @@ pub fn build_withdrawal_tx(
             spec.producer,
             spec.bond_count,
             own,
-            spec.total_net - spec.fee,
+            gross - spec.fee,
         );
         tx.outputs = vec![Output {
             output_type: OutputType::Unbonding,
-            amount: spec.total_net - spec.fee,
+            amount: gross - spec.fee,
             pubkey_hash: own,
             lock_until: unbonding_lock_until(params, best_height),
             extra_data: Vec::new(),
@@ -85,14 +111,7 @@ pub fn build_withdrawal_tx(
         return Ok(tx);
     }
 
-    let mut fee_input_total = 0u64;
-    for utxo in &spec.fee_utxos {
-        if fee_input_total >= spec.fee {
-            break;
-        }
-        inputs.push(Input::new(utxo.tx_hash, utxo.output_index));
-        fee_input_total = fee_input_total.saturating_add(utxo.amount);
-    }
+    let fee_input_total = take_fee_inputs(&spec.fee_utxos, spec.fee, &mut inputs);
     if fee_input_total < spec.fee {
         return Err(format!(
             "insufficient spendable balance for the tx fee: need {}, have {}",

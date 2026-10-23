@@ -365,6 +365,6 @@ Reasoning: The cause is known and deterministic, there are no prior fix attempts
 | REQ-PAUTH-001 | Must | (test-writer) | (architect) | M1: `crates/core/src/validation/producer_auth.rs` (`check_producer_auth`, scoped to Registration, AddBond, RequestWithdrawal) |
 | REQ-PAUTH-002 | Must | (test-writer) | (architect) | M1: `crates/core/src/transaction/producer_auth.rs`; `crates/core/src/validation/producer_auth.rs`; calls in `validation/transaction.rs`; gate at every context site (`crates/mempool/src/{pool,unbonding}.rs`, `bins/node/src/node/{production/assembly,apply_block/tx_processing,validation_checks/mod,validation_checks/slash_withdrawal}.rs`) |
 | REQ-PAUTH-003 | Must | (test-writer) | (architect) | M1: `crates/core/src/network_params/{mod,defaults,env_loader}.rs`; `crates/core/src/validation/types.rs` (context default off) |
-| REQ-PAUTH-004 | Must | (test-writer) | (architect) | (developer) |
-| REQ-PAUTH-005 | Should | (test-writer) | (architect) | (developer) |
+| REQ-PAUTH-004 | Must | (test-writer) | (architect) | M2: `bins/cli/src/unbonding_tx.rs` (`build_withdrawal_tx`, gated arm with no Bond inputs funded by fee UTXOs); `bins/cli/src/cmd_producer/exit.rs` (`handle_exit` through the lib builder, ProducerSet allowance, zero-Bond-input full exit). Node: no change (M1 already accepts the form) |
+| REQ-PAUTH-005 | Should | (test-writer) | (architect) | M2: `specs/protocol.md` §3.7, §3.13.2; `docs/cli.md` §4.1, §4.5, §4.6, §4.8; `specs/security_model.md` §4.5. memory.db rows: at close-out |
 | REQ-PAUTH-006 | Must | (test-writer) | (architect) | M1: `bins/node/src/node/production/assembly.rs` (genesis Registration); `bins/cli/src/producer_tx.rs`; `bins/cli/src/cmd_producer/{register,bonds,withdrawal,exit}.rs` |

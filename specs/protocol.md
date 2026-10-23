@@ -300,7 +300,7 @@ exit_tx = {
 }
 ```
 
-Initiates the 7-day unbonding period. Producer is removed from active set. Exit transactions must have no inputs or outputs - they simply identify the producer exiting. The bond is released after the unbonding period via ClaimBond transaction.
+Exit transactions must have no inputs or outputs - they simply identify the producer exiting. Transaction validation refuses every Exit at every height, so no block carries one. A producer leaves the set with a full-exit RequestWithdrawal (§3.13, §3.13.2).
 
 ### 3.8 Claim Reward Transaction (DEPRECATED)
 
@@ -1168,6 +1168,32 @@ the same fields with or without the 64-byte tail. The mempool judges the rule at
 genesis-window Registration at and above the gate. The DOLI CLI signs register,
 add-bond, request-withdrawal and exit at every height, with the genesis hash from
 `getChainInfo`.
+
+Exit is outside this rule and unchanged: transaction validation refuses every
+Exit at every height, so it stays unmineable (§3.7). A producer leaves the set
+with a RequestWithdrawal that declares its whole allowance (a full exit), which
+must spend every Bond UTXO the producer owns.
+
+When the ProducerSet still lists bonds for a producer that owns no live Bond
+UTXO, its full exit has zero Bond inputs. Normal inputs pay the fee and fund the
+payout, and their total must exceed the fee because a zero-value output is
+refused (`[ERRTX003]`). At and above the unbonding gate (§3.13.1) the payout is
+one Unbonding output to the producer's own address; below it, one Normal output.
+At and above the producer-authorization gate the producer signature is the only
+authorization of this form, so only the producer's own key can force this full
+exit. The DOLI
+CLI `exit` builds it when the wallet owns no live Bond UTXO, from the wallet's
+spendable Normal outputs.
+
+Post-states. After a full withdrawal the ProducerSet entry stays with status
+Exited, 0 bonds and 0 pending withdrawals; a later RequestWithdrawal that names
+it is refused, because a declared 0 is malformed and any declared count exceeds
+the allowance 0 (`[ECON_WITHDRAWAL_OVER_HOLDINGS]`). From the slashing
+activation height, a slashed or slash-queued producer cannot withdraw:
+block validation refuses a RequestWithdrawal that names it with
+`[ECON_WITHDRAWAL_SLASHED]` (§3.10), and the mempool refuses it as well. That
+refusal applies even when the producer signs it, and it is not
+`[ERRTX-PAUTH001]`.
 
 ### 3.15 RemoveMaintainer Transaction
 
