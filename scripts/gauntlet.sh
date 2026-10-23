@@ -141,6 +141,14 @@
 #     devnet, publishes a second block signed by a scheduled producer for a slot
 #     it already filled, and checks the slash on every node; run
 #     scripts/gauntlet-gs027.sh directly.
+#   * GS-028 (withdraw-then-equivocate and forced exit, INC-I-257, INC-I-182)
+#     is STANDALONE ONLY: this runner SKIPs its tokens. It stands up an
+#     ephemeral devnet where a producer withdraws its whole bond and then
+#     equivocates; run scripts/gauntlet-gs028.sh directly.
+#   * GS-029 (mixed-version devnet and gate crossing, INC-I-182, INC-I-257,
+#     INC-I-255, INC-I-236) is STANDALONE ONLY: this runner SKIPs its tokens.
+#     It runs old and HEAD nodes on one ephemeral devnet; run
+#     scripts/gauntlet-gs029.sh directly.
 #
 # Assertions key off STRUCTURED telemetry fields (gap=, rollback_depth=,
 # sync_fails=, state=) and distinct-event phrases — NEVER raw keywords that also
@@ -751,6 +759,10 @@ assert(){
       ok=2; why="$t: standalone scenario, run scripts/gauntlet-gs026.sh (not part of gauntlet.sh)" ;;
     gs027-one-slash-mined|gs027-producer-slashed-everywhere|gs027-bond-burned-once|gs027-tips-equal|gs027-production-continues|gs027-mempool-slash-bounded|gs027-one-shared-slash-id)
       ok=2; why="$t: standalone scenario, run scripts/gauntlet-gs027.sh (not part of gauntlet.sh)" ;;
+    gs028-withdrawal-before-evidence|gs028-one-slash-mined|gs028-slash-burns-locked|gs028-full-bond-leaves-supply|gs028-producer-gets-nothing|gs028-forced-exit-refused|gs028-tips-equal|gs028-production-continues|gs028-target-status-slashed)
+      ok=2; why="$t: standalone scenario, run scripts/gauntlet-gs028.sh (not part of gauntlet.sh)" ;;
+    gs029-mixed-txs-mined|gs029-old-producer-built|gs029-mixed-producer-set-equal|gs029-mixed-no-fork|gs029-mixed-state-equal|gs029-old-blocks-canonical|gs029-restart-same-datadir|gs029-crossing-no-fork|gs029-unsigned-tx-refused|gs029-unsigned-block-refused|gs029-signed-tx-mined|gs029-post-gate-unbonding)
+      ok=2; why="$t: standalone scenario, run scripts/gauntlet-gs029.sh (not part of gauntlet.sh)" ;;
     *)
       why="unknown assertion token '$t'" ;;
   esac
@@ -778,6 +790,11 @@ inj_tag(){
 # ── run scenarios ───────────────────────────────────────────────────────────
 say "\n${C_C}▸ evaluating scenarios${C_0}  ${C_Y}(inj=trigger actively injected · obs=invariant observed)${C_0}"
 TOTAL=0; PASSED=0; WAIVED=0; FAILURES_JSON="["; FJ_FIRST=1
+ARMED_MANUAL="''"
+[ "$GS010" = 1 ] && ARMED_MANUAL="$ARMED_MANUAL,'GS-010'"
+[ "$GS014" = 1 ] && ARMED_MANUAL="$ARMED_MANUAL,'GS-014'"
+[ "$GS016" = 1 ] && ARMED_MANUAL="$ARMED_MANUAL,'GS-016'"
+[ "$GS019" = 1 ] && ARMED_MANUAL="$ARMED_MANUAL,'GS-019'"
 while IFS='|' read -r sid sname sassert; do
   [ -z "$sid" ] && continue
   tag="$(inj_tag "$sid")"
@@ -818,7 +835,7 @@ while IFS='|' read -r sid sname sassert; do
     FAILURES_JSON="$FAILURES_JSON{\"scenario\":\"$sid\",\"reasons\":$local_reasons}"
   fi
 done <<EOF
-$(sqlite3 -separator '|' "$DB" "SELECT scenario_id,name,assertions FROM gauntlet_scenarios WHERE status='active' ORDER BY scenario_id;")
+$(sqlite3 -separator '|' "$DB" "SELECT scenario_id,name,assertions FROM gauntlet_scenarios WHERE status='active' OR (status='manual' AND scenario_id IN ($ARMED_MANUAL)) ORDER BY scenario_id;")
 EOF
 # chaos injector failed to recover the node → hard fail regardless of assertions
 if [ "$CHAOS" = "1" ] && [ "$CHAOS_RECOVERED" != "1" ]; then

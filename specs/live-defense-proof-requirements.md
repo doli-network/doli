@@ -256,23 +256,23 @@ Notation: B = bond amount of the target (read from the chain), U = amount of the
 | REQ-LDP-033 | Could | METRIC field | `scripts/gauntlet-gs029.sh` |
 | REQ-LDP-034 | Won't | in-process tests named in D2 | - |
 | REQ-LDP-035 | Won't | - | - |
-| REQ-LDP-040 | Must | text check | `WHITEPAPER.md`, `WHITEPAPER-es.md` |
-| REQ-LDP-041 | Must | text check | same |
-| REQ-LDP-042 | Must | text check | same |
-| REQ-LDP-043 | Must | text check | same |
-| REQ-LDP-044 | Must | text check | same |
-| REQ-LDP-045 | Must | text check (no digits-as-heights, no dates) | same |
-| REQ-LDP-046 | Should | whitepaper text check script | `scripts/` (new test) |
-| REQ-LDP-047 | Must | final report | - |
-| REQ-LDP-048 | Could | text check or report flag | `WHITEPAPER*.md` |
-| REQ-LDP-050 | Should | seed-file test | `scripts/gauntlet-seed.sql` |
-| REQ-LDP-051 | Should | run report | gauntlet run record |
-| REQ-LDP-052 | Should | run report | - |
-| REQ-LDP-053 | Must | run report | - |
-| REQ-LDP-054 | Should | review | `scripts/README.md` |
-| REQ-LDP-060 | Should | row query | `scripts/gauntlet-seed.sql`, memory rows |
-| REQ-LDP-061 | Should | row query | memory rows |
-| REQ-LDP-062 | Should | row query | memory rows |
+| REQ-LDP-040 | Must | `scripts/test_whitepaper_defense_text.sh` (pytest `scripts/test_defense_records.py::test_whitepaper_defense_text`) | `WHITEPAPER.md` §6.1 item 8, `WHITEPAPER-es.md` §6.1 item 8 |
+| REQ-LDP-041 | Must | `scripts/test_whitepaper_defense_text.sh` (pytest `scripts/test_defense_records.py::test_whitepaper_defense_text`) | `WHITEPAPER*.md` §7.4 withdrawal and slashable paragraphs |
+| REQ-LDP-042 | Must | `scripts/test_whitepaper_defense_text.sh` (pytest `scripts/test_defense_records.py::test_whitepaper_defense_text`) | `WHITEPAPER*.md` §7 producer-authorization paragraph |
+| REQ-LDP-043 | Must | `scripts/test_whitepaper_defense_text.sh` (pytest `scripts/test_defense_records.py::test_whitepaper_defense_text`) | `WHITEPAPER*.md` §11.3 penalty list |
+| REQ-LDP-044 | Must | `scripts/test_whitepaper_defense_text.sh` (pytest `scripts/test_defense_records.py::test_whitepaper_defense_text`) | `WHITEPAPER*.md` §19.4, summary list (§20.1); unbonding table row unchanged |
+| REQ-LDP-045 | Must | `scripts/test_whitepaper_defense_text.sh` (pytest `scripts/test_defense_records.py::test_whitepaper_defense_text`) (no digits-as-heights, no dates, no network named) | every changed passage above |
+| REQ-LDP-046 | Should | `scripts/test_whitepaper_defense_text.sh` (pytest `scripts/test_defense_records.py::test_whitepaper_defense_text`) | `scripts/test_whitepaper_defense_text.sh` |
+| REQ-LDP-047 | Must | final report; EN/ES passage parity in `scripts/test_whitepaper_defense_text.sh` (pytest `scripts/test_defense_records.py::test_whitepaper_defense_text`) | - |
+| REQ-LDP-048 | Could | `scripts/test_whitepaper_defense_text.sh` (pytest `scripts/test_defense_records.py::test_whitepaper_defense_text`) (count read from the TxType enum) | `WHITEPAPER*.md` §19.4 (27 -> 24) |
+| REQ-LDP-050 | Should | `scripts/test_gauntlet_seed_optin.sh` (pytest `scripts/test_defense_records.py::test_gauntlet_seed_optin`) | `scripts/gauntlet-seed.sql`, memory `gauntlet_scenarios` |
+| REQ-LDP-051 | Should | run report | gauntlet run record (`mechanism_id` `gauntlet.sh-default`), `scripts/README.md` counting paragraph |
+| REQ-LDP-052 | Should | run report; `scripts/test_gauntlet_seed_optin.sh` (pytest `scripts/test_defense_records.py::test_gauntlet_seed_optin`) (no active runner writes a chain or wipes data) | `scripts/gauntlet-seed.sql` |
+| REQ-LDP-053 | Must | run report; `scripts/test_gauntlet_seed_optin.sh` (pytest `scripts/test_defense_records.py::test_gauntlet_seed_optin`) (no pkill/killall/ssh in registered runners) | - |
+| REQ-LDP-054 | Should | `scripts/test_gauntlet_seed_optin.sh` (pytest `scripts/test_defense_records.py::test_gauntlet_seed_optin`) (bullets, env knobs, commands, MANUAL-ONLY marks) | `scripts/README.md` |
+| REQ-LDP-060 | Should | `scripts/test_gauntlet_seed_optin.sh` (pytest `scripts/test_defense_records.py::test_gauntlet_seed_optin`) | `scripts/gauntlet-seed.sql`, `scripts/gauntlet.sh` case arms, memory rows |
+| REQ-LDP-061 | Should | `scripts/test_whitepaper_defense_text.sh` (pytest `scripts/test_defense_records.py::test_whitepaper_defense_text`) (decision row query, SKIP without memory) | memory `decisions` |
+| REQ-LDP-062 | Should | `scripts/test_gauntlet_seed_optin.sh` (pytest `scripts/test_defense_records.py::test_gauntlet_seed_optin`) | `scripts/gauntlet-seed.sql`, memory rows |
 
 ## Specs Drift Detected
 

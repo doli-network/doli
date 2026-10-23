@@ -451,6 +451,7 @@ A block *B* is valid if:
 5. `B.producer` is the correct round-robin selection for `B.slot` given the epoch-frozen active list (`active_list[slot mod |active_list|]`)
 6. `verify_hash_chain(preimage, B.delay_output, T) == true`
 7. All transactions in the block are valid
+8. From its activation height, the header carries the signature of the scheduled producer `B.producer` over the block's signing message; a block with no signature or a wrong signature is rejected
 
 ### 6.2. Clock Synchronization
 
@@ -509,6 +510,8 @@ A registration is valid if:
 2. The epoch is current or previous.
 3. The public key is not already registered.
 4. The activation bond is included.
+
+From its activation height, a `Registration`, an `AddBond` or a `RequestWithdrawal` is valid only with the signature of the producer it names. A third party cannot register another party's key, add bonds in another producer's name, or withdraw another producer's bond, so no one can force a producer out of the set.
 
 ### 7.1. Registration Difficulty
 
@@ -597,9 +600,9 @@ T_commitment = 12,614,400 blocks (~4 years)
 
 Each bond tracks its own creation time. Withdrawal uses FIFO order (oldest bonds first), with penalty calculated individually per bond based on its age.
 
-**Withdrawal uses a two-step process with a 7-day unbonding period** (60,480 blocks). A producer submits a `RequestWithdrawal` transaction, which begins the unbonding countdown. After 60,480 blocks (~7 days), the producer submits a `ClaimWithdrawal` transaction to receive the funds. Bond removal from the active set takes effect at the next epoch boundary after the request.
+**From its activation height, withdrawal is one step.** A producer submits one `RequestWithdrawal` transaction. It pays the withdrawn amount, less any vesting penalty below, into a single locked unbonding output owned by the producer. That output can be spent only after the unbonding period (60,480 blocks on mainnet): the producer receives nothing spendable before the lock ends, and there is no separate claim step. Bond removal from the active set takes effect at the next epoch boundary after the request.
 
-The unbonding period prevents short-range attacks where a producer withdraws immediately after misbehaving, and ensures the network retains slashing capability during the dispute window.
+While the output is locked, a slash can still burn it (Section 11.3), from its activation height. A producer that misbehaves and then withdraws does not escape the penalty: the network keeps its slashing capability for the whole unbonding period.
 
 Early withdrawal incurs a tiered FIFO vesting penalty based on individual bond age:
 
@@ -856,11 +859,12 @@ Inactivity is not punished — it is tolerated. A producer who goes offline lose
 
 If a producer creates two different blocks for the same slot, anyone can construct a proof of this infraction.
 
-**Penalty:**
+**Penalty** (from its activation height):
 
-- 100% of bond burned permanently
-- Immediate exclusion from producer set
-- To reactivate: new registration required
+- 100% of the bond burned permanently, including withdrawn bond still locked in an unbonding output
+- Exclusion from the producer set at the next epoch boundary
+- No part of the burned bond goes to the reporter
+- The slashed key can never register again; a new identity needs a new key and a new bond
 
 This is the only infraction that results in slashing because it is the only one that is unambiguously intentional.
 
@@ -1147,7 +1151,7 @@ There is no gas estimation. There is no nonce race. For value-transfer and condi
 
 ### 19.4. Typed Transactions
 
-DOLI exposes 27 explicit transaction types — `Transfer`, `Registration`, `AddBond`, `DelegateBond`, `RequestWithdrawal`, `ClaimWithdrawal`, `Swap`, `AddLiquidity`, `NftMint`, `BridgeLock`, and others — instead of an opaque `data` field carrying ABI-encoded calldata.
+DOLI exposes 24 explicit transaction types — `Transfer`, `Registration`, `AddBond`, `DelegateBond`, `RequestWithdrawal`, `Swap`, `AddLiquidity`, `NftMint`, `BridgeLock`, and others — instead of an opaque `data` field carrying ABI-encoded calldata. Some of these types are refused until their activation height.
 
 Each type has its own validation rules, its own structured error responses, and a fixed cost model. An agent does not need a contract ABI to interpret a transaction; the type itself describes what the transaction does.
 
@@ -1278,7 +1282,7 @@ We believe honesty about what works and what doesn't is more valuable than a pol
 
 - Block production, delay proofs, and deterministic scheduling
 - Epoch reward distribution with BLS attestation aggregation
-- Bond lifecycle: stacking, two-step withdrawal with FIFO vesting penalties
+- Bond lifecycle: stacking and withdrawal with FIFO vesting penalties; one-step locked withdrawal from its activation height
 - Cross-chain atomic swaps (HTLC) with BSC (BEP-20 USDT)
 - Liveness filter with 3-epoch lookback and safety floor
 - Weight-based fork choice with seniority

@@ -451,6 +451,7 @@ Un bloque *B* es valido si:
 5. `B.producer` es la seleccion round-robin correcta para `B.slot` dada la lista activa congelada del epoch (`active_list[slot mod |active_list|]`)
 6. `verify_hash_chain(preimage, B.delay_output, T) == true`
 7. Todas las transacciones en el bloque son validas
+8. Desde su altura de activacion, la cabecera lleva la firma del productor asignado `B.producer` sobre el mensaje de firma del bloque; un bloque sin firma o con una firma incorrecta se rechaza
 
 ### 6.2. Sincronizacion de reloj
 
@@ -509,6 +510,8 @@ Un registro es valido si:
 2. El epoch es el actual o el anterior.
 3. La clave publica no esta ya registrada.
 4. El bond de activacion esta incluido.
+
+Desde su altura de activacion, un `Registration`, un `AddBond` o un `RequestWithdrawal` es valido solo con la firma del productor que nombra. Un tercero no puede registrar la clave de otro, agregar bonds a nombre de otro productor ni retirar el bond de otro productor, asi que nadie puede forzar la salida de un productor del conjunto.
 
 ### 7.1. Dificultad de registro
 
@@ -597,9 +600,9 @@ T_commitment = 12,614,400 blocks (~4 years)
 
 Cada bond rastrea su propio tiempo de creacion. El retiro utiliza orden FIFO (los bonds mas antiguos primero), con penalizacion calculada individualmente por bond segun su edad.
 
-**El retiro utiliza un proceso de dos pasos con un periodo de desvinculacion de 7 dias** (60,480 bloques). Un productor envia una transaccion `RequestWithdrawal`, que inicia la cuenta regresiva de desvinculacion. Despues de 60,480 bloques (~7 dias), el productor envia una transaccion `ClaimWithdrawal` para recibir los fondos. La eliminacion del bond del conjunto activo toma efecto en el siguiente limite de epoch despues de la solicitud.
+**Desde su altura de activacion, el retiro es de un solo paso.** Un productor envia una transaccion `RequestWithdrawal`. Esta paga el monto retirado, menos la penalizacion de vesting que corresponda, a una unica salida de desvinculacion bloqueada que pertenece al productor. Esa salida solo se puede gastar despues del periodo de desvinculacion (60,480 bloques en mainnet): el productor no recibe nada gastable antes de que termine el bloqueo, y no hay un paso de reclamo separado. La eliminacion del bond del conjunto activo toma efecto en el siguiente limite de epoch despues de la solicitud.
 
-El periodo de desvinculacion previene ataques de corto alcance donde un productor se retira inmediatamente despues de portarse mal, y asegura que la red retenga la capacidad de slashing durante la ventana de disputa.
+Mientras la salida esta bloqueada, un slashing todavia puede quemarla (Seccion 11.3), desde su altura de activacion. Un productor que se porta mal y luego se retira no escapa de la penalizacion: la red conserva su capacidad de slashing durante todo el periodo de desvinculacion.
 
 El retiro anticipado incurre en una penalizacion escalonada FIFO basada en la edad individual del bond:
 
@@ -854,11 +857,12 @@ La inactividad no se castiga — se tolera. Un productor que se desconecta pierd
 
 Si un productor crea dos bloques diferentes para el mismo slot, cualquiera puede construir una prueba de esta infraccion.
 
-**Penalizacion:**
+**Penalizacion** (desde su altura de activacion):
 
-- 100% del bond quemado permanentemente
-- Exclusion inmediata del conjunto de productores
-- Para reactivarse: nuevo registro requerido
+- 100% del bond quemado permanentemente, incluido el bond retirado que sigue bloqueado en una salida de desvinculacion
+- Exclusion del conjunto de productores en el siguiente limite de epoch
+- Ninguna parte del bond quemado va al denunciante
+- La clave penalizada nunca puede registrarse de nuevo; una nueva identidad necesita una nueva clave y un nuevo bond
 
 Esta es la unica infraccion que resulta en slashing porque es la unica que es inequivocamente intencional.
 
@@ -1145,7 +1149,7 @@ No hay estimacion de gas. No hay race de nonce. Para transacciones de transferen
 
 ### 19.4. Transacciones tipadas
 
-DOLI expone 27 tipos de transaccion explicitos — `Transfer`, `Registration`, `AddBond`, `DelegateBond`, `RequestWithdrawal`, `ClaimWithdrawal`, `Swap`, `AddLiquidity`, `NftMint`, `BridgeLock`, entre otros — en lugar de un campo `data` opaco que lleva calldata codificado en ABI.
+DOLI expone 24 tipos de transaccion explicitos — `Transfer`, `Registration`, `AddBond`, `DelegateBond`, `RequestWithdrawal`, `Swap`, `AddLiquidity`, `NftMint`, `BridgeLock`, entre otros — en lugar de un campo `data` opaco que lleva calldata codificado en ABI. Algunos de estos tipos se rechazan hasta su altura de activacion.
 
 Cada tipo tiene sus propias reglas de validacion, sus propias respuestas de error estructuradas y un modelo de costo fijo. Un agente no necesita un ABI de contrato para interpretar una transaccion; el tipo mismo describe lo que la transaccion hace.
 
@@ -1276,7 +1280,7 @@ Creemos que la honestidad sobre lo que funciona y lo que no es mas valiosa que u
 
 - Produccion de bloques, pruebas de retardo y scheduling determinista
 - Distribucion de recompensas por epoch con agregacion de attestation BLS
-- Ciclo de vida de bonds: apilamiento, retiro en dos pasos con penalizaciones de vesting FIFO
+- Ciclo de vida de bonds: apilamiento y retiro con penalizaciones de vesting FIFO; retiro en un paso con bloqueo desde su altura de activacion
 - Atomic swaps entre cadenas (HTLC) con BSC (BEP-20 USDT)
 - Filtro de actividad con lookback de 3 epochs y piso de seguridad
 - Seleccion de fork basada en peso con antiguedad
