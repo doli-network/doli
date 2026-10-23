@@ -205,7 +205,7 @@ fn signed_withdrawal(node: &Node, kp: &KeyPair, declared: u32, spends: u32) -> T
     for i in 0..tx.inputs.len() {
         sign_input(&mut tx, i, kp);
     }
-    tx
+    super::inc_i_255_m2_common::producer_auth(tx, kp)
 }
 
 /// Build the whole `U > P` world at `height` and apply one block carrying the

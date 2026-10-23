@@ -20,6 +20,11 @@ impl Node {
         // merkle root from exactly the transactions that will be in the final block.
         let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
         let fork_id_activation = self.config.network.params().fork_id_activation_height;
+        let pauth_gate = self
+            .config
+            .network
+            .params()
+            .inc_i_182_producer_auth_activation_height;
         let fork_id = if height >= fork_id_activation {
             self.current_fork_id()
         } else {
@@ -135,13 +140,20 @@ impl Node {
                 };
                 let extra_data = bincode::serialize(&reg_data)
                     .expect("RegistrationData serialization cannot fail");
-                let reg_tx = Transaction {
+                let mut reg_tx = Transaction {
                     version: 1,
                     tx_type: TxType::Registration,
                     inputs: vec![],
                     outputs: vec![],
                     extra_data,
                 };
+                if let Some(kp) = self.producer_key.as_ref().filter(|_| height >= pauth_gate) {
+                    doli_core::transaction::sign_producer_auth(
+                        &mut reg_tx,
+                        &self.params.genesis_hash,
+                        kp,
+                    );
+                }
                 builder.add_transaction(reg_tx);
                 info!(
                     "Included genesis VDF proof Registration TX in block {} for {}",
@@ -282,6 +294,7 @@ impl Node {
                     .inc_i_257_unbonding_activation_height,
                 self.config.network.params().unbonding_period,
             )
+            .with_inc_i_182_producer_auth(pauth_gate)
             .with_slash_targets(slash_targets)
             .with_oracle_activation_height(self.config.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(

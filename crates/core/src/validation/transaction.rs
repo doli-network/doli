@@ -114,6 +114,7 @@ pub fn validate_transaction(
     // 4. Validate all outputs
     let total_output = validate_outputs(&tx.outputs, ctx)?;
     super::check_output_placement(tx, ctx)?;
+    super::producer_auth::check_producer_auth(tx, ctx)?;
 
     // 5. Total output must not exceed max supply
     if total_output > TOTAL_SUPPLY {
@@ -320,6 +321,7 @@ pub fn validate_transaction_skip_registration_vdf(
                 });
             }
             super::check_output_placement(tx, ctx)?;
+            super::producer_auth::check_producer_auth(tx, ctx)?;
             validate_registration_data_skip_vdf(tx, ctx)?;
             Ok(())
         }

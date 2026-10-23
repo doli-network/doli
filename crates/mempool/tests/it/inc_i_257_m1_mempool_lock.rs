@@ -101,7 +101,11 @@ fn gated_withdrawal(inputs: &[Outpoint], net: u64) -> Transaction {
         .collect();
     let mut tx = Transaction::new_request_withdrawal(ins, pk, 1, addr(&pk), net);
     tx.outputs = vec![unbonding_out(net, TIP + 1 + PERIOD + 5)];
-    signed(tx)
+    // INC-I-182: the devnet producer-auth gate is 0, so the producer signs the payload.
+    let mut tx = signed(tx);
+    let genesis = doli_core::consensus::ConsensusParams::devnet().genesis_hash;
+    doli_core::transaction::sign_producer_auth(&mut tx, &genesis, &kp());
+    tx
 }
 
 fn devnet_pool() -> Mempool {

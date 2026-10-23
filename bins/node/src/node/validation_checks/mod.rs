@@ -146,6 +146,12 @@ impl Node {
                 .inc_i_257_unbonding_activation_height,
             self.config.network.params().unbonding_period,
         )
+        .with_inc_i_182_producer_auth(
+            self.config
+                .network
+                .params()
+                .inc_i_182_producer_auth_activation_height,
+        )
         .with_epoch_producer_list(if self.epoch_state.active_list.is_empty() {
             self.epoch_state.producer_list.clone()
         } else {
@@ -394,6 +400,12 @@ impl Node {
                 .params()
                 .inc_i_257_unbonding_activation_height,
             self.config.network.params().unbonding_period,
+        )
+        .with_inc_i_182_producer_auth(
+            self.config
+                .network
+                .params()
+                .inc_i_182_producer_auth_activation_height,
         )
         .with_slash_targets(slash_targets)
         .with_inc_i_026_scheduler_activation_height(

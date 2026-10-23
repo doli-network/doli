@@ -174,6 +174,7 @@ async fn inc_i_257_m2_req_unbond_010_rebuild_burns_locked_unbonding() {
     let mut ab = Transaction::new_add_bond(vec![inp], pk, 2, 2 * unit, u64::MAX);
     let msg = ab.signing_message_for_input(0);
     ab.inputs[0].signature = crypto::signature::sign_hash(&msg, r.keys.accused.private_key());
+    let ab = super::inc_i_255_m2_common::producer_auth(ab, &r.keys.accused);
     mine(&mut r, vec![ab.clone()], "the AddBond").await;
     let lock = r.best().await.0 + 1 + period(&r);
     let bond = Outpoint::new(ab.hash(), 0);

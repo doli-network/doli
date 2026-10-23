@@ -78,7 +78,7 @@ fn signed_withdrawal(node: &Node, kp: &KeyPair, producer: &PublicKey) -> Transac
         let signing_hash = tx.signing_message_for_input(i);
         tx.inputs[i].signature = crypto::signature::sign_hash(&signing_hash, kp.private_key());
     }
-    tx
+    super::inc_i_255_m2_common::producer_auth(tx, kp)
 }
 
 async fn offer(node: &Node, tx: &Transaction) -> Result<(), String> {

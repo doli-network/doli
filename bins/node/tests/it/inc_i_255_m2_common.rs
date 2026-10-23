@@ -79,6 +79,19 @@ pub fn run_b_withdrawal(
     tx
 }
 
+/// INC-I-182: the producer signs the payload while the loaded devnet gate is
+/// armed; with the gate at `u64::MAX` the tx stays byte-identical (goldens).
+pub fn producer_auth(mut tx: Transaction, producer: &KeyPair) -> Transaction {
+    let gate = doli_core::Network::Devnet
+        .params()
+        .inc_i_182_producer_auth_activation_height;
+    if gate != u64::MAX {
+        let genesis = doli_core::consensus::ConsensusParams::devnet().genesis_hash;
+        doli_core::transaction::sign_producer_auth(&mut tx, &genesis, producer);
+    }
+    tx
+}
+
 pub fn outpoints(tag: u8, n: u32) -> Vec<Outpoint> {
     let h = Hash::from_bytes([tag; 32]);
     (0..n).map(|i| Outpoint::new(h, i)).collect()

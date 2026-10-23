@@ -1,11 +1,13 @@
 use anyhow::Result;
-use crypto::{signature, Hash, PublicKey};
-use doli_core::{Input, Output, Transaction};
+use crypto::{Hash, PublicKey};
 
 use super::common::{compute_fifo_breakdown, confirm_bond_lock, display_fifo_breakdown};
 use crate::rpc_client::{format_balance, RpcClient};
 use crate::wallet::Wallet;
 use doli_cli::producer_ledger::{addbond_current_from_rpc, addbond_headroom_check};
+use doli_cli::producer_tx::{
+    build_add_bond_tx, chain_genesis_hash, finalize_producer_tx, AddBondSpec,
+};
 
 pub(super) async fn handle_add_bond(
     wallet: &Wallet,
@@ -97,11 +99,11 @@ pub(super) async fn handle_add_bond(
     }
 
     // Build inputs
-    let mut inputs: Vec<Input> = Vec::new();
+    let mut inputs: Vec<(Hash, u32)> = Vec::new();
     for utxo in &selected_utxos {
         let prev_tx_hash =
             Hash::from_hex(&utxo.tx_hash).ok_or_else(|| anyhow::anyhow!("Invalid UTXO tx_hash"))?;
-        inputs.push(Input::new(prev_tx_hash, utxo.output_index));
+        inputs.push((prev_tx_hash, utxo.output_index));
     }
 
     // Parse producer public key
@@ -118,23 +120,21 @@ pub(super) async fn handle_add_bond(
     let lock_until = chain_info.best_height + blocks_per_era + 1000;
 
     // Create add-bond transaction (lock/unlock: creates Bond UTXO)
-    let mut tx =
-        Transaction::new_add_bond(inputs, producer_pubkey, count, required_amount, lock_until);
+    let change_to =
+        Hash::from_hex(pubkey_hash).ok_or_else(|| anyhow::anyhow!("Invalid change address"))?;
+    let mut tx = build_add_bond_tx(&AddBondSpec {
+        inputs,
+        producer: producer_pubkey,
+        count,
+        bond_unit,
+        lock_until,
+        change: total_input - required_amount - fee,
+        change_to,
+    });
 
-    // Add change output
-    let change = total_input - required_amount - fee;
-    if change > 0 {
-        let change_hash =
-            Hash::from_hex(pubkey_hash).ok_or_else(|| anyhow::anyhow!("Invalid change address"))?;
-        tx.outputs.push(Output::normal(change, change_hash));
-    }
-
-    // Sign (BIP-143: per-input signing hash)
-    for i in 0..tx.inputs.len() {
-        let signing_hash = tx.signing_message_for_input(i);
-        tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
-        tx.inputs[i].public_key = Some(*keypair.public_key());
-    }
+    // Inputs (BIP-143) then the producer-auth signature over the chain genesis.
+    let genesis = chain_genesis_hash(&chain_info.genesis_hash).map_err(|e| anyhow::anyhow!(e))?;
+    finalize_producer_tx(&mut tx, keypair, &genesis);
 
     // Submit
     let tx_hex = hex::encode(tx.serialize());

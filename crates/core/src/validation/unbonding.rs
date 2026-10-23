@@ -25,7 +25,7 @@ impl ValidationContext {
         self
     }
 
-    fn inc_i_257_rule_height(&self) -> BlockHeight {
+    pub(super) fn inc_i_257_rule_height(&self) -> BlockHeight {
         self.current_height
             .saturating_add(u64::from(self.inc_i_257_rules_at_next_height))
     }

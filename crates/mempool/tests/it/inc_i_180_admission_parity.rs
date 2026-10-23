@@ -195,6 +195,13 @@ fn signed_withdrawal(
         tx.inputs[i].signature =
             crypto::signature::sign_hash(&signing_hash, spends[i].1.private_key());
     }
+    // INC-I-182: the devnet producer-auth gate is 0, so the producer signs the payload.
+    let (_, producer_key) = spends
+        .iter()
+        .find(|(_, k)| k.public_key() == producer)
+        .expect("fixture: the producer spends one of the inputs");
+    let genesis = ConsensusParams::devnet().genesis_hash;
+    doli_core::transaction::sign_producer_auth(&mut tx, &genesis, producer_key);
     tx
 }
 

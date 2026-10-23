@@ -48,7 +48,8 @@ impl Node {
                 .with_inc_i_257_unbonding(
                     params.inc_i_257_unbonding_activation_height,
                     params.unbonding_period,
-                );
+                )
+                .with_inc_i_182_producer_auth(params.inc_i_182_producer_auth_activation_height);
         let utxo = self.utxo_set.read().await;
         validation::validate_slash_bond_spends(&block.transactions, &ctx, &*utxo)?;
         Ok(())

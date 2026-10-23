@@ -73,6 +73,9 @@ fn signed(mut tx: Transaction) -> Transaction {
         let msg = tx.signing_message_for_input(i);
         tx.inputs[i].signature = crypto::signature::sign_hash(&msg, k.private_key());
     }
+    // INC-I-182: the devnet producer-auth gate is 0, so the producer signs the payload.
+    let genesis = ConsensusParams::devnet().genesis_hash;
+    doli_core::transaction::sign_producer_auth(&mut tx, &genesis, &k);
     tx
 }
 

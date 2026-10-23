@@ -126,6 +126,12 @@ impl Node {
                     .inc_i_257_unbonding_activation_height,
                 self.config.network.params().unbonding_period,
             )
+            .with_inc_i_182_producer_auth(
+                self.config
+                    .network
+                    .params()
+                    .inc_i_182_producer_auth_activation_height,
+            )
             .with_oracle_activation_height(self.config.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered

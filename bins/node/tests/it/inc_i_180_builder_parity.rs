@@ -148,7 +148,11 @@ fn signed_withdrawal(
     for (i, (_, owner)) in spends.iter().enumerate() {
         sign_input(&mut tx, i, owner);
     }
-    tx
+    let (_, key) = spends
+        .iter()
+        .find(|(_, k)| k.public_key() == producer)
+        .expect("fixture: the producer spends one of the inputs");
+    super::inc_i_255_m2_common::producer_auth(tx, key)
 }
 
 /// A high-fee `Transfer` used ONLY as the lower-index parent of the R4

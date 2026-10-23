@@ -6,6 +6,7 @@ use crypto::Hash;
 use doli_core::consensus::ConsensusParams;
 use doli_core::network::Network;
 use doli_core::transaction::Output;
+use doli_core::validation::producer_auth::check_producer_auth;
 use doli_core::validation::{check_unbonding_rules, spend_lock_verdict, ValidationContext};
 use doli_core::{BlockHeight, Transaction, TxType};
 use storage::UtxoEntry;
@@ -46,8 +47,9 @@ pub(crate) fn check_utxo(
     Ok(())
 }
 
-/// Resident RequestWithdrawals that fail the INC-I-257 output rules at `tip + 1`.
-pub(crate) fn unmineable_withdrawals<'a>(
+/// Residents that fail at `tip + 1`: the INC-I-257 output rules (RequestWithdrawal)
+/// or the INC-I-182 producer-auth rule (Registration, AddBond, RequestWithdrawal).
+pub(crate) fn unmineable_producer_txs<'a>(
     entries: impl IntoIterator<Item = (&'a Hash, &'a Transaction)>,
     params: &ConsensusParams,
     network: Network,
@@ -57,13 +59,19 @@ pub(crate) fn unmineable_withdrawals<'a>(
     let ctx = ValidationContext::new(params.clone(), network, 0, tip)
         .with_inc_i_255_slashing_activation_height(p.effective_slashing_activation_height())
         .with_inc_i_257_unbonding(p.inc_i_257_unbonding_activation_height, p.unbonding_period)
+        .with_inc_i_182_producer_auth(p.inc_i_182_producer_auth_activation_height)
         .with_inc_i_257_rules_at_next_height();
     entries
         .into_iter()
-        .filter(|(_, tx)| tx.tx_type == TxType::RequestWithdrawal)
         .filter_map(|(hash, tx)| {
-            let reason = check_unbonding_rules(tx, &ctx).err()?;
-            info!("INC-I-257: evicting withdrawal {hash} — {reason}");
+            let reason = match tx.tx_type {
+                TxType::RequestWithdrawal => check_unbonding_rules(tx, &ctx)
+                    .and_then(|()| check_producer_auth(tx, &ctx))
+                    .err()?,
+                TxType::Registration | TxType::AddBond => check_producer_auth(tx, &ctx).err()?,
+                _ => return None,
+            };
+            info!("evicting producer tx {hash} — {reason}");
             Some(*hash)
         })
         .collect()

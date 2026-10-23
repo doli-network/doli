@@ -45,7 +45,7 @@ fn add_bond(r: &Rig) -> Transaction {
     let mut tx = Transaction::new_add_bond(vec![inp], pk, BONDS, unit * BONDS as u64, u64::MAX);
     let msg = tx.signing_message_for_input(0);
     tx.inputs[0].signature = crypto::signature::sign_hash(&msg, r.keys.accused.private_key());
-    tx
+    producer_auth(tx, &r.keys.accused)
 }
 
 /// Every UTXO comes from a block except the AddBond funding coin, which block 1

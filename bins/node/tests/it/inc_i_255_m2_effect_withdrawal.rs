@@ -71,7 +71,7 @@ fn signed_withdrawal(unit: u64, kp: &KeyPair, ops: &[storage::Outpoint]) -> Tran
         let msg = tx.signing_message_for_input(i);
         tx.inputs[i].signature = crypto::signature::sign_hash(&msg, kp.private_key());
     }
-    tx
+    super::inc_i_255_m2_common::producer_auth(tx, kp)
 }
 
 async fn block_verdicts() -> Vec<(State, Result<(), String>)> {

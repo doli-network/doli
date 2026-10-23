@@ -864,6 +864,7 @@ pub struct NetworkParams {
     pub inc_i_255_slashing_activation_height: u64,
     /// INC-I-257 unbonding-lock gate; never above `effective_slashing_activation_height()`.
     pub inc_i_257_unbonding_activation_height: u64,
+    pub inc_i_182_producer_auth_activation_height: u64,
 
     /// INC-I-233 (F4) coinbase-credit gate. At and above it the six fee-exempt
     /// tx types credit 0 to the coinbase (`validation::coinbase_credit`); below

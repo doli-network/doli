@@ -175,13 +175,17 @@ fn genesis_registration_tx(producer: &KeyPair) -> Transaction {
         bls_pubkey: bls.public_key().as_bytes().to_vec(),
         bls_pop: pop.as_bytes().to_vec(),
     };
-    Transaction {
+    let mut tx = Transaction {
         version: 1,
         tx_type: TxType::Registration,
         inputs: Vec::new(),
         outputs: Vec::new(),
         extra_data: bincode::serialize(&reg).expect("fixture: RegistrationData must serialize"),
-    }
+    };
+    // INC-I-182: the devnet producer-auth gate is 0, so the producer signs the payload.
+    let genesis = doli_core::consensus::ConsensusParams::devnet().genesis_hash;
+    doli_core::transaction::sign_producer_auth(&mut tx, &genesis, producer);
+    tx
 }
 
 /// A dense chain that CROSSES the genesis boundary and carries real on-chain genesis

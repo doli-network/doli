@@ -167,10 +167,7 @@ pub struct ValidationContext {
     pub encrypted_content_v2_activation_height: u64,
     /// Unified activation height for all consensus-breaking security audit fixes.
     pub security_audit_activation_height: u64,
-    /// INC-I-088 Phase 0: originally gated 7 non-AMM DeFi tx types.
-    /// All 7 types are now tombstoned (lending B.1, NFT-frac B.2).
-    /// Field retained for structural compatibility with NetworkParams.
-    /// Default `u64::MAX` on all networks.
+    /// INC-I-088 Phase 0 gate; its 7 types are tombstoned. Default `u64::MAX`.
     pub defi_activation_height: u64,
     /// AMM Foundations M1: height at which the 4 AMM tx types
     /// (CreatePool, AddLiquidity, RemoveLiquidity, Swap) become valid for
@@ -259,6 +256,8 @@ pub struct ValidationContext {
     pub inc_i_257_unbonding_activation_height: u64,
     pub unbonding_period: u64,
     pub inc_i_257_rules_at_next_height: bool,
+    /// INC-I-182 producer-auth gate. Default `u64::MAX` (off).
+    pub inc_i_182_producer_auth_activation_height: u64,
     pub slash_targets: std::collections::HashMap<PublicKey, super::SlashTargetState>,
 }
 
@@ -308,6 +307,7 @@ impl ValidationContext {
             inc_i_257_unbonding_activation_height: u64::MAX,
             unbonding_period: 0,
             inc_i_257_rules_at_next_height: false,
+            inc_i_182_producer_auth_activation_height: u64::MAX,
             slash_targets: std::collections::HashMap::new(),
         }
     }

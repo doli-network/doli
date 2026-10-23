@@ -140,7 +140,11 @@ fn signed_withdrawal(
     for (i, (_, owner)) in spends.iter().enumerate() {
         sign_input(&mut tx, i, owner);
     }
-    tx
+    let (_, key) = spends
+        .iter()
+        .find(|(_, k)| k.public_key() == producer)
+        .expect("fixture: the producer spends one of the inputs");
+    super::inc_i_255_m2_common::producer_auth(tx, key)
 }
 
 /// A signature-valid `AddBond` creating `n` Bond outputs, funded by a Normal
@@ -173,7 +177,7 @@ async fn funded_add_bond(node: &Node, kp: &KeyPair, n: u32, tag: u8) -> Transact
         u64::MAX,
     );
     sign_input(&mut tx, 0, kp);
-    tx
+    super::inc_i_255_m2_common::producer_auth(tx, kp)
 }
 
 /// Apply `exits` real `Exit(P)` transactions to a fresh `held`-bond ledger and

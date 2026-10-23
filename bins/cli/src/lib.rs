@@ -4,6 +4,7 @@ pub mod cmd_release_verify;
 pub mod cmd_service_helper_units;
 pub mod cmd_snap_maintainer;
 pub mod producer_ledger;
+pub mod producer_tx;
 pub mod rotate_tx;
 pub mod service_unit;
 pub mod unbonding_tx;

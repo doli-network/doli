@@ -1142,6 +1142,33 @@ evicts a waiting RequestWithdrawal that fails them there (for example once its
 margin has run out). Wallet send spends an Unbonding output only once it is
 spendable.
 
+#### 3.13.2 Producer authorization (INC-I-182)
+
+Gate: `inc_i_182_producer_auth_activation_height` — mainnet `u64::MAX`, testnet
+`u64::MAX` (not yet scheduled), devnet `0`. The env override
+`DOLI_INC_I_182_PRODUCER_AUTH_ACTIVATION_HEIGHT` is read on devnet only.
+
+At block height `H >= gate`, a Registration, AddBond or RequestWithdrawal is valid
+only when `extra_data = payload ‖ signature`, where:
+- `payload` is the exact encoding of the type's data: canonical bincode
+  `RegistrationData`, the 36-byte `AddBondData`, or the 68-byte
+  `WithdrawalRequestData` (no extra bytes);
+- `signature` is 64 bytes, the Ed25519 signature of the producer that the payload
+  names, over `BLAKE3("DOLI-PRODUCER-AUTH-V1" ‖ genesis_hash ‖
+  tx.signing_message() ‖ payload)`.
+
+`signing_message()` covers the type, every input outpoint and every output, so a
+signature cannot move to another transaction. The input signatures do not cover
+`extra_data`, so the producer signs after the inputs and outputs are final and a
+third party may still pay the fee. Every refusal is `[ERRTX-PAUTH001]`, on
+mempool, builder and block validation in Full, Light and Replay mode. Other types
+are not checked. Below the gate nothing is checked, and the payload decoders read
+the same fields with or without the 64-byte tail. The mempool judges the rule at
+`best_height + 1` on admission and on revalidate. The node builder signs its own
+genesis-window Registration at and above the gate. The DOLI CLI signs register,
+add-bond, request-withdrawal and exit at every height, with the genesis hash from
+`getChainInfo`.
+
 ### 3.15 RemoveMaintainer Transaction
 
 Removes a maintainer from the auto-update system. Requires 3/5 multisig from OTHER maintainers

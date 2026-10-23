@@ -139,6 +139,9 @@ fn case(network: Network, bond_count: u32, requested: u32, tag: u8) -> Case {
     let mut tx = Transaction::new_add_bond(vec![inp], pk, requested, bond_amount, u64::MAX);
     let signing_hash = tx.signing_message_for_input(0);
     tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, kp.private_key());
+    // INC-I-182: the devnet producer-auth gate is 0, so the producer signs the payload.
+    let genesis = ConsensusParams::for_network(network).genesis_hash;
+    doli_core::transaction::sign_producer_auth(&mut tx, &genesis, &kp);
 
     let snapshot: HoldingsSnapshot = Arc::new(RwLock::new(vec![(
         pk,

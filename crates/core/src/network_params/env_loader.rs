@@ -598,6 +598,14 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
         } else {
             defaults.inc_i_257_unbonding_activation_height
         },
+        inc_i_182_producer_auth_activation_height: if matches!(network, Network::Devnet) {
+            env_parse(
+                "DOLI_INC_I_182_PRODUCER_AUTH_ACTIVATION_HEIGHT",
+                defaults.inc_i_182_producer_auth_activation_height,
+            )
+        } else {
+            defaults.inc_i_182_producer_auth_activation_height
+        },
         inc_i_233_activation_height: if is_mainnet {
             defaults.inc_i_233_activation_height
         } else {

@@ -116,7 +116,7 @@ fn add_bond(r: &Rig, kp: &KeyPair, coin: Outpoint, owner: Hash, lock: u64) -> Tr
     tx.outputs[0].pubkey_hash = owner;
     let msg = tx.signing_message_for_input(0);
     tx.inputs[0].signature = crypto::signature::sign_hash(&msg, kp.private_key());
-    tx
+    super::inc_i_255_m2_common::producer_auth(tx, kp)
 }
 
 // REQ-UNBOND-013 — Decision: a failure means a registered producer can add bond weight held under a foreign owner, which the slash of that producer never burns.

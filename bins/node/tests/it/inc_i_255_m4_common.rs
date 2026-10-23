@@ -58,7 +58,7 @@ pub fn withdrawal(node: &Node, kp: &KeyPair, op: Outpoint, fee: u64) -> Transact
     let mut tx = run_b_withdrawal(vec![input], *kp.public_key(), 1, dest, unit - fee);
     let msg = tx.signing_message_for_input(0);
     tx.inputs[0].signature = crypto::signature::sign_hash(&msg, kp.private_key());
-    tx
+    super::inc_i_255_m2_common::producer_auth(tx, kp)
 }
 
 pub async fn m4_with(reporter: &KeyPair, accused: &KeyPair, fee: u64) -> M4 {

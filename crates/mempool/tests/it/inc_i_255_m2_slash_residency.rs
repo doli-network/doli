@@ -292,6 +292,9 @@ fn bonded_withdrawal(utxo: &mut UtxoSet, kp: &KeyPair, tag: u8) -> Transaction {
     let mut tx = Transaction::new_request_withdrawal(vec![input], pk, 1, dest, bond - bond / 100);
     let signing_hash = tx.signing_message_for_input(0);
     tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, kp.private_key());
+    // INC-I-182: the devnet producer-auth gate is 0, so the producer signs the payload.
+    let genesis = ConsensusParams::devnet().genesis_hash;
+    doli_core::transaction::sign_producer_auth(&mut tx, &genesis, kp);
     tx
 }
 

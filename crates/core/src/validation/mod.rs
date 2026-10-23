@@ -37,6 +37,7 @@ pub mod output_authority;
 pub mod parallel;
 pub(crate) mod pool;
 mod producer;
+pub mod producer_auth;
 mod registration;
 mod rewards_legacy;
 pub mod rotate_bls;

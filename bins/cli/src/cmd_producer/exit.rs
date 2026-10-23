@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crypto::{signature, Hash, PublicKey};
+use crypto::{Hash, PublicKey};
 use doli_core::{Input, Transaction};
 
 use super::common::{compute_fifo_breakdown, display_fifo_breakdown};
@@ -10,6 +10,7 @@ use doli_cli::producer_ledger::{
     max_withdrawable, producer_set_allowance, select_bond_inputs_by_count,
     withdrawal_ledger_mismatch,
 };
+use doli_cli::producer_tx::{chain_genesis_hash, finalize_producer_tx};
 
 pub(super) async fn handle_exit(wallet: &Wallet, rpc: &RpcClient, force: bool) -> Result<()> {
     println!("Producer Exit");
@@ -197,13 +198,11 @@ pub(super) async fn handle_exit(wallet: &Wallet, rpc: &RpcClient, force: bool) -
         payout_amount,
     );
 
-    // Sign all inputs (BIP-143: per-input signing hash)
+    // Inputs (BIP-143) then the producer-auth signature over the chain genesis.
+    let chain_info = rpc.get_chain_info().await?;
+    let genesis = chain_genesis_hash(&chain_info.genesis_hash).map_err(|e| anyhow::anyhow!(e))?;
     let keypair = wallet.primary_keypair()?;
-    for i in 0..tx.inputs.len() {
-        let signing_hash = tx.signing_message_for_input(i);
-        tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
-        tx.inputs[i].public_key = Some(*keypair.public_key());
-    }
+    finalize_producer_tx(&mut tx, &keypair, &genesis);
 
     let tx_hex = hex::encode(tx.serialize());
 

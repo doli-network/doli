@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use anyhow::Result;
-use crypto::{signature, Hash, PublicKey};
+use crypto::{Hash, PublicKey};
 use doli_core::{Network, NetworkParams};
 
 use super::common::{compute_fifo_breakdown, display_fifo_breakdown};
@@ -13,6 +13,7 @@ use doli_cli::producer_ledger::{
     max_withdrawable, producer_set_allowance, select_bond_inputs_by_count,
     withdrawal_ledger_mismatch,
 };
+use doli_cli::producer_tx::{chain_genesis_hash, finalize_producer_tx};
 use doli_cli::unbonding_tx::{
     build_withdrawal_tx, unbonding_gate_open, unbonding_lock_until, FeeUtxo, WithdrawalSpec,
 };
@@ -147,7 +148,9 @@ pub(super) async fn handle_request_withdrawal(
         )
     })?;
     let net_params = NetworkParams::defaults(network);
-    let best_height = rpc.get_chain_info().await?.best_height;
+    let chain_info = rpc.get_chain_info().await?;
+    let best_height = chain_info.best_height;
+    let genesis = chain_genesis_hash(&chain_info.genesis_hash).map_err(|e| anyhow::anyhow!(e))?;
     let required_bond_value = bond_unit * count as u64;
     let available_bond_value: u64 = bond_utxos.iter().map(|u| u.amount).sum();
 
@@ -203,13 +206,9 @@ pub(super) async fn handle_request_withdrawal(
         );
     }
 
-    // Sign all inputs (BIP-143: per-input signing hash)
+    // Inputs (BIP-143) then the producer-auth signature over the chain genesis.
     let keypair = wallet.primary_keypair()?;
-    for i in 0..tx.inputs.len() {
-        let signing_hash = tx.signing_message_for_input(i);
-        tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
-        tx.inputs[i].public_key = Some(*keypair.public_key());
-    }
+    finalize_producer_tx(&mut tx, &keypair, &genesis);
 
     let tx_hex = hex::encode(tx.serialize());
     println!("Submitting withdrawal request...");

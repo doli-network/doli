@@ -99,6 +99,7 @@ async fn in_block_withdrawal() -> Chain {
     let mut ab = Transaction::new_add_bond(vec![inp], pk, 1, unit, u64::MAX);
     let msg = ab.signing_message_for_input(0);
     ab.inputs[0].signature = crypto::signature::sign_hash(&msg, r.keys.honest.private_key());
+    let ab = super::inc_i_255_m2_common::producer_auth(ab, &r.keys.honest);
     mine(&mut r, vec![ab.clone()], "the AddBond").await;
     let bond = Outpoint::new(ab.hash(), 0);
     let lock = r.best().await.0 + 1 + SHORT_PERIOD;

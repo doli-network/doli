@@ -40,7 +40,7 @@ fn signed(mut tx: Transaction, kp: &KeyPair) -> Transaction {
         let msg = tx.signing_message_for_input(i);
         tx.inputs[i].signature = crypto::signature::sign_hash(&msg, kp.private_key());
     }
-    tx
+    super::inc_i_255_m2_common::producer_auth(tx, kp)
 }
 
 fn unsigned_withdrawal(kp: &KeyPair, ops: &[Outpoint], net: u64) -> Transaction {
