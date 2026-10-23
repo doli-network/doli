@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # test_gauntlet_gs027.sh — offline companion for GS-027 (INC-I-255 M3). Never starts a node; < 15 s.
-# covers: scripts/gauntlet-gs027.sh bins/node/examples/gs026_forge_block.rs scripts/gauntlet.sh scripts/gauntlet-seed.sql scripts/README.md specs/protocol.md specs/security_model.md docs/architecture.md docs/rewards.md docs/troubleshooting.md bins/node/src/node/snapshot_install.rs
+# covers: scripts/gauntlet-gs027.sh scripts/gauntlet-devnet-lib.sh bins/node/examples/gs026_forge_block.rs scripts/gauntlet.sh scripts/gauntlet-seed.sql scripts/README.md specs/protocol.md specs/security_model.md docs/architecture.md docs/rewards.md docs/troubleshooting.md bins/node/src/node/snapshot_install.rs
 # REQ-SLASH-005 — Decision: a FAIL means the GS-027 live equivocation proof cannot be trusted or cannot run — the runner is missing, its exit code is not its verdict, a pure helper miscounts mined slash txs, producer status, the supply delta, tip equality or the shared slash id (so the control-FAIL / HEAD-PASS split could flip for the wrong reason), library mode has side effects, a gate export or an env var is missing or undocumented, the forge helper cannot sign a sibling block with the producer's own key or prints key material, ids drift between runner, seed and DB, gauntlet.sh has no SKIP arm, or the runner can reach the live local fleet.
 # REQ-SLASH-006 — Decision: a FAIL means the INC-I-181 snap tests that refuse a fabricated queued Slash were renamed or lost their Slash fixture, so snap sync could install a slash the chain never applied with no test turning red.
+# REQ-LDP-025 — Decision: a FAIL means the shared devnet library split broke a GS-027 contract idiom, has side effects when sourced, reads a runner-specific variable or is not sourced at all, so GS-026/GS-027 regressions and the new runners would rest on an unproven harness.
+# REQ-LDP-026 — Decision: no offline check here; a GS-027 regression run after the library split with no gauntlet_runs row (git sha, status, runner lines) leaves the split unproven live, so M1 cannot close.
 # REQ-SLASH-007 — Decision: a FAIL means the slashing records drifted from the code — no GS-027 scenario row in memory.db, or the protocol, security and architecture docs do not name the slashing gate, the per-block cap and the burn and admission modules — so operators read a slashing model the binary does not run.
 # OUTPUT CONTRACT:
 #   O1 stdout   `PASS <case>` | `FAIL <case>: <why>` per case; last line `<N> passed, <M> failed`
@@ -43,8 +45,13 @@
 #   seed-parity       seed block (runner, INC-I-255, expect_fail 0, the 7-id set) · ids the runner
 #                     emits · live memory.db row; absent row -> FAIL (expected RED until registered)
 #   gauntlet-skip-arm each gs027 id -> rc 2 + SKIP_REASONS names the runner; unknown token -> rc 1
-#   harness-safety    runner clean · planted pkill / foreign kill / foreign rm / ln /
-#                     ~/testnet write / .doli/devnet write -> 6 of 6 flagged
+#   harness-safety    runner + library clean · planted pkill / foreign kill / foreign rm / ln /
+#                     ~/testnet write / .doli/devnet write -> 6 of 6 flagged · library cleanup arm
+#                     `*/"$DN_TAG".*) rm -rf "$S"` exempt like the runner's gs027 arm
+#   devnet-lib        present · bash -n · sourced by the runner · no top-level statement ·
+#                     sourcing writes nothing under TMPDIR, starts no job, defines the cluster
+#                     functions · reads no GS0NN_* variable, no gs0NN. glob · planted top-level
+#                     sleep / trap and a GS028_* read -> 3 of 3 flagged
 #   docs              README GS-027 line · protocol.md gate + MAX_SLASH_TXS_PER_BLOCK ·
 #                     security_model.md gate · architecture.md slash_burn.rs + slash_admission.rs
 #   r6-snap-pin       INC-I-181 snap test file defines test_181_001 + test_181_005, builds a Slash
@@ -57,9 +64,11 @@ FORGE="$ROOT/bins/node/examples/gs026_forge_block.rs"
 GAUNTLET="$ROOT/scripts/gauntlet.sh"
 SEED="$ROOT/scripts/gauntlet-seed.sql"
 README="$ROOT/scripts/README.md"
+LIB="$ROOT/scripts/gauntlet-devnet-lib.sh"
 R6="$ROOT/bins/node/tests/it/inc_i_181_snap_pending_updates.rs"
 IDS="gs027-one-slash-mined gs027-producer-slashed-everywhere gs027-bond-burned-once gs027-tips-equal gs027-production-continues gs027-mempool-slash-bounded gs027-one-shared-slash-id"
 HELPERS="count_slash_txs producer_status supply_delta_ok all_equal slash_ids_from_log verdict res"
+LIB_FUNCS="skip alive ours stop_one cleanup start_node start_cluster seed_gset gset_ready wait_height inject_sibling all_equal write_chainspec gen_wallets check_ports restart_node cli_as wait_tx_mined sampler_start sampler_stop"
 T="$(mktemp -d "${TMPDIR:-/tmp}/t-gs027.XXXXXX")" || exit 1
 trap 'rm -rf "$T"' EXIT
 NP=0
@@ -69,6 +78,7 @@ pass() { echo "PASS $1${2:+ ($2)}"; NP=$((NP + 1)); }
 fail() { echo "FAIL $1: $2"; NF=$((NF + 1)); }
 sorted() { tr ' ,' '\n\n' | sed '/^$/d' | sort -u | tr '\n' ' ' | sed 's/ $//'; }
 code() { grep -vE '^[[:space:]]*#' "$1"; }
+code_all() { code "$RUNNER"; [ -f "$LIB" ] && code "$LIB"; return 0; }
 hx() { printf '%064d' 0 | tr 0 "$1"; }
 WANT="$(echo "$IDS" | sorted)"
 
@@ -111,7 +121,7 @@ c_exit_contract() {
   c="$(code "$RUNNER")"
   printf '%s\n' "$c" | grep -qE 'set -[a-z]*o[[:space:]]+pipefail|PIPESTATUS' ||
     { fail exit-contract "neither set -o pipefail nor PIPESTATUS: a failed probe in a pipe would read as success"; return; }
-  printf '%s\n' "$c" | grep -qE '(^|[^[:alnum:]_])exit[[:space:]]+2([^0-9]|$)' ||
+  code_all | grep -qE '(^|[^[:alnum:]_])exit[[:space:]]+2([^0-9]|$)' ||
     { fail exit-contract "no 'exit 2' SKIP path"; return; }
   printf '%s\n' "$c" | grep -qF 'METRIC SLASHED_NODES=' ||
     { fail exit-contract "no 'METRIC SLASHED_NODES=' line"; return; }
@@ -314,7 +324,7 @@ c_env_documented() {
 c_node_env() {
   local c v
   [ -f "$RUNNER" ] || { fail node-env "runner absent"; return; }
-  c="$(code "$RUNNER")"
+  c="$(code_all)"
   for v in DOLI_INC_I_236_BLOCK_SIGNATURE_ACTIVATION_HEIGHT DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT; do
     printf '%s\n' "$c" | grep -qE "(^|[^[:alnum:]_])$v=" || { fail node-env "never sets $v for the nodes"; return; }
   done
@@ -410,7 +420,7 @@ unsafe() {
   printf '%s\n' "$c" | grep -E '(^|[^[:alnum:]_-])kill[[:space:]]' | sed -E 's/kill( -[A-Za-z0-9]+)? "\$PID"//g' |
     grep -E '(^|[^[:alnum:]_-])kill[[:space:]]' | sed 's/^/kill: /'
   printf '%s\n' "$c" | grep -E '(^|[^[:alnum:]_-])rm[[:space:]]+-[A-Za-z]*[rR]' |
-    grep -vE 'gs027\.[^)]*\)[[:space:]]*rm -rf "\$S"' | sed 's/^/rm: /'
+    grep -vE '(gs027|"\$DN_TAG")\.[^)]*\)[[:space:]]*rm -rf "\$S"' | sed 's/^/rm: /'
   printf '%s\n' "$c" | grep -E "$p" |
     grep -E "(^|[^[:alnum:]_-])(rm|cp|mv|mkdir|touch|tee|rsync|tar|install|dd)([^[:alnum:]_-]|$)|>>?[[:space:]]*\"?[^[:space:]]*($p)" |
     sed 's/^/path: /'
@@ -419,11 +429,11 @@ unsafe() {
 c_harness_safety() {
   local v n
   [ -f "$RUNNER" ] || { fail harness-safety "runner absent"; return; }
-  v="$(unsafe "$RUNNER")"
+  v="$(unsafe "$RUNNER"; [ -f "$LIB" ] && unsafe "$LIB")"
   [ -z "$v" ] || { fail harness-safety "$(printf '%s' "$v" | head -3 | tr '\n' ' ')"; return; }
   grep -qE 'mktemp[[:space:]]+-d[[:space:]]+.*gs027\.X+' "$RUNNER" ||
     { fail harness-safety "scratch is not a mktemp -d gs027.XXXXXX dir"; return; }
-  grep -qE 'kill[[:space:]]+(-[A-Za-z0-9]+[[:space:]]+)?"\$PID"' "$RUNNER" ||
+  code_all | grep -qE 'kill[[:space:]]+(-[A-Za-z0-9]+[[:space:]]+)?"\$PID"' ||
     { fail harness-safety "runner never signals only its own \$PID"; return; }
   cp "$RUNNER" "$T/planted.sh"
   printf '%s\n' 'pkill -f doli-node' 'kill -TERM "$SEED_PID"' 'rm -rf "$GS027_TESTNET_DIR"' 'ln -s "$CHECKPOINT" "$S/data"' \
@@ -431,6 +441,45 @@ c_harness_safety() {
   n="$(unsafe "$T/planted.sh" | wc -l | tr -d ' ')"
   [ "$n" = 6 ] || { fail harness-safety "checker flagged $n of 6 planted violations"; return; }
   pass harness-safety "runner clean, 6/6 planted violations flagged"
+}
+
+# Top-level statements (outside any function body) and runner-specific reads of a sourced library.
+lib_violations() {
+  awk '
+    /^[[:space:]]*(#|$)/ { next }
+    d == 0 && /^[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)[[:space:]]*\{/ { if ($0 !~ /\}[[:space:]]*$/) d = 1; next }
+    d == 0 && /^[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)[[:space:]]*$/ { d = 1; next }
+    d == 1 && /^\}/ { d = 0; next }
+    d == 0 { print "top-level: " NR ": " $0 }' "$1"
+  code "$1" | grep -E 'GS0[0-9]{2}_[A-Z0-9_]+|gs0[0-9]{2}\.' | sed 's/^/runner-var: /'
+  code "$1" | grep -q 'DN_TAG' || echo "no-dn-tag: the library never reads DN_TAG"
+}
+
+c_devnet_lib() {
+  local v out n
+  [ -f "$LIB" ] || { fail devnet-lib "scripts/gauntlet-devnet-lib.sh missing"; return; }
+  bash -n "$LIB" 2>"$T/l.err" || { fail devnet-lib "bash -n: $(head -1 "$T/l.err")"; return; }
+  [ -f "$RUNNER" ] && code "$RUNNER" |
+    grep -qE '^[[:space:]]*(\.|source)[[:space:]]+"?\$\{?ROOT\}?/scripts/gauntlet-devnet-lib\.sh"?' ||
+    { fail devnet-lib "the runner does not source \$ROOT/scripts/gauntlet-devnet-lib.sh"; return; }
+  v="$(lib_violations "$LIB")"
+  [ -z "$v" ] || { fail devnet-lib "$(printf '%s' "$v" | head -2 | tr '\n' ' ')"; return; }
+  mkdir -p "$T/srctmp"
+  out="$(TMPDIR="$T/srctmp" bash -c 'src=$1; fs=$2; set --
+    . "$src" >/dev/null 2>&1 || { echo "source-rc:$?"; exit 0; }
+    for f in $fs; do declare -F "$f" >/dev/null || echo "missing:$f"; done
+    [ -z "$(jobs -p)" ] || echo "jobs:$(jobs -p | tr "\n" " ")"
+    echo sourced' _ "$LIB" "$LIB_FUNCS" 2>&1)"
+  printf '%s\n' "$out" | grep -qx sourced || { fail devnet-lib "sourcing did not complete: $(printf '%s' "$out" | tr '\n' ' ')"; return; }
+  printf '%s\n' "$out" | grep -q '^source-rc:' && { fail devnet-lib "sourcing returned non-zero"; return; }
+  printf '%s\n' "$out" | grep -q '^missing:' && { fail devnet-lib "functions undefined:$(printf '%s\n' "$out" | sed -n 's/^missing:/ /p' | tr -d '\n')"; return; }
+  printf '%s\n' "$out" | grep -q '^jobs:' && { fail devnet-lib "sourcing started background jobs"; return; }
+  [ -z "$(ls -A "$T/srctmp")" ] || { fail devnet-lib "sourcing created $(ls -A "$T/srctmp" | head -1) under TMPDIR"; return; }
+  cp "$LIB" "$T/planted-lib.sh"
+  printf '%s\n' 'sleep 1' 'trap cleanup EXIT' 'leak() { echo "${GS028_AH:-}"; }' >>"$T/planted-lib.sh"
+  n="$(lib_violations "$T/planted-lib.sh" | wc -l | tr -d ' ')"
+  [ "$n" = 3 ] || { fail devnet-lib "checker flagged $n of 3 planted library violations"; return; }
+  pass devnet-lib "sourced by the runner, functions only, DN_* only, 3/3 planted violations flagged"
 }
 
 c_docs_readme() {
@@ -477,6 +526,7 @@ c_forge_sibling
 c_seed_parity
 c_skip_arm
 c_harness_safety
+c_devnet_lib
 c_docs_readme
 doc_names docs-protocol specs/protocol.md inc_i_255_slashing_activation_height MAX_SLASH_TXS_PER_BLOCK
 doc_names docs-security-model specs/security_model.md inc_i_255_slashing_activation_height

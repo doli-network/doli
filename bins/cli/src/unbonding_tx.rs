@@ -4,7 +4,7 @@
 use crypto::{Hash, PublicKey};
 use doli_core::transaction::{Input, Output, OutputType, Transaction};
 use doli_core::validation::bond_owner;
-use doli_core::NetworkParams;
+use doli_core::{Network, NetworkParams};
 
 /// Extra lock blocks so the tx stays valid while it waits up to this many blocks for inclusion.
 pub const UNBONDING_LOCK_MARGIN: u64 = 10;
@@ -27,6 +27,11 @@ pub struct WithdrawalSpec {
     pub destination: Hash,
     pub fee_utxos: Vec<FeeUtxo>,
     pub fee: u64,
+}
+
+/// Params the producer-tx builders use: the node's loader, so devnet env gate overrides apply.
+pub fn builder_params(network: Network) -> &'static NetworkParams {
+    NetworkParams::load(network)
 }
 
 /// True when a block mined after `best_height` must carry the gated shape.

@@ -237,6 +237,15 @@ Recommended anchors for the architect (to confirm or reject):
 - No mainnet activation height, push, release or deploy.
 - Not covered: the gossip message id (INC-I-240) and the remaining AUDIT-P1-203 gap.
 
+## Follow-up INC-I-259: a queued slash lost to a whole-bond withdrawal
+
+- **Symptom (live GS-028):** the accused withdraws its whole bond at W and equivocates; the slash is mined at S. The economics hold (the locked Unbonding output is burned at S, the whole bond leaves supply), but after the next reward-epoch boundary the accused is `exited`, not `slashed`, on every node, and each node logs `Deferred slash failed` with `[STOR041]`.
+- **Root cause:** the boundary applies the queue in FIFO order (`set_core.rs`, `apply_pending_updates_with_cap`). `ProducerInfo::apply_withdrawal` (`info.rs`) sets `Exited` at bond count 0; `ProducerSet::slash_producer` (`set_lifecycle.rs`) then refused every status that is not Active or Unbonding. The same happens when a boundary falls between W and S. `register` accepts an `Exited` key, so the lifetime bar was lost.
+- **Fix (DC-5):** `slash_producer` refuses only an already `Slashed` producer (`[STOR041]` kept for that case) and slashes Active, Unbonding and Exited alike. `apply_withdrawal` never moves a `Slashed` producer to `Exited`. `register` already refuses a `Slashed` key with `[STOR011]`. ProducerSet only; the UTXO paths and the state-root encoding are unchanged.
+- **Parity:** block apply (`state_update.rs`) and rebuild from blocks (`rewards.rs`) both call `apply_pending_updates_with_cap`; rollback restores a whole ProducerSet snapshot or rebuilds through the same function. No rollback path holds its own status logic, so none changed.
+- **Consensus shape (INV-12):** (1) a user transaction (RequestWithdrawal) and a SlashProducer reach this path; (2) producer equivocation evidence reaches it; (3) the new behaviour differs only when a Slash update is applied, and a SlashProducer is mineable only at or above the effective slashing activation height (below it the fee exemption is off and the input-less transaction fails the base-fee gate); `inc_i_255_slashing_activation_height` is `u64::MAX` on mainnet and testnet. Below that gate every reachable input is bit-identical, so no new activation height.
+- **Tests:** `crates/storage/tests/it/inc_i_259_slash_race.rs` (both queue orders, the boundary split, no downgrade of `Slashed`, `[STOR011]` on re-register, `[STOR041]` on a second slash, the Unbonding and unknown-producer arms).
+
 ## Milestones
 
 | ID | Name | Scope (Modules) | Scope (Requirements) | Dependencies | Status |

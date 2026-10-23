@@ -162,6 +162,8 @@ impl ProducerSet {
     /// Returns the amount burned. Also records the slash in exit_history
     /// so if they ever re-register, they start fresh (maturity cooldown).
     /// Exit record expires after EXIT_HISTORY_RETENTION (~8 years).
+    /// Every status except `Slashed` is slashable: an `Exited` producer
+    /// reaches here only when admission proved burnable collateral (INC-I-259).
     pub fn slash_producer(
         &mut self,
         pubkey: &PublicKey,
@@ -174,7 +176,7 @@ impl ProducerSet {
                 pubkey
             ))
         })?;
-        if !info.is_active() {
+        if info.is_slashed() {
             return Err(StorageError::AlreadyExists(format!(
                 "[STOR041] producer not slashable in status {:?} (pubkey={})",
                 info.status, pubkey

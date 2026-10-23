@@ -3,7 +3,7 @@ use std::str::FromStr;
 use anyhow::Result;
 use crypto::{Hash, PublicKey};
 use doli_core::validation::bond_owner;
-use doli_core::{Network, NetworkParams};
+use doli_core::Network;
 
 use super::common::{compute_fifo_breakdown, display_fifo_breakdown};
 use crate::common::address_prefix;
@@ -15,7 +15,8 @@ use doli_cli::producer_ledger::{
 };
 use doli_cli::producer_tx::{chain_genesis_hash, finalize_producer_tx};
 use doli_cli::unbonding_tx::{
-    build_withdrawal_tx, unbonding_gate_open, unbonding_lock_until, FeeUtxo, WithdrawalSpec,
+    build_withdrawal_tx, builder_params, unbonding_gate_open, unbonding_lock_until, FeeUtxo,
+    WithdrawalSpec,
 };
 
 pub(super) async fn handle_exit(wallet: &Wallet, rpc: &RpcClient, force: bool) -> Result<()> {
@@ -167,7 +168,7 @@ pub(super) async fn handle_exit(wallet: &Wallet, rpc: &RpcClient, force: bool) -
             rpc_params.network
         )
     })?;
-    let net_params = NetworkParams::defaults(network);
+    let net_params = builder_params(network);
     let chain_info = rpc.get_chain_info().await?;
     let best_height = chain_info.best_height;
     let genesis = chain_genesis_hash(&chain_info.genesis_hash).map_err(|e| anyhow::anyhow!(e))?;
@@ -181,12 +182,12 @@ pub(super) async fn handle_exit(wallet: &Wallet, rpc: &RpcClient, force: bool) -
         fee_utxos,
         fee: 1,
     };
-    let mut tx = build_withdrawal_tx(&net_params, best_height, &spec)
+    let mut tx = build_withdrawal_tx(net_params, best_height, &spec)
         .map_err(|e| anyhow::anyhow!("Cannot build the exit: {}", e))?;
-    if unbonding_gate_open(&net_params, best_height) {
+    if unbonding_gate_open(net_params, best_height) {
         println!(
             "Unbonding: the payout is locked until height {} (unbonding period {} blocks).",
-            unbonding_lock_until(&net_params, best_height),
+            unbonding_lock_until(net_params, best_height),
             net_params.unbonding_period
         );
     }

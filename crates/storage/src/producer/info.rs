@@ -439,8 +439,8 @@ impl ProducerInfo {
                 self.withdrawal_pending_count.saturating_sub(legacy_remove);
         }
 
-        // Auto-exit when all bonds are withdrawn
-        if self.bond_count == 0 {
+        // Auto-exit when all bonds are withdrawn; a slash is never downgraded (INC-I-259)
+        if self.bond_count == 0 && !self.is_slashed() {
             self.status = ProducerStatus::Exited;
         }
     }

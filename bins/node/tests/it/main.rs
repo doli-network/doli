@@ -69,6 +69,7 @@ mod inc_i_182_m2_after_withdrawal;
 mod inc_i_182_m2_node_fx;
 mod inc_i_182_m2_self_exit;
 mod inc_i_182_m2_spec_sync;
+mod inc_i_182_m3_forge_shape;
 mod inc_i_193_rebuild_parity;
 mod inc_i_203_builder_gap;
 mod inc_i_204_m0_common;
