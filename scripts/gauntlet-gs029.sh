@@ -10,7 +10,7 @@
 # node 0's withdrawal is a whole-bond exit); node 3 (producer) and node 5 (validator) run
 # GS029_OLD_NODE_BIN, the rest GS029_NODE_BIN. The four gates = GS029_AH for HEAD nodes and the
 # CLI (the old binary ignores them), pending-root 0, reward epoch GS029_EPOCH_BLOCKS. Phases:
-# funding; transfer (through the old validator), Registration of a fresh wallet, AddBond, partial
+# funding; transfer (through the old validator), Registration of a fresh wallet, AddBond, whole-bond
 # withdrawal; boundary check; restart of nodes 3 and 5 onto HEAD on their data dirs; boundary;
 # crossing; probes above the gate. A background sampler records supply and tips.
 #
