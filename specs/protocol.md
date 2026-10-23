@@ -1136,8 +1136,11 @@ The DOLI CLI builds the gated shape when `best_height + 1 >= gate`: payout to th
 producer's own address (another `--destination` is refused), fee taken from the
 withdrawn amount (no wallet UTXO is spent, so none is locked), and
 `lock_until = best_height + unbonding_period + 10`. The 10-block margin keeps the
-transaction valid while it waits for inclusion. Wallet send spends an Unbonding
-output only once it is spendable.
+transaction valid while it waits for inclusion. The mempool judges the payout and
+Bond-output rules at `best_height + 1` on admission and on every revalidate, and
+evicts a waiting RequestWithdrawal that fails them there (for example once its
+margin has run out). Wallet send spends an Unbonding output only once it is
+spendable.
 
 ### 3.15 RemoveMaintainer Transaction
 

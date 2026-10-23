@@ -15,6 +15,7 @@ mod inc_i_203_admission_gap;
 mod inc_i_236_m2_ctx_parity;
 mod inc_i_255_m2_slash_residency;
 mod inc_i_257_m1_mempool_lock;
+mod inc_i_257_m25_mempool_height;
 mod inc_i_257_m2_slash_admission;
 mod inc_i_257_m2_slash_targets;
 

@@ -285,11 +285,10 @@ fn parse_output_type_name(name: &str) -> Result<doli_core::OutputType> {
         "lpshare" => Ok(doli_core::OutputType::LPShare),
         "zkrollup" => Ok(doli_core::OutputType::ZKRollup),
         "encryptedcontent" => Ok(doli_core::OutputType::EncryptedContent),
-        "unbonding" => Ok(doli_core::OutputType::Unbonding),
         _ => anyhow::bail!(
             "Unknown output type '{}'. Valid: normal, bond, multisig, hashlock, htlc, \
              vesting, nft, fungibleasset, bridgehtlc, pool, lpshare, \
-             zkrollup, encryptedcontent, unbonding",
+             zkrollup, encryptedcontent",
             name
         ),
     }

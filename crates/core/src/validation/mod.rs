@@ -82,6 +82,6 @@ pub use tx_types::{check_addbond_cap, count_bond_outputs};
 pub use types::{
     RegistrationChainState, UtxoInfo, UtxoProvider, ValidationContext, ValidationMode,
 };
-pub use unbonding::spend_lock_verdict;
+pub use unbonding::{check_unbonding_rules, spend_lock_verdict};
 pub use utxo::validate_transaction_with_utxos;
 pub use zk::{proof_system, verify_zk_proof, ZkVerifyContext, ZkVerifyError};

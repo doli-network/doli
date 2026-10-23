@@ -17,10 +17,31 @@ impl ValidationContext {
         self.unbonding_period = unbonding_period;
         self
     }
+
+    /// Judge the INC-I-257 output rules at `current_height + 1` (mempool only).
+    #[must_use]
+    pub fn with_inc_i_257_rules_at_next_height(mut self) -> Self {
+        self.inc_i_257_rules_at_next_height = true;
+        self
+    }
+
+    fn inc_i_257_rule_height(&self) -> BlockHeight {
+        self.current_height
+            .saturating_add(u64::from(self.inc_i_257_rules_at_next_height))
+    }
 }
 
 fn err(code: &str, msg: String) -> ValidationError {
     ValidationError::InvalidTransaction(format!("[ERRTX-UNBOND{code}] {msg}"))
+}
+
+/// The INC-I-257 output rules alone: Unbonding outputs, then Bond outputs.
+pub fn check_unbonding_rules(
+    tx: &Transaction,
+    ctx: &ValidationContext,
+) -> Result<(), ValidationError> {
+    check_unbonding_outputs(tx, ctx)?;
+    check_bond_outputs(tx, ctx)
 }
 
 /// Lock verdict for spending `spent` in a `spending` tx mined at `height`.
@@ -73,7 +94,8 @@ pub(super) fn check_unbonding_outputs(
         .outputs
         .iter()
         .any(|o| o.output_type == OutputType::Unbonding);
-    if ctx.current_height < ctx.inc_i_257_unbonding_activation_height {
+    let height = ctx.inc_i_257_rule_height();
+    if height < ctx.inc_i_257_unbonding_activation_height {
         if has_unbonding {
             return Err(err(
                 "003",
@@ -94,7 +116,7 @@ pub(super) fn check_unbonding_outputs(
         }
         return Ok(());
     }
-    check_withdrawal_payout(tx, ctx.current_height, ctx.unbonding_period)
+    check_withdrawal_payout(tx, height, ctx.unbonding_period)
 }
 
 /// At/above the gate, Bond outputs appear only in Registration and AddBond,
@@ -104,7 +126,7 @@ pub(super) fn check_bond_outputs(
     ctx: &ValidationContext,
 ) -> Result<(), ValidationError> {
     let has_bond = tx.outputs.iter().any(|o| o.output_type == OutputType::Bond);
-    if ctx.current_height < ctx.inc_i_257_unbonding_activation_height || !has_bond {
+    if ctx.inc_i_257_rule_height() < ctx.inc_i_257_unbonding_activation_height || !has_bond {
         return Ok(());
     }
     let producer = match tx.tx_type {

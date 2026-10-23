@@ -255,9 +255,10 @@ pub struct ValidationContext {
     /// INC-I-236 block-signature gate. Default `u64::MAX` (fail-closed).
     pub inc_i_236_block_signature_activation_height: u64,
     pub inc_i_255_slashing_activation_height: u64,
-    /// INC-I-257 gate (default `u64::MAX`, fail-closed) and lock length.
+    /// INC-I-257 gate (default `u64::MAX`, fail-closed), lock length, mempool next-height flag.
     pub inc_i_257_unbonding_activation_height: u64,
     pub unbonding_period: u64,
+    pub inc_i_257_rules_at_next_height: bool,
     pub slash_targets: std::collections::HashMap<PublicKey, super::SlashTargetState>,
 }
 
@@ -306,6 +307,7 @@ impl ValidationContext {
             inc_i_255_slashing_activation_height: u64::MAX,
             inc_i_257_unbonding_activation_height: u64::MAX,
             unbonding_period: 0,
+            inc_i_257_rules_at_next_height: false,
             slash_targets: std::collections::HashMap::new(),
         }
     }

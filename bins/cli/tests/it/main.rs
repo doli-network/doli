@@ -23,5 +23,6 @@ mod inc_i_248_doli_snap_maintainer;
 mod inc_i_248_rel_m1_doli_snap;
 mod inc_i_248_snap_maintainer_writer;
 mod inc_i_257_m1_withdrawal_tx;
+mod inc_i_257_m25_guard_parser;
 mod sk_m1_service_unit_render;
 mod sk_m1_staged_installs_skills;
