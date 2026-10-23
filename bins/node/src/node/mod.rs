@@ -66,6 +66,7 @@ pub use rollback::RollbackOutcome;
 mod rollback_authority;
 pub use rollback_authority::RollbackAuthority;
 mod rpc_broadcast;
+mod slash_redeliver;
 mod slash_reported;
 mod slash_submit;
 mod startup;

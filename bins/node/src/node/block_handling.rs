@@ -175,11 +175,7 @@ impl Node {
             let mut detector = self.equivocation_detector.write().await;
             // Earlier proofs were handled through check_block_with's return.
             detector.take_pending_proofs();
-            let gate = net.effective_slashing_activation_height();
-            let (chain, network) = (self.params.genesis_hash, self.config.network);
-            detector.check_block_with(&block, |h| {
-                super::header_auth::detector_admits(h, best_height + 1, gate, &chain, network)
-            })
+            self.detector_check(&mut detector, &block, best_height)
         };
         if let Some(proof) = proof {
             self.handle_equivocation(proof).await;
@@ -739,7 +735,7 @@ impl Node {
                     // so the in-memory ProducerSet is already correct).
                     if let Some(snapshot_bytes) = producer_snapshot_for_restore {
                         if let Ok(restored_producers) =
-                            bincode::deserialize::<storage::ProducerSet>(&snapshot_bytes)
+                            storage::ProducerSet::from_snapshot_bytes(&snapshot_bytes)
                         {
                             {
                                 let mut producers = self.producer_set.write().await;

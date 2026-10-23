@@ -5,6 +5,7 @@ mod governance;
 mod helpers;
 mod oracle;
 mod post_commit;
+mod producer_undo;
 mod slash_burn;
 mod state_update;
 mod tx_processing;
@@ -36,11 +37,13 @@ pub fn state_fp_sr_field(memo: Option<(Hash, Hash, u64)>, current_block_hash: Ha
 }
 
 impl Node {
-    /// Apply a block to the chain
-    ///
-    /// `mode`: `Full` for gossip/production (checks MAX_PAST_SLOTS, VDF),
-    ///         `Light` for sync/reorg (skips time-based checks that reject old blocks).
-    pub async fn apply_block(&mut self, block: Block, mode: ValidationMode) -> Result<()> {
+    /// Body of `apply_block`; on `Err` the wrapper restores `producer_undo`.
+    async fn apply_block_inner(
+        &mut self,
+        block: Block,
+        mode: ValidationMode,
+        producer_undo: &mut producer_undo::ProducerUndo,
+    ) -> Result<()> {
         // Recovery mode: drop all inbound blocks silently (anti-poisoning gate).
         // Replay mode bypasses this — disaster recovery must proceed regardless.
         if mode != ValidationMode::Replay && self.recovery_mode.load(Ordering::Relaxed) {
@@ -155,34 +158,6 @@ impl Node {
             std::collections::HashSet::new();
         let dirty_exit_keys: std::collections::HashSet<Hash> = std::collections::HashSet::new();
 
-        // Undo log: snapshot ProducerSet BEFORE any mutations — but ONLY when this
-        // block could actually mutate the set. INC-I-071: per-block full snapshots
-        // caused 605 MB cf_undo bloat (892.6 KB × 2000 entries) on mainnet because
-        // ProducerSet mutations are deferred to epoch boundaries — 359/360 blocks
-        // never change it, yet were paying the full serialization cost.
-        //
-        // Sentinel semantics: producer_snapshot = Vec::new() means "ProducerSet
-        // unchanged at this height — rollback must SKIP the restore step".
-        // Backward-compatible: pre-fix undo entries with non-empty snapshots
-        // continue to deserialize and restore correctly on the legacy path.
-        let blocks_per_epoch_for_undo = self.config.network.blocks_per_reward_epoch();
-        // Epoch boundary: the block where (h-1)/E differs from h/E (e.g. h=blocks_per_epoch).
-        // At this block, `track_finality_and_apply_deferred` applies any deferred
-        // producer mutations, so the BEFORE snapshot must be captured.
-        let at_epoch_boundary =
-            blocks_per_epoch_for_undo > 0 && height.is_multiple_of(blocks_per_epoch_for_undo);
-        let has_producer_mutating_tx = helpers::block_mutates_producer_set(&block);
-        let needs_producer_snapshot = at_epoch_boundary || has_producer_mutating_tx;
-
-        let undo_producer_snapshot = if needs_producer_snapshot {
-            let producers = self.producer_set.read().await;
-            bincode::serialize(&*producers).unwrap_or_default()
-        } else {
-            // Empty sentinel — ProducerSet did not change at this height.
-            // Rollback path detects this and skips the restore step.
-            Vec::new()
-        };
-
         // INC-I-174 (REQ-174-001): snapshot the maintainer trust root BEFORE the
         // transaction loop and only for a block carrying a rotation, so a block with TWO
         // rotations records the state before the FIRST. See `maintainer_rewind/mod.rs`.
@@ -196,6 +171,7 @@ impl Node {
         // All UTXO reads use the batch overlay (pending + committed state_db).
         {
             let utxo = self.utxo_set.read().await;
+            producer_undo.arm();
             let mut producers = self.producer_set.write().await;
 
             for (tx_index, tx) in block.transactions.iter().enumerate() {
@@ -339,7 +315,7 @@ impl Node {
         let mut undo = storage::UndoData {
             spent_utxos: undo_spent_utxos,
             created_utxos: undo_created_utxos,
-            producer_snapshot: undo_producer_snapshot,
+            producer_snapshot: std::mem::take(&mut producer_undo.snapshot),
             epoch_state_snapshot: Some(self.epoch_state.serialize()),
             chain_commitment: None,
         };
@@ -354,6 +330,8 @@ impl Node {
         // so rollback can revert oracle aggregator mutations alongside the
         // block's normal UTXO changes. Single atomic batch — same WAL entry.
         batch.put_undo(height, &undo);
+        // Hand the snapshot back so a failed commit below still restores.
+        producer_undo.snapshot = std::mem::take(&mut undo.producer_snapshot);
 
         // INC-I-174: same WriteBatch, separate key family. A block can never commit with
         // its rotation applied and no way to undo it; see the append-hostility note on

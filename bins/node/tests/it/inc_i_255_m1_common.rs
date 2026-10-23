@@ -19,6 +19,7 @@ use tempfile::TempDir;
 use vdf::{VdfOutput, VdfProof};
 
 use super::inc_i_178_m0_common::wait_for_fresh_second;
+pub use super::inc_i_236_m4_common::wall_slot;
 use super::inc_i_236_m4_common::{feed, header_block};
 use crate::block_sig::sign_header;
 use crate::inc_i_156_m1_harness::install_production_utxo_backend;
@@ -175,8 +176,9 @@ pub async fn inject(node: &Node, tx: &Transaction) -> bool {
 pub async fn handler_slashes(w: &mut World) -> (Vec<Hash>, Hash) {
     let genesis = w.node.chain_state.read().await.best_hash;
     let pk = w.accused_pk();
-    let a = header_block(&mut w.node, 1, SLOT, genesis, &pk, Some(&w.accused), 0).await;
-    let b = header_block(&mut w.node, 1, SLOT, genesis, &pk, Some(&w.accused), 1).await;
+    let slot = wall_slot(&w.node);
+    let a = header_block(&mut w.node, 1, slot, genesis, &pk, Some(&w.accused), 0).await;
+    let b = header_block(&mut w.node, 1, slot, genesis, &pk, Some(&w.accused), 1).await;
     assert_ne!(a.hash(), b.hash(), "FIXTURE: sibling headers must conflict");
     let expected = canonical(pk, a.header.clone(), b.header.clone()).hash();
     feed(&mut w.node, a).await;

@@ -31,14 +31,18 @@ async fn node(producers: &[KeyPair]) -> (Node, TempDir) {
 
 /// A header whose VDF output is REAL for the node's network (Devnet).
 fn header(by: &KeyPair, prev: Hash, merkle: Hash, presence: Hash) -> BlockHeader {
+    header_at(by, prev, merkle, presence, SLOT)
+}
+
+fn header_at(by: &KeyPair, prev: Hash, merkle: Hash, presence: Hash, slot: u32) -> BlockHeader {
     let mut h = BlockHeader {
         version: 2,
         prev_hash: prev,
         merkle_root: merkle,
         presence_root: presence,
         genesis_hash: doli_core::chainspec::ChainSpec::devnet().genesis_hash(),
-        timestamp: SLOT as u64 * 10,
-        slot: SLOT,
+        timestamp: slot as u64 * 10,
+        slot,
         producer: *by.public_key(),
         vdf_output: VdfOutput { value: vec![] },
         vdf_proof: VdfProof::empty(),
@@ -158,18 +162,25 @@ async fn test_handle_new_block_equivocation_yields_no_slash_tx() {
     let pairs = [
         (
             "merkle_root pair",
-            header(&producers[0], p, crypto_hash(b"m-A"), Hash::ZERO),
-            header(&producers[0], p, crypto_hash(b"m-B"), Hash::ZERO),
+            (crypto_hash(b"m-A"), Hash::ZERO),
+            (crypto_hash(b"m-B"), Hash::ZERO),
         ),
         (
             "presence_root-only pair",
-            header(&producers[0], p, m, crypto_hash(b"attest-set-A")),
-            header(&producers[0], p, m, crypto_hash(b"attest-set-B")),
+            (m, crypto_hash(b"attest-set-A")),
+            (m, crypto_hash(b"attest-set-B")),
         ),
     ];
-    for (name, h1, h2) in pairs {
-        assert!(vdf_ok(&h1) && vdf_ok(&h2), "{name}: setup VDFs valid");
+    for (name, (m1, r1), (m2, r2)) in pairs {
         let (mut n, _t) = node(&producers).await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs();
+        let slot = n.params.timestamp_to_slot(now);
+        let h1 = header_at(&producers[0], p, m1, r1, slot);
+        let h2 = header_at(&producers[0], p, m2, r2, slot);
+        assert!(vdf_ok(&h1) && vdf_ok(&h2), "{name}: setup VDFs valid");
         let _ = n.handle_new_block(Block::new(h1, vec![]), peer).await;
         let _ = n.handle_new_block(Block::new(h2, vec![]), peer).await;
         let detected = n

@@ -107,6 +107,15 @@ pub async fn stuck_fork_raised(node: &Node) -> bool {
 }
 
 /// Result ignored: the side effects under test fire before any validation verdict.
+/// The node's wall-clock slot; the detector window is bounded by it.
+pub fn wall_slot(node: &Node) -> u32 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs();
+    node.params.timestamp_to_slot(now)
+}
+
 pub async fn feed(node: &mut Node, block: Block) {
     let _ = node
         .handle_new_block(block, network::PeerId::random())

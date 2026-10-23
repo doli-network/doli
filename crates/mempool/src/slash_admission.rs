@@ -59,8 +59,9 @@ pub fn slash_targets<'a>(
 
 /// For a SlashProducer: `ctx` at the next height, carrying the accused's
 /// state, after the shared state check. `None` for any other type. When the
-/// live producer set cannot be read without blocking, the state check is
-/// skipped (fail open); the evidence rules still run in the caller.
+/// live producer set cannot be read without blocking, a slash judged at/above
+/// the gate is refused with the transient `Busy`; below the gate, or with no
+/// live set wired, the state check is skipped.
 pub(crate) fn admission_ctx(
     tx: &Transaction,
     ctx: &ValidationContext,
@@ -72,14 +73,17 @@ pub(crate) fn admission_ctx(
     }
     let mut mined_at = ctx.clone();
     mined_at.current_height = ctx.current_height.saturating_add(1);
-    let targets = sources
-        .live
-        .as_ref()
-        .and_then(|set| set.try_read().ok())
-        .map(|producers| slash_targets(&producers, utxo_set, mined_at.current_height, [tx]));
-    let Some(targets) = targets else {
+    let Some(set) = sources.live.as_ref() else {
         return Ok(Some(mined_at));
     };
+    let Ok(producers) = set.try_read() else {
+        if mined_at.current_height >= mined_at.inc_i_255_slashing_activation_height {
+            return Err(MempoolError::Busy);
+        }
+        return Ok(Some(mined_at));
+    };
+    let targets = slash_targets(&producers, utxo_set, mined_at.current_height, [tx]);
+    drop(producers);
     let mined_at = mined_at.with_slash_targets(targets);
     validate_slash_target(tx, &mined_at)?;
     Ok(Some(mined_at))
@@ -208,26 +212,36 @@ pub(crate) fn resident_refusal<'a>(
     Ok(())
 }
 
-/// Resident slashes whose accused is Slashed or has a queued Slash, judged at
-/// `mined_at`. Empty below the gate or when the live producer set is locked.
+/// Resident slashes that fail `validate_slash_target` judged at the height
+/// after `ctx` (the tip). Empty below the gate or when the live producer set
+/// is locked.
 pub(crate) fn stale_slashes<'a>(
     resident: impl IntoIterator<Item = (&'a Hash, &'a Transaction)>,
-    mined_at: u64,
-    gate: u64,
+    ctx: &ValidationContext,
     sources: &HoldingsSources,
+    utxo_set: &UtxoSet,
 ) -> Vec<Hash> {
-    if mined_at < gate {
+    let mut mined_at = ctx.clone();
+    mined_at.current_height = ctx.current_height.saturating_add(1);
+    if mined_at.current_height < mined_at.inc_i_255_slashing_activation_height {
         return Vec::new();
     }
     let Some(producers) = sources.live.as_ref().and_then(|set| set.try_read().ok()) else {
         return Vec::new();
     };
-    resident
+    let slashes: Vec<(&Hash, &Transaction)> = resident
         .into_iter()
-        .filter(|(_, tx)| {
-            tx.slash_data()
-                .is_some_and(|d| producers.is_slashed_or_slash_queued(&d.producer_pubkey))
-        })
+        .filter(|(_, tx)| tx.tx_type == TxType::SlashProducer)
+        .collect();
+    let targets: Vec<_> = slashes
+        .iter()
+        .flat_map(|(_, tx)| slash_targets(&producers, utxo_set, mined_at.current_height, [*tx]))
+        .collect();
+    drop(producers);
+    let mined_at = mined_at.with_slash_targets(targets);
+    slashes
+        .into_iter()
+        .filter(|(_, tx)| validate_slash_target(tx, &mined_at).is_err())
         .map(|(hash, _)| *hash)
         .collect()
 }

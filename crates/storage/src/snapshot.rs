@@ -366,7 +366,7 @@ pub fn verify_state_root_from_bytes_gated(
             e
         ))
     })?;
-    let ps: ProducerSet = bincode::deserialize(producer_set_bytes).map_err(|e| {
+    let ps = ProducerSet::from_snapshot_bytes(producer_set_bytes).map_err(|e| {
         StorageError::Serialization(format!(
             "[STOR034] ProducerSet deserialization failed ({} bytes): {}",
             producer_set_bytes.len(),

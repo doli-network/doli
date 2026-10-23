@@ -66,6 +66,29 @@ impl Node {
         ok
     }
 
+    /// Detector pass for `handle_new_block` at the prospective height and the local wall slot.
+    pub(super) fn detector_check(
+        &self,
+        detector: &mut EquivocationDetector,
+        block: &Block,
+        best_height: u64,
+    ) -> Option<EquivocationProof> {
+        let gate = self
+            .config
+            .network
+            .params()
+            .effective_slashing_activation_height();
+        let (chain, network) = (self.params.genesis_hash, self.config.network);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        detector.note_gate(best_height + 1, gate);
+        detector.check_block_with(block, self.params.timestamp_to_slot(now), |h| {
+            detector_admits(h, best_height + 1, gate, &chain, network)
+        })
+    }
+
     /// `on_new_block_event` pre-filter: the `handle_new_block` rule at the local best height + 1.
     pub(super) async fn gossip_event_authenticated(&self, block: &Block) -> bool {
         let best_height = self.chain_state.read().await.best_height;

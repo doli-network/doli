@@ -511,8 +511,8 @@ impl Node {
             let _ = sync.take_chain_breaks();
         }
 
-        // Expire old mempool transactions
         self.mempool.write().await.expire_old();
+        self.redeliver_slashes().await;
 
         // Poll fork recovery: the walk connects at a CANONICAL parent.
         {

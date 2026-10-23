@@ -8,6 +8,7 @@
 //! block signature (`vdf_proof.pi`, INC-I-236, enforced from the AH), not by the VDF.
 
 use crypto::{signature, Hash, KeyPair, PublicKey};
+use doli_core::consensus::MAX_FUTURE_SLOTS;
 use doli_core::transaction::{SlashData, SlashingEvidence};
 use doli_core::validation::double_production_evidence_fits;
 use doli_core::{Block, BlockHeader, Transaction};
@@ -92,8 +93,11 @@ pub struct EquivocationDetector {
     /// Detected equivocation proofs, at most one per (producer, slot)
     pending_proofs: Vec<EquivocationProof>,
 
-    /// Oldest slot currently tracked (for sliding window cleanup)
+    /// No tracked entry has a slot below this.
     oldest_tracked_slot: u32,
+
+    /// Set at the first `note_gate` crossing; `clear()` keeps it.
+    gate_crossed: bool,
 }
 
 /// The stored header for one (producer, slot).
@@ -132,26 +136,50 @@ impl EquivocationDetector {
             max_tracked: MAX_TRACKED_ENTRIES,
             pending_proofs: Vec::new(),
             oldest_tracked_slot: 0,
+            gate_crossed: false,
         }
     }
 
-    /// `check_block_with` admitting every header.
+    /// `check_block_with` admitting every header, with the header's slot as the wall slot.
     pub fn check_block(&mut self, block: &Block) -> Option<EquivocationProof> {
-        self.check_block_with(block, |_| true)
+        self.check_block_with(block, block.header.slot, |_| true)
     }
 
     /// Check a block for equivocation. Returns a proof when an admitted header
     /// differs from the stored admitted header for its (producer, slot) and the
     /// pair fits a SlashData. `admit` is not called for the stored header, nor
     /// after `MAX_EVIDENCE_CHECKS_AFTER_PROOF` calls once (producer, slot) proved.
+    /// A header past `wall_slot + MAX_FUTURE_SLOTS` is skipped; the window is
+    /// bounded by `wall_slot` only.
     pub fn check_block_with(
+        &mut self,
+        block: &Block,
+        wall_slot: u32,
+        admit: impl FnOnce(&BlockHeader) -> bool,
+    ) -> Option<EquivocationProof> {
+        if u64::from(block.header.slot) > u64::from(wall_slot).saturating_add(MAX_FUTURE_SLOTS) {
+            return None;
+        }
+        let proof = self.check_admitted(block, admit);
+        self.cleanup_before_slot(wall_slot.saturating_sub(SLIDING_WINDOW_SLOTS));
+        proof
+    }
+
+    /// Drop every stored header once, at the first `prospective_height >= gate`.
+    pub fn note_gate(&mut self, prospective_height: u64, gate: u64) {
+        if !self.gate_crossed && prospective_height >= gate {
+            self.clear();
+            self.gate_crossed = true;
+        }
+    }
+
+    fn check_admitted(
         &mut self,
         block: &Block,
         admit: impl FnOnce(&BlockHeader) -> bool,
     ) -> Option<EquivocationProof> {
         let header = &block.header;
         let key = (header.producer, header.slot);
-        self.cleanup_before_slot(header.slot.saturating_sub(SLIDING_WINDOW_SLOTS));
         let hash = block.hash();
 
         if let Some(stored) = self.seen_blocks.get_mut(&key) {
@@ -229,6 +257,7 @@ impl EquivocationDetector {
 
         self.seen_blocks.insert(key, tracked);
         self.lru_order.push_back(key);
+        self.oldest_tracked_slot = self.oldest_tracked_slot.min(key.1);
     }
 
     /// Take all pending equivocation proofs
@@ -256,25 +285,19 @@ impl EquivocationDetector {
         self.oldest_tracked_slot = 0;
     }
 
-    /// Remove all entries with slot < min_slot (sliding window cleanup).
-    ///
-    /// This bounds memory growth by evicting stale entries that are too old
-    /// to be relevant for equivocation detection.
+    /// Remove every entry with slot < min_slot, whatever its arrival order.
     pub fn cleanup_before_slot(&mut self, min_slot: u32) {
         if min_slot <= self.oldest_tracked_slot {
-            return; // Already cleaned up to this point
+            return;
         }
-
-        // Remove from front of LRU (oldest entries are at front)
-        while let Some(front) = self.lru_order.front() {
-            if front.1 < min_slot {
-                let old_key = self.lru_order.pop_front().unwrap();
-                self.seen_blocks.remove(&old_key);
-            } else {
-                break;
+        let seen = &mut self.seen_blocks;
+        self.lru_order.retain(|key| {
+            let keep = key.1 >= min_slot;
+            if !keep {
+                seen.remove(key);
             }
-        }
-
+            keep
+        });
         self.oldest_tracked_slot = min_slot;
     }
 }

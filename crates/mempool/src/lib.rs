@@ -6,6 +6,7 @@ pub mod addbond_cap;
 pub mod contention;
 mod contention_tests;
 mod entry;
+mod error;
 pub mod holdings;
 mod pending_registrations;
 mod policy;

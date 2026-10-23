@@ -55,3 +55,10 @@ path = "tests/m2_canonical_fold_fail_loud.rs"
 [[test]]
 name = "inc_i_236_m2_archive_import"
 path = "tests/inc_i_236_m2_archive_import.rs"
+
+# INC-I-256 M1 — its OWN test binary on purpose: it names the snapshot-restore
+# API that does not exist until the milestone lands, so folding it into `tests/it/`
+# would break every storage integration test during RED.
+[[test]]
+name = "inc_i_256_m1_snapshot_index_test"
+path = "tests/inc_i_256_m1_snapshot_index_test.rs"

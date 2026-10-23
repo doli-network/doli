@@ -252,6 +252,15 @@ async fn tracked(node: &Node) -> usize {
     node.equivocation_detector.read().await.tracked_count()
 }
 
+/// The node's wall-clock slot; the detector window is bounded by it.
+fn wall_slot(node: &Node) -> u32 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs();
+    node.params.timestamp_to_slot(now)
+}
+
 /// Records WARN+ events whose target or message names equivocation.
 #[derive(Clone, Default)]
 struct DetectorWarns(Arc<Mutex<Vec<String>>>);
@@ -414,7 +423,14 @@ async fn req_auth_022_detector_forged_leaves_no_seen_record() {
     let p = keys(2);
     let (mut node, _t) = make_node(&p).await;
     let genesis = tip(&node).await.1;
-    let b1 = block(1, 1, genesis, &p[0], Sig::Valid, &node.params.clone());
+    let b1 = block(
+        1,
+        wall_slot(&node),
+        genesis,
+        &p[0],
+        Sig::Valid,
+        &node.params.clone(),
+    );
     for sig in BAD {
         feed(&mut node, variant(&b1, &p[0], sig)).await;
         assert_eq!(
@@ -439,7 +455,8 @@ async fn req_auth_022_detector_forged_far_slot_does_not_evict_real_record() {
     let params = node.params.clone();
     let gh = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
     let genesis = tip(&node).await.1;
-    let a = salted(1, 5, genesis, &p[0], Sig::Valid, &params, gh, 0);
+    let slot = wall_slot(&node);
+    let a = salted(1, slot, genesis, &p[0], Sig::Valid, &params, gh, 0);
     feed(&mut node, a.clone()).await;
     assert_eq!(
         tracked(&node).await,
@@ -447,9 +464,18 @@ async fn req_auth_022_detector_forged_far_slot_does_not_evict_real_record() {
         "PRECONDITION: real header recorded"
     );
 
-    let far = salted(2, 100_005, a.hash(), &p[0], Sig::Forged, &params, gh, 0);
+    let far = salted(
+        2,
+        slot + 100_000,
+        a.hash(),
+        &p[0],
+        Sig::Forged,
+        &params,
+        gh,
+        0,
+    );
     feed(&mut node, far).await;
-    let b = salted(1, 5, genesis, &p[0], Sig::Valid, &params, gh, 1);
+    let b = salted(1, slot, genesis, &p[0], Sig::Valid, &params, gh, 1);
     assert_ne!(a.hash(), b.hash(), "fixture: headers must conflict");
     feed(&mut node, b).await;
 
@@ -471,12 +497,17 @@ async fn req_auth_022_detector_forged_conflict_emits_no_equivocation_warn() {
     let params = node.params.clone();
     let gh = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
     let genesis = tip(&node).await.1;
-    let a = salted(1, 5, genesis, &p[0], Sig::Valid, &params, gh, 0);
+    let slot = wall_slot(&node);
+    let a = salted(1, slot, genesis, &p[0], Sig::Valid, &params, gh, 0);
     feed(&mut node, a).await;
     let _ = warns.take();
 
     for sig in BAD {
-        feed(&mut node, salted(1, 5, genesis, &p[0], sig, &params, gh, 1)).await;
+        feed(
+            &mut node,
+            salted(1, slot, genesis, &p[0], sig, &params, gh, 1),
+        )
+        .await;
         assert_eq!(
             warns.take(),
             Vec::<String>::new(),
@@ -485,7 +516,7 @@ async fn req_auth_022_detector_forged_conflict_emits_no_equivocation_warn() {
     }
     feed(
         &mut node,
-        salted(1, 5, genesis, &p[0], Sig::Valid, &params, gh, 1),
+        salted(1, slot, genesis, &p[0], Sig::Valid, &params, gh, 1),
     )
     .await;
     assert!(

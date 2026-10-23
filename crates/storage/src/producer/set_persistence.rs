@@ -48,6 +48,14 @@ impl ProducerSet {
         Ok(Self::new())
     }
 
+    /// Decode a bincode producer snapshot (undo record or snap wire bytes) and
+    /// rebuild the skip-serialized unbonding index.
+    pub fn from_snapshot_bytes(bytes: &[u8]) -> Result<Self, bincode::Error> {
+        let mut set: Self = bincode::deserialize(bytes)?;
+        set.rebuild_unbonding_index();
+        Ok(set)
+    }
+
     /// Migrate all producers that have empty bond_entries.
     pub fn migrate_bond_entries(&mut self, bond_unit: u64) {
         for info in self.producers.values_mut() {

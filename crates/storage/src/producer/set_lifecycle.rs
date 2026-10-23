@@ -105,6 +105,13 @@ impl ProducerSet {
         }
     }
 
+    /// True when `process_unbonding(current_height, unbonding_duration)` has an
+    /// index candidate, i.e. may mutate the set.
+    pub fn has_unbonding_due(&self, current_height: u64, unbonding_duration: u64) -> bool {
+        let threshold = current_height.saturating_sub(unbonding_duration);
+        self.unbonding_index.range(..=threshold).next().is_some()
+    }
+
     /// Process completed unbonding periods and mark as exited.
     ///
     /// Uses the unbonding index for O(k) lookup where k = completed producers,

@@ -186,8 +186,9 @@ async fn inc_i_255_m2_handler_redelivered_sibling_bounded() {
     let genesis = w.node.chain_state.read().await.best_hash;
     let pk = w.accused_pk();
     let accused: KeyPair = w.accused.clone();
-    let a = header_block(&mut w.node, 1, SLOT, genesis, &pk, Some(&accused), 0).await;
-    let b = header_block(&mut w.node, 1, SLOT, genesis, &pk, Some(&accused), 1).await;
+    let slot = wall_slot(&w.node);
+    let a = header_block(&mut w.node, 1, slot, genesis, &pk, Some(&accused), 0).await;
+    let b = header_block(&mut w.node, 1, slot, genesis, &pk, Some(&accused), 1).await;
     assert_ne!(a.hash(), b.hash(), "FIXTURE: sibling headers must conflict");
     feed(&mut w.node, a).await;
     for _ in 0..REDELIVERIES {

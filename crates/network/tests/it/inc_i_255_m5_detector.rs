@@ -60,7 +60,7 @@ struct Probe {
 impl Probe {
     fn check(&mut self, b: &Block, verdict: bool) -> Option<EquivocationProof> {
         let calls = &mut self.calls;
-        self.d.check_block_with(b, |h| {
+        self.d.check_block_with(b, b.header.slot, |h| {
             *calls.entry(h.hash()).or_default() += 1;
             verdict
         })

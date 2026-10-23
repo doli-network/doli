@@ -21,7 +21,7 @@ pub const SLASH_DATA_LIMIT: usize = 64 * 1024;
 pub const OVERSIZE_MISSED: usize = 2_100;
 
 /// Devnet node (gate at the devnet default) plus the accused's two signed,
-/// VDF-valid sibling blocks for `SLOT` on top of genesis.
+/// VDF-valid sibling blocks for the node's wall slot on top of genesis.
 pub struct Scene {
     pub w: World,
     pub a: Block,
@@ -33,8 +33,9 @@ pub async fn scene() -> Scene {
     let genesis = w.node.chain_state.read().await.best_hash;
     let pk = w.accused_pk();
     let kp = w.accused.clone();
-    let a = header_block(&mut w.node, 1, SLOT, genesis, &pk, Some(&kp), 0).await;
-    let b = header_block(&mut w.node, 1, SLOT, genesis, &pk, Some(&kp), 1).await;
+    let slot = wall_slot(&w.node);
+    let a = header_block(&mut w.node, 1, slot, genesis, &pk, Some(&kp), 0).await;
+    let b = header_block(&mut w.node, 1, slot, genesis, &pk, Some(&kp), 1).await;
     assert_ne!(a.hash(), b.hash(), "FIXTURE: sibling headers must conflict");
     Scene { w, a, b }
 }
@@ -61,12 +62,13 @@ impl Scene {
         resident_slashes(&self.w.node, &self.pk()).await
     }
 
-    /// Signed, VDF-valid orphan block by the accused at `SLOT` (never applies).
+    /// Signed, VDF-valid orphan block by the accused at the scene slot (never applies).
     pub async fn orphan_base(&mut self, salt: u64) -> Block {
         let pk = self.pk();
         let kp = self.w.accused.clone();
         let parent = Hash::from_bytes([0x0D; 32]);
-        header_block(&mut self.w.node, 1, SLOT, parent, &pk, Some(&kp), salt).await
+        let slot = self.a.header.slot;
+        header_block(&mut self.w.node, 1, slot, parent, &pk, Some(&kp), salt).await
     }
 
     /// `base` with `edit` applied to its header, re-signed by the accused.

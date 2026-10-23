@@ -150,7 +150,7 @@ mod reason {
 ///
 /// The predicate is PURELY "does this block carry `AddMaintainer` / `RemoveMaintainer`".
 /// It deliberately does NOT include the `at_epoch_boundary` term that
-/// `needs_producer_snapshot` ORs in (`apply_block/mod.rs`): producer mutations are
+/// `needs_producer_snapshot` ORs in (`apply_block/producer_undo.rs`): producer mutations are
 /// epoch-DEFERRED so a boundary block can change the producer set without carrying a
 /// producer transaction, while maintainer changes are applied immediately at the exact
 /// block that carries them (`apply_block/governance.rs`). Reusing the producer predicate

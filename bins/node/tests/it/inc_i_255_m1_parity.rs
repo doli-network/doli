@@ -12,15 +12,19 @@
 // OUTPUT CONTRACT: fn Node::apply_block(&mut self, Block, ValidationMode) -> Result<()>
 //   O1 return (InvalidSlash message) per mode; O2 chain tip unchanged
 // PATHS: admission | builder selection | block validation x3 modes | apply x3 modes
-//        | admission with the live producer set write-locked (state check skipped)
+//        | admission with the live producer set write-locked (fails closed, transient Busy)
 // MATRIX: every variant below x every path -> rejected, one identical message naming the rule;
 //         control: the valid evidence on a fresh node -> admitted
-//         set locked x {unregistered accused -> admitted, valid -> admitted, trailing byte -> InvalidSlash}
-//           (inc_i_255_admission_fail_open_when_producer_set_locked)
+//         set locked x {valid -> Busy, unregistered accused -> Busy, trailing byte -> refused}
+//           x {return text, pool len, pool membership, resident slashes naming the accused}
+//         released x valid -> admitted by the node intake (not known), same id resident;
+//                    unregistered -> InvalidSlash again (the state check ran, nothing cached)
+//           (inc_i_255_admission_fails_closed_busy_when_producer_set_locked)
 // INPUT PARTITIONS:
 //   evidence: one bad signature | same header twice | different slots | wrong genesis |
 //             encoded > 64 KiB | trailing byte | descending header order | non-default reporter signature
 //   accused state: not registered | already Slashed | Slash queued
+// covers: slash_submit slash_redeliver periodic mod block_handling network_events header_auth equivocation slash_admission pool transaction validation_checks init
 
 use crypto::{Hash, KeyPair, Signature};
 use doli_core::transaction::Transaction;
@@ -290,10 +294,17 @@ async fn inc_i_255_parity_pending_slash_rejected_on_every_path() {
     .await;
 }
 
-// REQ-SLASH-001 — Decision: a failure means admission blocks or refuses while the producer set is write-locked, or the fail-open also drops the evidence rules or the fee exemption.
+fn busy(r: &Result<(), mempool::MempoolError>) -> bool {
+    r.as_ref()
+        .err()
+        .is_some_and(|e| format!("{e:?}").contains("Busy") || e.to_string().contains("Busy"))
+}
+
+// REQ-SLASH-001 — Decision: a failure means a slash is admitted while the accused's producer-set state cannot be read (fail open), or the refusal leaves state that keeps the same tx out once the lock is released.
 #[tokio::test]
-async fn inc_i_255_admission_fail_open_when_producer_set_locked() {
+async fn inc_i_255_admission_fails_closed_busy_when_producer_set_locked() {
     let w = world().await;
+    let accused = w.accused_pk();
     let stranger = KeyPair::generate();
     let (sa, sb) = pair(&stranger, chain_genesis());
     let unknown = canonical(*stranger.public_key(), sa, sb);
@@ -305,26 +316,61 @@ async fn inc_i_255_admission_fail_open_when_producer_set_locked() {
     let valid = valid_slash(&w);
     let mut trailing = valid.clone();
     trailing.extra_data.push(0);
+    let before = w.node.mempool.read().await.len();
 
     let guard = w.node.producer_set.write().await;
-    let skipped = admit(&w.node, &unknown).await;
-    let admitted = admit(&w.node, &valid).await;
-    let refused = admit(&w.node, &trailing).await;
+    let locked_valid = admit(&w.node, &valid).await;
+    let locked_unknown = admit(&w.node, &unknown).await;
+    let locked_trailing = admit(&w.node, &trailing).await;
     drop(guard);
 
     assert!(
-        skipped.is_ok(),
-        "set locked: the state check is skipped (fail open); got {skipped:?}"
+        busy(&locked_valid),
+        "set locked: a valid slash must be refused with a transient Busy (fail closed); got {locked_valid:?}"
     );
     assert!(
-        admitted.is_ok(),
-        "set locked: a valid fee-0 slash keeps the fee exemption; got {admitted:?}"
+        busy(&locked_unknown),
+        "set locked: the unreadable state check must refuse with Busy, never be skipped; got {locked_unknown:?}"
     );
     assert!(
-        mempool_slash_msg(&refused).is_some_and(|m| m.contains("non-canonical")),
-        "set locked: the evidence rules still refuse; got {refused:?}"
+        locked_trailing.is_err(),
+        "set locked: a non-canonical slash stays refused; got {locked_trailing:?}"
     );
-    let pool = w.node.mempool.read().await;
-    assert!(pool.contains(&unknown.hash()) && pool.contains(&valid.hash()));
-    assert!(!pool.contains(&trailing.hash()));
+    {
+        let pool = w.node.mempool.read().await;
+        assert_eq!(
+            pool.len(),
+            before,
+            "a Busy refusal must leave the pool unchanged"
+        );
+        for (what, tx) in [
+            ("valid", &valid),
+            ("unknown", &unknown),
+            ("trailing", &trailing),
+        ] {
+            assert!(
+                !pool.contains(&tx.hash()),
+                "set locked: the {what} slash became resident"
+            );
+        }
+    }
+    assert!(
+        resident_slashes(&w.node, &accused).await.is_empty(),
+        "set locked: no slash naming the accused may be resident"
+    );
+
+    assert!(
+        w.node.handle_new_transaction(valid.clone()).await,
+        "after release the same tx must be admitted by the node intake (never marked known or cached as refused)"
+    );
+    assert_eq!(
+        resident_slashes(&w.node, &accused).await,
+        vec![valid.hash()],
+        "after release the resident slash must keep the same id"
+    );
+    let again = admit(&w.node, &unknown).await;
+    assert!(
+        mempool_slash_msg(&again).is_some_and(|m| m.contains("not a registered producer")),
+        "after release the state check runs again for the unregistered accused; got {again:?}"
+    );
 }

@@ -15,7 +15,7 @@ use doli_core::{Network, NetworkParams};
 
 use super::inc_i_236_m4_common::{
     canonical_two, feed, header_block, proofs_against, reporter_node, slash_txs_against,
-    stuck_fork_raised,
+    stuck_fork_raised, wall_slot,
 };
 
 const AH_ENV: &str = "DOLI_INC_I_236_BLOCK_SIGNATURE_ACTIVATION_HEIGHT";
@@ -53,8 +53,9 @@ async fn req_auth_007_012_below_ah_behavior_unchanged() {
     let (mut node, _reporter, victim, _tmp) = reporter_node().await;
     let genesis = node.chain_state.read().await.best_hash;
     let pk = *victim.public_key();
-    let real = header_block(&mut node, 1, 7, genesis, &pk, Some(&victim), 0).await;
-    let forged = header_block(&mut node, 1, 7, genesis, &pk, None, 1).await;
+    let slot = wall_slot(&node);
+    let real = header_block(&mut node, 1, slot, genesis, &pk, Some(&victim), 0).await;
+    let forged = header_block(&mut node, 1, slot, genesis, &pk, None, 1).await;
     feed(&mut node, real).await;
     feed(&mut node, forged).await;
     assert_eq!(

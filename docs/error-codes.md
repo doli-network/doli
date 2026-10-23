@@ -67,7 +67,7 @@ Used in `crates/rpc/src/error.rs`. Standard JSON-RPC codes plus custom applicati
 | `-32001` | `TX_NOT_FOUND` | Transaction not found (may include `data.searched_by`, `data.hash`) |
 | `-32002` | `INVALID_TX` | Transaction validation failed |
 | `-32003` | `TX_ALREADY_KNOWN` | Transaction already in mempool |
-| `-32004` | `MEMPOOL_FULL` | Mempool is full |
+| `-32004` | `MEMPOOL_FULL` | Mempool is full. Also `data.error_code = "MEMPOOL_BUSY"` (`retryable: true`): a slash met a busy producer-set lock; resubmit the same tx |
 | `-32005` | `UTXO_NOT_FOUND` | UTXO not found |
 | `-32006` | `PRODUCER_NOT_FOUND` | Producer not found |
 | `-32007` | `POOL_NOT_FOUND` | Pool not found |

@@ -1711,7 +1711,7 @@ curl -X POST http://127.0.0.1:8500 \
 | -32001 | Transaction not found | Requested tx doesn't exist |
 | -32002 | Invalid transaction | Transaction validation failed |
 | -32003 | Already in mempool | Transaction already submitted |
-| -32004 | Mempool full / Node busy | Mempool at capacity; or `"Node busy: broadcast queue full, retry later"` with `data.error_code = "BROADCAST_BUSY"` (`sendTransaction`, `submitVote`, `submitMaintainerChange`; retryable) |
+| -32004 | Mempool full / Node busy | Mempool at capacity; or `"Node busy: broadcast queue full, retry later"` with `data.error_code = "BROADCAST_BUSY"` (`sendTransaction`, `submitVote`, `submitMaintainerChange`; retryable); or `"Node busy: producer set locked, retry later"` with `data.error_code = "MEMPOOL_BUSY"` (`sendTransaction` of a slash; retryable) |
 | -32005 | UTXO not found | Referenced UTXO doesn't exist |
 | -32006 | Producer not found | Producer not in registry |
 | -32007 | Pool not found | AMM pool not found |

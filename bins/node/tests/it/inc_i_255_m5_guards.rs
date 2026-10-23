@@ -62,7 +62,8 @@ async fn inc_i_255_m5_valid_decoy_slashes_first_pair() {
     let mut s = scene().await;
     let genesis = tip(&s.w.node).await.1;
     let (pk, kp) = (s.pk(), s.w.accused.clone());
-    let d = header_block(&mut s.w.node, 1, SLOT, genesis, &pk, Some(&kp), 2).await;
+    let slot = s.a.header.slot;
+    let d = header_block(&mut s.w.node, 1, slot, genesis, &pk, Some(&kp), 2).await;
     assert!(
         d.hash() != s.a.hash() && d.hash() != s.b.hash(),
         "FIXTURE: D is a third header"

@@ -156,7 +156,7 @@ impl Node {
                 return Ok(SnapshotPrelude::Refused);
             }
         };
-        let producer_set: ProducerSet = match bincode::deserialize(&snapshot.producer_set) {
+        let producer_set = match ProducerSet::from_snapshot_bytes(&snapshot.producer_set) {
             Ok(ps) => ps,
             Err(e) => {
                 error!(

@@ -10,10 +10,8 @@ use doli_core::validation::{
     ValidationError,
 };
 use doli_core::{BlockHeight, Transaction, TxType};
-use serde_json::Value;
 use storage::producer::resolve_withdrawal_inputs;
 use storage::{Outpoint, UtxoSet};
-use thiserror::Error;
 use tracing::{debug, info, warn};
 
 use super::contention::{
@@ -21,6 +19,7 @@ use super::contention::{
     MempoolDiagnostic,
 };
 use super::entry::MempoolEntry;
+pub use super::error::MempoolError;
 use super::holdings::HoldingsSources;
 use super::pending_registrations;
 use super::policy::MempoolPolicy;
@@ -29,139 +28,6 @@ use super::withdrawal_holdings;
 use super::zero_flow_auth::ZeroFlowSnapshot;
 use super::zero_flow_newness::ChangeIndex;
 use super::{zero_flow_mined::MinedCheck, zero_flow_policy};
-
-/// Mempool errors
-#[derive(Debug, Error)]
-pub enum MempoolError {
-    #[error("transaction already exists in mempool")]
-    AlreadyExists,
-
-    #[error("mempool is full")]
-    Full,
-
-    #[error("invalid transaction: {0}")]
-    InvalidTransaction(String),
-
-    #[error("validation failed: {0}")]
-    Validation(#[from] ValidationError),
-
-    #[error("fee too low: {0} < {1}")]
-    FeeTooLow(u64, u64),
-
-    #[error("transaction too large: {0} > {1}")]
-    TooLarge(usize, usize),
-
-    #[error("too many ancestors: {0} > {1}")]
-    TooManyAncestors(usize, usize),
-
-    #[error("too many descendants: {0} > {1}")]
-    TooManyDescendants(usize, usize),
-
-    #[error("missing input: {0}:{1}")]
-    MissingInput(Hash, u32),
-
-    #[error(
-        "double spend: outpoint {tx_hash}:{output_index} already spent by mempool tx {spending_tx}"
-    )]
-    DoubleSpend {
-        /// Transaction hash of the output being double-spent.
-        tx_hash: crypto::Hash,
-        /// Output index within that transaction.
-        output_index: u32,
-        /// Hash of the mempool transaction that already spends this output.
-        spending_tx: crypto::Hash,
-    },
-}
-
-impl MempoolError {
-    /// Returns a stable, machine-readable error code.
-    pub fn error_code(&self) -> &str {
-        match self {
-            Self::AlreadyExists => "TX_ALREADY_EXISTS",
-            Self::Full => "MEMPOOL_FULL",
-            Self::InvalidTransaction(msg) => {
-                // Extract [MPTX0XX] code if present
-                if msg.starts_with("[MPTX") {
-                    if let Some(end) = msg.find(']') {
-                        return &msg[1..end];
-                    }
-                }
-                "INVALID_TRANSACTION"
-            }
-            Self::Validation(e) => e.error_code(),
-            Self::FeeTooLow(..) => "FEE_TOO_LOW",
-            Self::TooLarge(..) => "TX_TOO_LARGE",
-            Self::TooManyAncestors(..) => "TOO_MANY_ANCESTORS",
-            Self::TooManyDescendants(..) => "TOO_MANY_DESCENDANTS",
-            Self::MissingInput(..) => "MISSING_INPUT",
-            Self::DoubleSpend { .. } => "DOUBLE_SPEND",
-        }
-    }
-
-    /// Serializes this error to structured JSON for agentic consumption.
-    ///
-    /// Returns a JSON object with `error_code`, `message`, `stage`, and
-    /// variant-specific fields. Agents can match on `error_code` programmatically.
-    pub fn to_structured_json(&self) -> Value {
-        let mut obj = serde_json::json!({
-            "error_code": self.error_code(),
-            "message": self.to_string(),
-            "stage": "mempool",
-        });
-
-        let map = obj.as_object_mut().unwrap();
-
-        match self {
-            Self::AlreadyExists | Self::Full => {}
-            Self::InvalidTransaction(msg) => {
-                map.insert("detail".into(), Value::String(msg.clone()));
-            }
-            Self::Validation(e) => {
-                // Merge the full ValidationError JSON (which has all fields)
-                let val_json = e.to_structured_json();
-                if let Value::Object(val_map) = val_json {
-                    for (k, v) in val_map {
-                        if k != "message" {
-                            map.insert(k, v);
-                        }
-                    }
-                }
-                map.insert("stage".into(), Value::String("mempool_validation".into()));
-            }
-            Self::FeeTooLow(actual, minimum) => {
-                map.insert("actual_fee".into(), (*actual).into());
-                map.insert("minimum_fee".into(), (*minimum).into());
-            }
-            Self::TooLarge(size, max) => {
-                map.insert("size".into(), (*size).into());
-                map.insert("max".into(), (*max).into());
-            }
-            Self::TooManyAncestors(count, max) => {
-                map.insert("count".into(), (*count).into());
-                map.insert("max".into(), (*max).into());
-            }
-            Self::TooManyDescendants(count, max) => {
-                map.insert("count".into(), (*count).into());
-                map.insert("max".into(), (*max).into());
-            }
-            Self::MissingInput(hash, index) => {
-                map.insert("tx_hash".into(), Value::String(hash.to_hex()));
-                map.insert("output_index".into(), (*index).into());
-            }
-            Self::DoubleSpend {
-                tx_hash,
-                output_index,
-                spending_tx,
-            } => {
-                map.insert("tx_hash".into(), Value::String(tx_hash.to_hex()));
-                map.insert("output_index".into(), (*output_index).into());
-                map.insert("spending_tx".into(), Value::String(spending_tx.to_hex()));
-            }
-        }
-
-        obj
-    }
-}
 
 /// Transaction mempool
 pub struct Mempool {
@@ -491,32 +357,12 @@ impl Mempool {
         )
     }
 
-    /// Add a transaction to the mempool.
-    ///
-    /// `current_slot` feeds the INC-I-171 vesting bound and raises the
-    /// watermark before any early return (INV-VEST-011).
-    pub fn add_transaction(
-        &mut self,
-        tx: Transaction,
-        utxo_set: &UtxoSet,
+    /// Admission context at `current_height` (the tip) for every tx type.
+    fn admission_base_ctx(
+        &self,
         current_height: BlockHeight,
-        current_slot: u32,
-    ) -> Result<AddTransactionResult, MempoolError> {
-        self.slot_watermark = self.slot_watermark.max(current_slot);
-        let tx_hash = tx.hash();
-
-        // Check if already in mempool
-        if self.entries.contains_key(&tx_hash) {
-            return Err(MempoolError::AlreadyExists);
-        }
-
-        // Check transaction size
-        let tx_size = tx.size();
-        if tx_size > self.policy.max_tx_size {
-            return Err(MempoolError::TooLarge(tx_size, self.policy.max_tx_size));
-        }
-
-        // Validate transaction structure
+        pending_keys: Vec<crypto::PublicKey>,
+    ) -> ValidationContext {
         // AUDIT-P1-001: pull active_producers snapshot so validate_transaction's
         // contains-check at transaction.rs:242 sees the live set instead of
         // an empty Vec. Snapshot may be empty pre-activation (no real
@@ -527,13 +373,7 @@ impl Mempool {
             .read()
             .map(|g| g.clone())
             .unwrap_or_default();
-        // INC-I-147: populate pending_producer_keys so the duplicate-registration
-        // check at validation/registration.rs:173 is reachable at admission
-        // instead of evaluating Vec::new().contains(&pk) == false. `tx` is not
-        // yet in `entries` (the AlreadyExists guard above returned otherwise),
-        // so the exclusion is defensive.
-        let pending_keys = self.pending_keys_for(&tx, Some(&tx_hash));
-        let ctx = ValidationContext::new(self.params.clone(), self.network, 0, current_height)
+        ValidationContext::new(self.params.clone(), self.network, 0, current_height)
             .with_sig_verification_height(self.network.params().sig_verification_height)
             .with_encrypted_content_activation_height(
                 self.network.params().encrypted_content_activation_height,
@@ -581,7 +421,42 @@ impl Mempool {
                     .load(std::sync::atomic::Ordering::Acquire),
             )
             .with_producers_weighted(active_producers_snapshot)
-            .with_pending_producer_keys(pending_keys);
+            .with_pending_producer_keys(pending_keys)
+    }
+
+    /// Add a transaction to the mempool.
+    ///
+    /// `current_slot` feeds the INC-I-171 vesting bound and raises the
+    /// watermark before any early return (INV-VEST-011).
+    pub fn add_transaction(
+        &mut self,
+        tx: Transaction,
+        utxo_set: &UtxoSet,
+        current_height: BlockHeight,
+        current_slot: u32,
+    ) -> Result<AddTransactionResult, MempoolError> {
+        self.slot_watermark = self.slot_watermark.max(current_slot);
+        let tx_hash = tx.hash();
+
+        // Check if already in mempool
+        if self.entries.contains_key(&tx_hash) {
+            return Err(MempoolError::AlreadyExists);
+        }
+
+        // Check transaction size
+        let tx_size = tx.size();
+        if tx_size > self.policy.max_tx_size {
+            return Err(MempoolError::TooLarge(tx_size, self.policy.max_tx_size));
+        }
+
+        // Validate transaction structure
+        // INC-I-147: populate pending_producer_keys so the duplicate-registration
+        // check at validation/registration.rs:173 is reachable at admission
+        // instead of evaluating Vec::new().contains(&pk) == false. `tx` is not
+        // yet in `entries` (the AlreadyExists guard above returned otherwise),
+        // so the exclusion is defensive.
+        let pending_keys = self.pending_keys_for(&tx, Some(&tx_hash));
+        let ctx = self.admission_base_ctx(current_height, pending_keys);
         // INC-I-217 M6: the named rotation verdict runs BEFORE the generic
         // validator, so it is the verdict and not a second opinion.
         crate::rotation_filter::rotation_admissible(&tx, &ctx)
@@ -785,10 +660,11 @@ impl Mempool {
         // INC-I-233: the six fee-exempt types skip the floor, like consensus
         // (one shared list); with native-only inputs they would otherwise be
         // rejected here while consensus accepts them (INC-I-147 class).
+        let slash_exempt = slash_ctx
+            .as_ref()
+            .is_some_and(|c| doli_core::validation::slash_fee_exempt(&tx, c));
         let fee_exempt = doli_core::validation::coinbase_credit::is_native_fee_exempt(tx.tx_type)
-            || slash_ctx
-                .as_ref()
-                .is_some_and(|c| doli_core::validation::slash_fee_exempt(&tx, c));
+            || slash_exempt;
         if !amm_gated && !fee_exempt {
             // Require fee >= minimum_fee (base + per-byte for output extra_data)
             let min_fee = tx.minimum_fee();
@@ -864,6 +740,7 @@ impl Mempool {
 
         // Create entry
         let mut entry = MempoolEntry::new(tx.clone(), fee);
+        entry.evict_exempt = slash_exempt;
 
         // Calculate ancestor fees
         for ancestor_hash in &ancestors {
@@ -1446,7 +1323,7 @@ impl Mempool {
             .find(|&&(_, hash)| {
                 self.entries
                     .get(&hash)
-                    .map(|e| e.descendants.is_empty())
+                    .map(|e| e.descendants.is_empty() && !e.evict_exempt)
                     .unwrap_or(false)
             })
             .map(|&(_, hash)| hash);
@@ -1464,7 +1341,7 @@ impl Mempool {
         let hashes: Vec<Hash> = self
             .entries
             .iter()
-            .filter(|(_, e)| e.age() > self.policy.max_age)
+            .filter(|(_, e)| !e.evict_exempt && e.age() > self.policy.max_age)
             .map(|(h, _)| *h)
             .collect();
 
@@ -1540,9 +1417,9 @@ impl Mempool {
         to_remove.extend(self.registrations_that_became_duplicates(current_height));
         to_remove.extend(crate::slash_admission::stale_slashes(
             self.entries.iter().map(|(h, e)| (h, &e.tx)),
-            current_height.saturating_add(1),
-            self.network.params().effective_slashing_activation_height(),
+            &self.admission_base_ctx(current_height, Vec::new()),
             &self.producer_holdings,
+            utxo_set,
         ));
         to_remove.extend(unbonding::unmineable_producer_txs(
             self.entries.iter().map(|(h, e)| (h, &e.tx)),

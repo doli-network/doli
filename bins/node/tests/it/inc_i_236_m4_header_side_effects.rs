@@ -19,10 +19,8 @@ use crypto::KeyPair;
 
 use super::inc_i_236_m4_common::{
     canonical_two, feed, header_block, proofs_against, reporter_node, slash_txs_against,
-    stuck_fork_raised,
+    stuck_fork_raised, wall_slot,
 };
-
-const SLOT: u32 = 7;
 
 async fn assert_no_slash_side_effects(node: &doli_node::node::Node, victim: &KeyPair) {
     let pk = victim.public_key();
@@ -44,8 +42,9 @@ async fn req_auth_007_forged_unsigned_after_real_block_yields_no_proof_no_slash(
     let (mut node, _reporter, victim, _tmp) = reporter_node().await;
     let genesis = node.chain_state.read().await.best_hash;
     let pk = *victim.public_key();
-    let real = header_block(&mut node, 1, SLOT, genesis, &pk, Some(&victim), 0).await;
-    let forged = header_block(&mut node, 1, SLOT, genesis, &pk, None, 1).await;
+    let slot = wall_slot(&node);
+    let real = header_block(&mut node, 1, slot, genesis, &pk, Some(&victim), 0).await;
+    let forged = header_block(&mut node, 1, slot, genesis, &pk, None, 1).await;
     assert_ne!(real.hash(), forged.hash(), "fixture: headers must conflict");
     assert!(
         forged.header.vdf_proof.pi.is_empty(),
@@ -64,8 +63,9 @@ async fn req_auth_007_forged_unsigned_before_real_block_does_not_poison_detector
     let (mut node, _reporter, victim, _tmp) = reporter_node().await;
     let genesis = node.chain_state.read().await.best_hash;
     let pk = *victim.public_key();
-    let forged = header_block(&mut node, 1, SLOT, genesis, &pk, None, 1).await;
-    let real = header_block(&mut node, 1, SLOT, genesis, &pk, Some(&victim), 0).await;
+    let slot = wall_slot(&node);
+    let forged = header_block(&mut node, 1, slot, genesis, &pk, None, 1).await;
+    let real = header_block(&mut node, 1, slot, genesis, &pk, Some(&victim), 0).await;
 
     feed(&mut node, forged).await;
     feed(&mut node, real).await;
@@ -80,8 +80,9 @@ async fn req_auth_007_forged_wrong_key_signature_yields_no_proof_no_slash() {
     let attacker = KeyPair::generate();
     let genesis = node.chain_state.read().await.best_hash;
     let pk = *victim.public_key();
-    let real = header_block(&mut node, 1, SLOT, genesis, &pk, Some(&victim), 0).await;
-    let forged = header_block(&mut node, 1, SLOT, genesis, &pk, Some(&attacker), 1).await;
+    let slot = wall_slot(&node);
+    let real = header_block(&mut node, 1, slot, genesis, &pk, Some(&victim), 0).await;
+    let forged = header_block(&mut node, 1, slot, genesis, &pk, Some(&attacker), 1).await;
     assert!(
         !forged.header.vdf_proof.pi.is_empty(),
         "fixture: forged carries a signature"
@@ -99,8 +100,9 @@ async fn req_auth_007_two_validly_signed_conflicting_headers_still_detected() {
     let (mut node, _reporter, victim, _tmp) = reporter_node().await;
     let genesis = node.chain_state.read().await.best_hash;
     let pk = *victim.public_key();
-    let a = header_block(&mut node, 1, SLOT, genesis, &pk, Some(&victim), 0).await;
-    let b = header_block(&mut node, 1, SLOT, genesis, &pk, Some(&victim), 1).await;
+    let slot = wall_slot(&node);
+    let a = header_block(&mut node, 1, slot, genesis, &pk, Some(&victim), 0).await;
+    let b = header_block(&mut node, 1, slot, genesis, &pk, Some(&victim), 1).await;
     assert_ne!(a.hash(), b.hash(), "fixture: headers must conflict");
 
     feed(&mut node, a).await;

@@ -182,7 +182,7 @@ impl Node {
                     local_height
                 );
             } else if let Ok(restored_producers) =
-                bincode::deserialize::<storage::ProducerSet>(&undo.producer_snapshot)
+                storage::ProducerSet::from_snapshot_bytes(&undo.producer_snapshot)
             {
                 {
                     let mut producers = self.producer_set.write().await;

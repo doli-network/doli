@@ -39,3 +39,9 @@ tempfile = { workspace = true }
 [[test]]
 name = "inc_i_237_m0_sec005_alloc"
 path = "tests/inc_i_237_m0_sec005_alloc.rs"
+
+# INC-I-256 M1 — its own test binary: written against the detector API the fix
+# adds, so before the fix it fails to compile without breaking `tests/it/`.
+[[test]]
+name = "inc_i_256_m1_detector_test"
+path = "tests/inc_i_256_m1_detector_test.rs"

@@ -1148,6 +1148,17 @@ one atomic WriteBatch per block:
 then commits them in a single `WriteBatch::write()`. Crash between any two
 state updates is impossible. Reorgs and rollbacks use `atomic_replace()`.
 
+**Failed apply** (`apply_block/producer_undo.rs`): `apply_block` is a wrapper.
+When the block can change the ProducerSet (producer txs, an epoch boundary, a
+due unbonding, the genesis-completion height), it snapshots the set before the
+transaction loop; the same bytes are the block's undo snapshot. On any `Err`
+after the loop starts, it restores the in-memory set from that snapshot
+(`ProducerSet::from_snapshot_bytes`, which also rebuilds the unbonding index)
+and logs WARN `[APPLY_UNDO]`. No `Err` comes after the batch commit, so disk
+and memory both stay at the parent block. Chain state is not touched.
+Rollback, reorg, snapshot install and chain restore rebuild the set through
+the same `from_snapshot_bytes`.
+
 **In-memory working set**: UTXOs are also kept in an `InMemoryUtxoStore` for
 fast reads by mempool, RPC, and state root computation. StateDb is authoritative.
 
@@ -1308,9 +1319,10 @@ Epoch-boundary flush (state_update.rs → slash_producer): status Slashed
 | Stage | Code | Behavior |
 |-------|------|----------|
 | Detection | `crates/network/src/sync/equivocation.rs` | One proof per (producer, slot). At most 64 pending proofs. |
-| Submission | `bins/node/src/node/slash_submit.rs`, `slash_reported.rs` | One canonical slash per accused. Skipped when a slash is resident or the accused is already reported (bounded at 1,024, not persisted). Broadcast only after admission. |
+| Submission | `bins/node/src/node/slash_submit.rs`, `slash_reported.rs` | One canonical slash per accused, written to the re-offer ledger before admission (bounded at 1,024, not persisted). Skipped when a slash is resident or the accused has a ledger entry. Broadcast only after admission. |
+| Re-offer | `bins/node/src/node/slash_redeliver.rs` | Periodic tick, at most 8 ledger entries per tick, at and above the gate. Skips an accused with a resident slash; drops an entry whose accused is Slashed or slash-queued or whose slash is refused for good; re-admits the same tx and broadcasts it once. |
 | Evidence | `crates/core/src/validation/slash_evidence.rs` | Shared check for every path. `slash_fee_exempt` is consulted only at the two fee floors (`validation/utxo.rs`, the mempool normal lane). |
-| Mempool | `crates/mempool/src/slash_admission.rs` | Judged at `best_height + 1`. Accused-state rules, one resident slash per accused, revalidation evicts a slash whose accused is Slashed or slash-queued. The state rules fail open only when the live producer set is absent or its lock is busy. |
+| Mempool | `crates/mempool/src/slash_admission.rs` | Judged at `best_height + 1`. Accused-state rules, one resident slash per accused; a fee-exempt slash is never evicted or expired. Revalidation evicts a slash that fails `validate_slash_target`. A busy producer-set lock refuses the slash with the transient `Busy` at and above the gate; the state rules are skipped only when the live producer set is absent or below the gate. |
 | Builder | `bins/node/src/node/production/assembly.rs` | `validate_slash_target` before the UTXO check. `SlashBlockBudget`: at most `MAX_SLASH_TXS_PER_BLOCK` (8) and one per accused. |
 | Block rules | `crates/core/src/validation/slash_state.rs` | Cap and one-per-accused counted before any evidence check, then `validate_slash_target`. Runs before the Full/Light/Replay split. |
 | Burn | `bins/node/src/node/apply_block/slash_burn.rs` | Spends every Bond UTXO the accused owns through the block batch and records each in `undo_spent_utxos`. No output, no pool credit, no reporter reward. |
