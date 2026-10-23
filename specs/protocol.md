@@ -675,6 +675,9 @@ add_bond_tx = {
 }
 ```
 
+At and above `inc_i_182_producer_auth_activation_height`, the tx `extra_data` is
+this exact payload followed by a 64-byte producer signature as its tail (§3.13.2).
+
 **Validation rules:**
 - Producer must be registered
 - `bond_count` must be > 0
@@ -755,6 +758,9 @@ withdrawal_request_tx = {
     }
 }
 ```
+
+At and above `inc_i_182_producer_auth_activation_height`, the tx `extra_data` is
+this exact payload followed by a 64-byte producer signature as its tail (§3.13.2).
 
 **Validation rules:**
 - Producer must be registered
@@ -2160,6 +2166,9 @@ registration_tx = {
 }
 ```
 
+At and above `inc_i_182_producer_auth_activation_height`, the tx `extra_data` is
+this exact payload followed by a 64-byte producer signature as its tail (§3.13.2).
+
 `bls_pubkey` and `bls_pop` are **required on every registration path** — they are not
 optional and have no activation-height gate. `crates/core/src/validation/registration.rs:47,144`
 rejects an empty `bls_pubkey`, `:52,149` rejects an empty `bls_pop`, and `validate_bls_pop()`
@@ -2621,6 +2630,7 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | Block producer signature (`inc_i_236_block_signature_activation_height`) | `u64::MAX` | `u64::MAX` | 0 | Devnet only (`DOLI_INC_I_236_BLOCK_SIGNATURE_ACTIVATION_HEIGHT`) |
 | Equivocation slashing (`inc_i_255_slashing_activation_height`, §3.10.1) | `u64::MAX` | `u64::MAX` | 0 | Devnet only (`DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT`) |
 | Unbonding lock (`inc_i_257_unbonding_activation_height`, §3.13.1) | `u64::MAX` | `u64::MAX` | 0 | Devnet only (`DOLI_INC_I_257_UNBONDING_ACTIVATION_HEIGHT`) |
+| Producer authorization (`inc_i_182_producer_auth_activation_height`, §3.13.2) | `u64::MAX` | `u64::MAX` | 0 | Devnet only (`DOLI_INC_I_182_PRODUCER_AUTH_ACTIVATION_HEIGHT`) |
 | Data Directory | `~/.doli/mainnet/` | `~/.doli/testnet/` | `~/.doli/devnet/` | - |
 | Config File | `.env` in data dir | `.env` in data dir | `.env` in data dir | - |
 

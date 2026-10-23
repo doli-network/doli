@@ -23,6 +23,7 @@ mod inc_i_182_m1_block_modes;
 mod inc_i_182_m1_core_fx;
 mod inc_i_182_m1_gate;
 mod inc_i_182_m1_wire_tail;
+mod inc_i_182_m25_replay_forms;
 mod inc_i_204_m5_activation_height;
 mod inc_i_204_m5_finality_comparator;
 mod inc_i_208_activation_height;

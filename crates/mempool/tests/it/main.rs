@@ -11,6 +11,7 @@
 
 mod inc_i_180_admission_parity;
 mod inc_i_182_m1_mempool_height;
+mod inc_i_182_m25_revalidate_evict;
 mod inc_i_203_addbond_cap;
 mod inc_i_203_admission_gap;
 mod inc_i_236_m2_ctx_parity;

@@ -63,6 +63,7 @@ mod inc_i_182_m1_r1_enumeration;
 mod inc_i_182_m1_r1_scope;
 mod inc_i_182_m1_red_forced_exit;
 mod inc_i_182_m1_rollback;
+mod inc_i_182_m25_builder_parity;
 mod inc_i_182_m2_after_slash;
 mod inc_i_182_m2_after_withdrawal;
 mod inc_i_182_m2_node_fx;

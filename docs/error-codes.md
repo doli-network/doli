@@ -231,6 +231,14 @@ Active at and above `inc_i_234_activation_height` (INC-I-234). Rules: `specs/pro
 | `ERRTX-AUTH004` | Invalid issuance: not a `Transfer`, `asset_id` not anchored on input 0, non-uniform `total_supply`, sum above `total_supply`, or a second fresh asset in one tx | `asset_id` |
 | `ERRTX-AUTH005` | Coinbase output is not `Normal` | output index, output type |
 
+### Producer Authorization (validation/producer_auth.rs)
+
+Active at and above `inc_i_182_producer_auth_activation_height` (INC-I-182), for Registration, AddBond and RequestWithdrawal only. Rules: `specs/protocol.md` §3.13.2.
+
+| Code | Description | Context Variables |
+|------|-------------|-------------------|
+| `ERRTX-PAUTH001` | `{kind} has no producer signature`; `{kind} extra_data must be the exact payload followed by a 64-byte producer signature`; `{kind} is not signed by its producer` | `kind` (tx type) |
+
 ### Block Validation (validation_checks.rs)
 
 | Code | Description | Context Variables |

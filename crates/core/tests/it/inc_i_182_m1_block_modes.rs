@@ -25,7 +25,7 @@ use super::inc_i_182_m1_core_fx::*;
 const TAG: u8 = 0x40;
 const T: u64 = 100;
 
-fn block_of(tx: Transaction) -> Block {
+pub fn block_of(tx: Transaction) -> Block {
     let txs = vec![tx];
     let header = BlockHeader {
         version: 2,
@@ -47,7 +47,7 @@ fn block_of(tx: Transaction) -> Block {
     Block::new(header, txs)
 }
 
-fn block_ctx(height: u64) -> ValidationContext {
+pub fn block_ctx(height: u64) -> ValidationContext {
     let mut c = ctx(height, GATE);
     c.current_time = T;
     c

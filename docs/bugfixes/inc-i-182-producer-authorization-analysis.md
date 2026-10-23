@@ -1,9 +1,9 @@
 # INC-I-182: authorization of producer-changing transactions (analysis)
 
-Scope: every transaction type that changes a producer's bonds, registration, delegation, keys or exit
+Scope: every transaction type that alters a producer's bonds, registration, delegation, keys or exit
 status. Areas: `crates/core/src/{transaction,validation,network_params}`, `crates/mempool/src`,
 `bins/node/src/node/{production,validation_checks,apply_block}`, `bins/cli/src`.
-Out of scope: activation height values for mainnet and testnet, whitepaper text, new live scenarios.
+Not covered here: the pinned mainnet and testnet heights, the whitepaper, and any new live scenario.
 
 ---
 
@@ -23,7 +23,7 @@ $ git log ac186dbd..HEAD --oneline | wc -l
        0
 ```
 
-Regression check: range ac186dbd..HEAD is empty (baseline == HEAD); defect pre-exists — finding 302 (AUDIT-P1-M2-002) recorded it before any commit on this branch.
+Regression check: the git log range ac186dbd..HEAD is empty (baseline == HEAD). The defect is older than this branch: the security audit finding AUDIT-P1-M2-002 described it before the first commit here.
 
 ---
 
@@ -144,7 +144,7 @@ producer action reach it? (c) Is the behavior below the gate bit-identical?
 from the payload.
 
 What each part does:
-- The domain tag makes sure that no other signed message can be used in its place: block header, `doli sign` prehash, rotation or delegation.
+- The domain tag keeps this digest apart from every other signature in the system: block header, `doli sign` prehash, rotation and delegation.
 - The genesis hash prevents replay on another network.
 - `signing_message()` commits to the tx type, every input outpoint and every output. Outpoints are spent only once, so the signature cannot be replayed into another tx. The outputs include the payout, the Unbonding lock and the Bond outputs.
 - The payload commits to the producer, the bond count, the destination and the BLS key.
@@ -153,7 +153,7 @@ The fee payer's input signatures do not cover `extra_data`. So the producer can 
 and outputs are final, and appending the signature does not break any input signature. A third party can
 still pay the fee.
 
-**Where the signature goes, with no new field on a wire type.** It goes in the last 64 bytes of the
+**Where the signature goes, without changing any wire type.** It goes in the last 64 bytes of the
 existing `extra_data`, after the payload, which does not move. Old decoders read the same fields and
 ignore the 64 extra bytes. Above the gate, the length must be exact: 68+64, 36+64, or canonical bincode+64.
 Below the gate, the decoders keep accepting the same lengths as today. This follows the RotateBlsKey
@@ -204,9 +204,9 @@ signatures leave out `extra_data` (`core.rs:514-538`, `:548-575`). The only subs
 Bond inputs, is empty in a state that a third party can reach.
 
 **Records.**
-- Finding 302 / AUDIT-P1-M2-002 (open, P1) records that `WithdrawalRequestData` has no signature, unlike `DelegateBondData`. It also records that the full-exit check passes vacuously when the producer owns no Bond UTXO. Its recorded location (`validation_checks.rs:868-882`) is stale: that file is now a directory, and the check is at `withdrawal_economics.rs:283-297`.
-- Outcome 2875 (auth auditor) says that the authorization is implicit in the ownership of the Bond UTXOs, so it is vacuous when nothing is owned. It also says that Exit is not authenticated but cannot be mined, because the fee gate refuses it.
-- Outcome 2878 says that a third party can force another producer's full exit in this shape. The shape includes any producer whose bonds sit at a non-derived address.
+- The security audit finding AUDIT-P1-M2-002 (open, P1) notes that `WithdrawalRequestData` has no signature, unlike `DelegateBondData`, and that the full-exit check is vacuous for a producer with no Bond UTXO. Its location (`validation_checks.rs:868-882`) is out of date: that file is now a directory, and the check is at `withdrawal_economics.rs:283-297`.
+- The auth audit reached the same result: Bond UTXO ownership is the only authorization, so it means nothing when the producer owns none. It also confirmed that Exit carries no authentication, but no block can include it, because the fee check refuses it.
+- The auth audit also showed that a third party is able to push another producer out with a full exit in this state, which includes every producer whose bonds sit at a non-derived address.
 
 ---
 
@@ -272,8 +272,8 @@ values: `u64::MAX` on mainnet (`defaults.rs:285` block) and testnet (`defaults.r
 devnet (`defaults.rs:831` block). Add a devnet-only environment override,
 `DOLI_INC_I_182_PRODUCER_AUTH_ACTIVATION_HEIGHT`, the same as `env_loader.rs:593-600`. Mainnet and
 testnet always use the compiled value. The `ValidationContext` field must default to "off" (`u64::MAX`),
-so that existing test contexts do not change. No ordering rule against the other gates unless a test
-shows one is needed.
+so that existing test contexts do not change. The gate has no ordering constraint relative to the other
+gates; one is added only if a test proves it necessary.
 
 **Deploy questions.**
 - Consensus rules change, so an activation height is required (above).
@@ -287,12 +287,12 @@ shows one is needed.
 
 | ID | Requirement | Priority | Acceptance criteria |
 |---|---|---|---|
-| REQ-PAUTH-001 | List every tx type that changes a producer's bonds, registration or exit, and how each binds the signer to the producer (Section 3). Show the defect as failing tests on the baseline: a third party forces the full exit of a producer that owns no live Bond UTXO | Must | - [ ] Section 3 lists each type and its binding<br>- [ ] Named RED tests, with failure lines on `ac186dbd`, show that mempool, builder and apply each accept the third-party full exit<br>- [ ] The same tests PASS at HEAD |
-| REQ-PAUTH-002 | Above the new gate, Registration, AddBond and RequestWithdrawal are valid only with the producer signature over the domain-separated digest in Section 3. One core function decides on mempool, builder, apply and replay. A rollback across such a tx restores the exact earlier state | Must | - [ ] On all four paths: authorized is accepted. Unsigned, wrong key, a signature over another tx's inputs, a signature from another genesis, and a truncated or extended tail are each refused with one error code<br>- [ ] The relayer rewrite of `bond_count` and of the BLS key is refused<br>- [ ] The mempool judges at the next height (a tx admitted at gate-1 is valid at the gate)<br>- [ ] A reorg test across an authorized withdrawal gives the earlier state root |
-| REQ-PAUTH-003 | Gate and history: `u64::MAX` on mainnet and testnet, 0 on devnet. Below the gate, blocks and state are byte-identical to `ac186dbd`, and an `ac186dbd` node decodes every block that the new binary makes. No new field on any wire type. The environment override works only on devnet | Must | - [ ] Golden/replay test below the gate (same verdicts, same state root)<br>- [ ] Old-format decode test for the signed forms (68+64, 36+64, bincode+64) and the legacy forms<br>- [ ] Override test: the environment variable has no effect on mainnet and testnet |
-| REQ-PAUTH-004 | The producer can still exit by itself. When the ProducerSet lists bonds but the producer owns no live Bond UTXO at its own address, the producer's own signed full-exit RequestWithdrawal (zero Bond inputs, fee and payout from non-bond funds) is valid, and the CLI builds it | Must | - [ ] The full exit is accepted on mempool, builder and apply, and the producer exits at the flush<br>- [ ] A CLI test shows that the built tx validates above this gate **and** above the C1 gate (Unbonding payout)<br>- [ ] The slash and full-withdrawal cases follow Q1/Q2 in Section 10 |
-| REQ-PAUTH-005 | Records: INC-I-182 root cause, files and resolution. A decision row (rule per type, gate). An invariant with linked regression tests. Finding 302 updated, including its stale location | Should | - [ ] The rows exist, and the report gives their ids |
-| REQ-PAUTH-006 | With the gate at 0 (devnet), every node-built and CLI-built Registration, AddBond and RequestWithdrawal carries the producer signature. A fresh devnet completes genesis and derives its genesis producers | Must | - [ ] Fresh devnet test: genesis completes and every genesis producer is derived<br>- [ ] CLI register, add-bond and request-withdrawal txs validate at gate 0<br>- [ ] GS-026 and GS-027 PASS at HEAD |
+| REQ-PAUTH-001 | Section 3 enumerates the producer-changing tx types and the link between signer and producer for each. Tests on the baseline reproduce the defect: a full exit that the producer did not sign, for a producer without a live Bond UTXO, is accepted | Must | - [ ] Section 3 lists each type and its binding<br>- [ ] On `ac186dbd`, named tests fail and their failure lines show that mempool, builder and apply all admit the unsigned full exit<br>- [ ] At HEAD those tests pass |
+| REQ-PAUTH-002 | Above the new gate, Registration, AddBond and RequestWithdrawal are valid only with the producer signature over the domain-separated digest in Section 3. Mempool, builder, apply and replay all call the same core check. Rolling back a block that holds such a tx gives back the state from before it | Must | - [ ] On all four paths: authorized is accepted. Unsigned, wrong key, a signature over another tx's inputs, a signature from another genesis, and a truncated or extended tail are each refused with one error code<br>- [ ] The relayer rewrite of `bond_count` and of the BLS key is refused<br>- [ ] The mempool judges at the next height (a tx admitted at gate-1 is valid at the gate)<br>- [ ] A reorg test across an authorized withdrawal gives the earlier state root |
+| REQ-PAUTH-003 | The gate is `u64::MAX` on mainnet and testnet and 0 on devnet. Under it, the new binary produces the same blocks and state as `ac186dbd`, and an `ac186dbd` node can decode all of them. Wire types keep their fields. Only devnet reads the environment override | Must | - [ ] A golden chain replayed under the gate gives the same verdicts and the same state root<br>- [ ] Old-format decode test for the signed forms (68+64, 36+64, bincode+64) and the legacy forms<br>- [ ] Override test: the environment variable has no effect on mainnet and testnet |
+| REQ-PAUTH-004 | Self-exit stays possible. When the ProducerSet lists bonds but the producer owns no live Bond UTXO at its own address, the producer's own signed full-exit RequestWithdrawal (zero Bond inputs, fee and payout from non-bond funds) is valid, and the CLI builds it | Must | - [ ] The full exit is accepted on mempool, builder and apply, and the producer exits at the flush<br>- [ ] A CLI-built tx passes validation above this gate **and** above the C1 gate (Unbonding payout)<br>- [ ] The slash and full-withdrawal cases follow Q1/Q2 in Section 10 |
+| REQ-PAUTH-005 | The incident record holds the INC-I-182 root cause, files and resolution. The binding rule per type and its gate are recorded as a decision. An invariant is recorded with its regression tests. The audit finding AUDIT-P1-M2-002 gets its current location | Should | - [ ] Each record exists, and the report names it |
+| REQ-PAUTH-006 | With the gate at 0 (devnet), every node-built and CLI-built Registration, AddBond and RequestWithdrawal carries the producer signature. A fresh devnet completes genesis and derives its genesis producers | Must | - [ ] Fresh devnet test: genesis completes and every genesis producer is derived<br>- [ ] CLI register, add-bond and request-withdrawal txs validate at gate 0<br>- [ ] The GS-026 and GS-027 gauntlet scenarios still pass at HEAD |
 
 Why REQ-PAUTH-006 is added: with devnet gate 0, the builder's genesis-window Registration and every
 CLI-built producer tx fall under the rule from block 1. Without this requirement, M1 breaks devnet and
@@ -326,7 +326,7 @@ Reasoning: The cause is known and deterministic, there are no prior fix attempts
 - **Q1 (REQ-PAUTH-004, "after a slash").** A slashed producer is already out of the set: `slash_producer` sets its status to slashed (`set_lifecycle.rs:184-195`). Run B also refuses every RequestWithdrawal that names a slashed or slash-queued producer (`slash_withdrawal.rs:24-31`). So it has nothing to exit. Recommended reading: Run B stays as it is, and the test shows that the new rule adds no new stuck state. Not confirmed.
 - **Q2 ("after a full withdrawal").** After its own full withdrawal, the producer's allowance is 0 until the flush, and the producer has exited after the flush. So no second exit is possible or needed. Recommended reading: the real case is "the ProducerSet lists bonds and the producer owns no live Bond UTXO at its own address". Not confirmed.
 - I did not check whether any serde path (RPC JSON or storage) serializes `WithdrawalRequestData`, `AddBondData` or `RegistrationData` as structs. If the signature becomes a Rust field on a serde-derived struct, those encodings could change. The signature must stay out of their serde shape, or the developer must prove that no serde path uses them.
-- I could not find the C1 follow-up findings AUDIT-P2-545..548 under those ids in `findings`. I cannot say if the Normal payout of `exit.rs` above C1 is already tracked.
+- I could not find the C1 follow-up audit findings AUDIT-P2-545..548 in the audit records. I cannot say if the Normal payout of `exit.rs` above C1 is already tracked.
 - I do not know how many live producers are in the "no live Bond UTXO at their own address" shape. I have no access to the live systems, and that is out of scope.
 
 ## 11. Assumptions
@@ -342,7 +342,7 @@ Reasoning: The cause is known and deterministic, there are no prior fix attempts
 
 - `types.rs:11` says that Exit "starts unbonding period". In fact, Exit cannot be mined, and the CLI `exit` command sends a RequestWithdrawal.
 - The project code map says that `TxType` has 24 variants. The enum has 25 (bincode ordinals 0-24).
-- The location of finding 302 is stale (Section 4).
+- The location recorded for AUDIT-P1-M2-002 is out of date (Section 4).
 
 ## 13. Identified risks
 
@@ -356,7 +356,7 @@ Reasoning: The cause is known and deterministic, there are no prior fix attempts
 - Consent of the delegate to receiving a delegation.
 - Replay protection for DelegateBond at consensus level.
 - The `extra_data` malleability of tx types that do not change a producer's record.
-- Mainnet and testnet height values, whitepaper text, push, release and deploy.
+- The pinned mainnet and testnet heights, the whitepaper, and any release or deployment.
 
 ## 15. Traceability matrix
 
