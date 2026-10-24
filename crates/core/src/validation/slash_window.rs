@@ -17,8 +17,9 @@ impl ValidationContext {
     }
 }
 
-/// Refuse evidence whose age reaches `unbonding_period`, then evidence whose
-/// age reaches the blocks since `max(registered_at, slash gate)`.
+/// Refuse evidence whose age reaches `unbonding_period`, then evidence judged
+/// in the floor block itself (tenure 0) or whose age exceeds the tenure, the
+/// blocks since `max(registered_at, slash gate)`.
 pub(super) fn validate_slash_window(
     evidence: &SlashingEvidence,
     state: &SlashTargetState,
@@ -35,7 +36,10 @@ pub(super) fn validate_slash_window(
     let floor = state
         .registered_at
         .max(ctx.inc_i_255_slashing_activation_height);
-    if age >= ctx.current_height.saturating_sub(floor) {
+    let tenure = ctx.current_height.saturating_sub(floor);
+    // Slots strictly increase, so with tenure >= 1 the floor block's slot is at
+    // most `judged - tenure`: age <= tenure keeps the offence at or after it.
+    if tenure == 0 || age > tenure {
         return Err(ValidationError::InvalidSlash(PREDATES.to_string()));
     }
     Ok(())
