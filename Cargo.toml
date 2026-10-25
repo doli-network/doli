@@ -9,7 +9,7 @@ members = [
 exclude = ["vendor/libp2p-gossipsub"]
 
 [workspace.package]
-version = "6.44.2"
+version = "6.45.0"
 edition = "2021"
 authors = ["DOLI Network <doli@doli.network>"]
 license = "MIT"
