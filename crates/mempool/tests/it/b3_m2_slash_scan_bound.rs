@@ -33,8 +33,8 @@ const BELOW_GATE: u64 = 1_000_000;
 const GATE_ENV: &str = "DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT";
 const CHILD_ENV: &str = "B3_M2_SCAN_BOUND_CHILD";
 
-struct Db {
-    utxo: UtxoSet,
+pub(super) struct Db {
+    pub(super) utxo: UtxoSet,
     dir: std::path::PathBuf,
 }
 
@@ -46,7 +46,7 @@ impl Drop for Db {
 }
 
 /// RocksDB-backed set where `owner_of` holds `n` Normal UTXOs.
-fn db_with(owner_of: &KeyPair, n: u32, tag: &str) -> Db {
+pub(super) fn db_with(owner_of: &KeyPair, n: u32, tag: &str) -> Db {
     let dir = std::env::temp_dir().join(format!("b3-m2-scan-{tag}-{n}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let sdb = StateDb::open(&dir).expect("FIXTURE: open StateDb");

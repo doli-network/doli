@@ -1716,7 +1716,11 @@ ProducerSet (canonical bytes and the ordered pending queue) with the persisted o
 - **Read-only:** it opens `state_db` and `blocks` with RocksDB read-only opens (no copy). They take
   no lock and write no file in the data directory; any RocksDB info log goes to the scratch directory.
   It probes each `LOCK` file with a non-blocking fcntl write lock that it releases at once, and it
-  never creates or writes that file. The scratch directory is deleted before the command exits.
+  never creates or writes that file.
+- **Scratch cleanup:** the scratch copy (`doli-check-producer-set-<pid>-<nanos>` under the temp dir)
+  is removed on every normal and error exit and on SIGINT/SIGTERM (exit 1). An abort that cannot
+  run cleanup (`kill -9`, a panic in a release build, power loss) leaves a directory that the next
+  run removes: on start the command removes such directories whose `<pid>` is not a live process.
 - **Cost:** the replay takes about as long as `recover`. The scratch directory needs free space
   of about the size of `blocks/` plus `state_db/`.
 - **Devnet:** reads `<data-dir>/chainspec.json` when present, as `run` does.

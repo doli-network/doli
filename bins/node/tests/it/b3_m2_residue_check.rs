@@ -37,23 +37,23 @@ use crate::inc_i_156_m1_harness::{build_block_with_txs, coinbase_for};
 
 const GENESIS: u64 = 40;
 const EPOCH: u64 = 4;
-const TIP: u64 = GENESIS + 2;
+pub(super) const TIP: u64 = GENESIS + 2;
 const SNAP_H: u64 = 20;
 const VERDICTS: [&str; 3] = ["EQUAL", "DIFFERS", "NOT-CHECKABLE"];
 
-struct Fx {
+pub(super) struct Fx {
     _tmp: TempDir,
-    data: PathBuf,
-    scratch_root: PathBuf,
+    pub(super) data: PathBuf,
+    pub(super) scratch_root: PathBuf,
     producer: PublicKey,
-    producers: usize,
-    pending: usize,
+    pub(super) producers: usize,
+    pub(super) pending: usize,
 }
 
-struct Run {
-    code: Option<i32>,
-    stdout: String,
-    stderr: String,
+pub(super) struct Run {
+    pub(super) code: Option<i32>,
+    pub(super) stdout: String,
+    pub(super) stderr: String,
 }
 
 /// Producer-signed Registration with a BLS key + PoP. `bonds == 0` is the
@@ -132,7 +132,7 @@ async fn rebuilt_in_process(blocks: &[Block]) -> ProducerSet {
 }
 
 /// A stopped devnet node: blocks 1..=TIP applied through apply_block(Replay), node dropped.
-async fn build() -> Fx {
+pub(super) async fn build() -> Fx {
     let tmp = TempDir::new().unwrap();
     let data = tmp.path().join("data");
     let scratch_root = tmp.path().join("scratch-root");
@@ -221,7 +221,7 @@ fn inject_status(fx: &Fx) {
     });
 }
 
-fn run_check(fx: &Fx) -> Run {
+pub(super) fn run_check(fx: &Fx) -> Run {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_doli-node"));
     for (k, _) in std::env::vars() {
         if k.starts_with("DOLI_") {
@@ -266,7 +266,7 @@ fn verdict(r: &Run) -> (String, BTreeMap<String, String>) {
     (lines[at[0]].to_string(), kv)
 }
 
-fn assert_outcome(r: &Run, want: &str, code: i32, kv: &[(&str, String)]) {
+pub(super) fn assert_outcome(r: &Run, want: &str, code: i32, kv: &[(&str, String)]) {
     let (got, map) = verdict(r);
     assert_eq!(got, want, "verdict; stdout:\n{}", r.stdout);
     assert_eq!(
@@ -285,7 +285,7 @@ fn assert_outcome(r: &Run, want: &str, code: i32, kv: &[(&str, String)]) {
     }
 }
 
-fn tree(root: &Path) -> BTreeMap<String, String> {
+pub(super) fn tree(root: &Path) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -304,7 +304,7 @@ fn tree(root: &Path) -> BTreeMap<String, String> {
     out
 }
 
-fn assert_untouched(fx: &Fx, before: &BTreeMap<String, String>, what: &str) {
+pub(super) fn assert_untouched(fx: &Fx, before: &BTreeMap<String, String>, what: &str) {
     assert_eq!(
         &tree(&fx.data),
         before,

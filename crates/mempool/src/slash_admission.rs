@@ -73,6 +73,25 @@ fn target_state(producers: &ProducerSet, pk: &PublicKey) -> Option<SlashTargetSt
     })
 }
 
+/// `slash_targets` for the one slash `tx`, with no owner lookup when its
+/// accused is already Slashed or slash-queued (`validate_slash_target`
+/// refuses those before it reads `locked_collateral`).
+fn mempool_slash_targets(
+    producers: &ProducerSet,
+    utxos: &UtxoSet,
+    height: u64,
+    tx: &Transaction,
+) -> Vec<(PublicKey, SlashTargetState)> {
+    let settled = tx.slash_data().and_then(|d| {
+        let state = target_state(producers, &d.producer_pubkey)?;
+        (state.slashed || state.slash_queued).then_some((d.producer_pubkey, state))
+    });
+    match settled {
+        Some(target) => vec![target],
+        None => slash_targets(producers, utxos, height, [tx]),
+    }
+}
+
 /// For a SlashProducer: `ctx` at the next height, carrying the accused's
 /// state, after the shared state check. The gate and the evidence are checked
 /// first, so a slash below the rule or with failing evidence reads no state.
@@ -106,7 +125,7 @@ pub(crate) fn admission_ctx(
     let Ok(producers) = set.try_read() else {
         return Err(MempoolError::Busy);
     };
-    let targets = slash_targets(&producers, utxo_set, mined_at.current_height, [tx]);
+    let targets = mempool_slash_targets(&producers, utxo_set, mined_at.current_height, tx);
     drop(producers);
     let mined_at = mined_at.with_slash_targets(targets);
     validate_slash_target(tx, &mined_at)?;
@@ -311,7 +330,7 @@ pub(crate) fn slash_rule_evictions<'a>(
         judged
             .iter()
             .filter(|(_, tx)| is_slash(tx))
-            .flat_map(|(_, tx)| slash_targets(&producers, utxo_set, h, [*tx])),
+            .flat_map(|(_, tx)| mempool_slash_targets(&producers, utxo_set, h, tx)),
     );
     drop(producers);
     let mined_at = mined_at.with_slash_targets(targets);

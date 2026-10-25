@@ -4,7 +4,10 @@
 //! copy; RocksDB info logs go to the scratch dir), replays heights
 //! `1..=best_height` through `apply_block(Replay)` on a headless node in a
 //! scratch dir under the temp dir, and compares the rebuilt ProducerSet with
-//! the persisted one. The scratch dir is deleted before the command returns.
+//! the persisted one. Nothing is written to the data dir. The scratch dir is
+//! removed on every normal and error exit and on SIGINT / SIGTERM (exit 1).
+//! On start, scratch dirs of check processes that are no longer alive are
+//! removed; an abort that runs no cleanup leaves one for the next run.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -20,20 +23,22 @@ use crate::node::Node;
 
 const EXIT_DIFFERS: i32 = 2;
 const EXIT_NOT_CHECKABLE: i32 = 3;
+const SCRATCH_PREFIX: &str = "doli-check-producer-set-";
 
-/// Scratch directory under the temp dir, removed on drop.
+/// Scratch directory `<temp>/doli-check-producer-set-<pid>-<nanos>`, removed
+/// on drop.
 struct Scratch(PathBuf);
 
 impl Scratch {
     fn create() -> Result<Self> {
+        let root = std::env::temp_dir();
+        #[cfg(unix)]
+        sweep_stale(&root);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!(
-            "doli-check-producer-set-{}-{nanos}",
-            std::process::id()
-        ));
+        let dir = root.join(format!("{SCRATCH_PREFIX}{}-{nanos}", std::process::id()));
         std::fs::create_dir(&dir)?;
         Ok(Self(dir))
     }
@@ -43,6 +48,66 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+/// Removes `dir` and exits 1 on SIGINT / SIGTERM until dropped.
+#[cfg(unix)]
+struct SignalCleanup(tokio::task::JoinHandle<()>);
+
+#[cfg(unix)]
+impl SignalCleanup {
+    fn arm(dir: &Path) -> Result<Self> {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut int = signal(SignalKind::interrupt())?;
+        let mut term = signal(SignalKind::terminate())?;
+        let dir = dir.to_path_buf();
+        Ok(Self(tokio::spawn(async move {
+            tokio::select! {
+                _ = int.recv() => {},
+                _ = term.recv() => {},
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+            std::process::exit(1);
+        })))
+    }
+}
+
+#[cfg(unix)]
+impl Drop for SignalCleanup {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Best effort: removes scratch dirs under `root` whose pid is not a live
+/// process. Names that do not parse are kept.
+#[cfg(unix)]
+fn sweep_stale(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+        let pid = entry.file_name().to_str().and_then(scratch_pid);
+        if is_dir && pid.is_some_and(pid_dead) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// `<pid>` of a `doli-check-producer-set-<pid>-<nanos>` name.
+#[cfg(unix)]
+fn scratch_pid(name: &str) -> Option<libc::pid_t> {
+    let (pid, nanos) = name.strip_prefix(SCRATCH_PREFIX)?.split_once('-')?;
+    nanos.parse::<u128>().ok()?;
+    pid.parse::<libc::pid_t>().ok().filter(|p| *p > 0)
+}
+
+#[cfg(unix)]
+fn pid_dead(pid: libc::pid_t) -> bool {
+    // SAFETY: signal 0 only probes for existence.
+    let rc = unsafe { libc::kill(pid, 0) };
+    rc == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
 }
 
 /// Runs the check and prints the verdict line plus its `key=value` summary.
@@ -61,6 +126,8 @@ pub(crate) async fn check_producer_set(network: Network, data_dir: &Path) -> Res
     }
 
     let scratch = Scratch::create()?;
+    #[cfg(unix)]
+    let _on_signal = SignalCleanup::arm(&scratch.0)?;
     let state_db = StateDb::open_read_only(&state_path, &scratch.0)?;
     let cs = state_db
         .get_chain_state()

@@ -25,6 +25,7 @@ mod b3_m25_same_block_parity;
 mod b3_m2_gauntlet_optin_combine;
 mod b3_m2_residue_check;
 mod b3_m2_slashed_registration_parity;
+mod b3_m3_residue_check_cleanup;
 mod bls_rotation_convergence;
 mod bls_rotation_convergence_child;
 mod inc_i_178_m0_attestation_lock;
