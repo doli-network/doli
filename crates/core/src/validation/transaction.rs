@@ -125,6 +125,7 @@ pub fn validate_transaction(
     }
 
     // 6. Type-specific validation
+    super::slash_registration::validate_not_slashed_registrant(tx, ctx)?;
     match tx.tx_type {
         TxType::Transfer => {
             // Transfer transactions should have empty extra_data
@@ -322,6 +323,7 @@ pub fn validate_transaction_skip_registration_vdf(
             }
             super::check_output_placement(tx, ctx)?;
             super::producer_auth::check_producer_auth(tx, ctx)?;
+            super::slash_registration::validate_not_slashed_registrant(tx, ctx)?;
             validate_registration_data_skip_vdf(tx, ctx)?;
             Ok(())
         }

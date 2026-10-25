@@ -953,6 +953,8 @@ GAUNTLET_CHAOS_CONFIRM=1 bash scripts/gauntlet.sh --chaos
 
 **Opt-in scenarios (never part of a default run).** Each needs BOTH its `--flag` AND its confirm-var, is testnet-only, and SKIPs cleanly — never fails spuriously — when the fleet cannot host it. In the scenario registry, GS-009 and GS-022 carry a runner that arms its own injection (`GAUNTLET_GS009_CONFIRM=1 bash scripts/gauntlet.sh --gs009`, `GAUNTLET_GS022_CONFIRM=1 bash scripts/gauntlet.sh --gs022`); GS-010, GS-014, GS-016, GS-019 and `--chaos` are **MANUAL-ONLY** (status `manual`, no runner) and run only with the operator's confirmation. `gauntlet.sh` evaluates the `active` rows plus a `manual` row only in a run that passes that row's own flag (`--gs010`, `--gs014`, `--gs016`, `--gs019`).
 
+Opt-in flags combine in one call: every armed flag runs its own injector behind its own confirm-var, in the fixed order GS-016, GS-014, GS-010, GS-009, GS-022, GS-019, `--chaos`, and the banner `mode=` names every armed mode (for example `mode=GS014+GS016+CHAOS-inject`). The default restart and `GAUNTLET_NO_PERTURB` apply only when no opt-in flag is armed.
+
 | Scenario | Flag | Confirm-var | What it does | Writes? |
 |----------|------|-------------|--------------|---------|
 | GS-009 fleet-rolling-restart | `--gs009` | `GAUNTLET_GS009_CONFIRM=1` | Wave-restarts ALL producers (`n1..n12`, never the seed) via launchd; replays INC-I-143. Registered runner: `GAUNTLET_GS009_CONFIRM=1 bash scripts/gauntlet.sh --gs009`. | No (lifecycle only) |

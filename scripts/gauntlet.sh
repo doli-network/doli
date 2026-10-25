@@ -154,7 +154,13 @@
 # sync_fails=, state=) and distinct-event phrases — NEVER raw keywords that also
 # appear in per-second telemetry (the word "rollback" logs ~1/sec at depth 0).
 #
-# Usage:  bash scripts/gauntlet.sh [--quick] [--chaos|--gs009|--gs010|--gs014|--gs016|--gs019|--gs022]
+# Opt-in flags combine in one call. Each armed flag runs its own injector,
+# behind its own confirm-var, in this fixed order: GS-016, GS-014, GS-010,
+# GS-009, GS-022, GS-019, chaos. The banner `mode=` names every armed mode.
+# The default restart and GAUNTLET_NO_PERTURB apply only when no opt-in flag
+# is armed.
+#
+# Usage:  bash scripts/gauntlet.sh [--quick] [--chaos] [--gs009] [--gs010] [--gs014] [--gs016] [--gs019] [--gs022]
 # Env:    WORKFLOW_RUN_ID, GAUNTLET_WINDOW (s, default 45), GAUNTLET_RESTART_NODE
 #         (default n5), GAUNTLET_RSS_CEIL_MB (default 800), GAUNTLET_MIN_NODES
 #         (default 3), GAUNTLET_NO_PERTURB (1=skip restart).
@@ -267,7 +273,16 @@ REJOIN_FILE="$WORK/rejoin.txt"; echo "0" > "$REJOIN_FILE"
 SECONDS=0
 SHA="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
-MODE="observe+restart"; [ "$CHAOS" = "1" ] && MODE="${C_R}CHAOS-inject${C_C}"; [ "$NO_PERTURB" = "1" ] && MODE="observe-only"
+# OPTIN names every armed opt-in mode; empty when none is armed.
+OPTIN=""
+for m in GS009 GS010 GS014 GS016 GS019 GS022 CHAOS; do
+  [ "${!m}" = "1" ] || continue
+  [ "$m" = CHAOS ] && m="${C_R}CHAOS-inject${C_C}"
+  OPTIN="${OPTIN:+$OPTIN+}$m"
+done
+if [ -n "$OPTIN" ]; then MODE="$OPTIN"
+elif [ "$NO_PERTURB" = "1" ]; then MODE="observe-only"
+else MODE="observe+restart"; fi
 say "${C_C}════════════════════════════════════════════════════════════${C_0}"
 say "${C_C} OMEGA GAUNTLET${C_0}  ·  sha=$SHA  mode=${MODE}${C_C}  window=${WINDOW}s  target=${RESTART_NODE}"
 say "${C_C}════════════════════════════════════════════════════════════${C_0}"
@@ -421,7 +436,8 @@ if [ "${GS016:-0}" = "1" ]; then
   say "  [gs016] settling 10s, then re-baselining for a clean observation window"
   sleep 10
   build_nodecfg
-elif [ "${GS014:-0}" = "1" ]; then
+fi
+if [ "${GS014:-0}" = "1" ]; then
   # OPT-IN GS-014 governance relay from a NON-PRODUCER endpoint (perturbative AND
   # chain-writing: two maintainer governance transactions). Replays INC-I-195,
   # then re-baselines so the window judges the RECOVERED steady state.
@@ -431,7 +447,8 @@ elif [ "${GS014:-0}" = "1" ]; then
   say "  [gs014] settling 10s, then re-baselining for a clean observation window"
   sleep 10
   build_nodecfg
-elif [ "${GS010:-0}" = "1" ]; then
+fi
+if [ "${GS010:-0}" = "1" ]; then
   # OPT-IN GS-010 duplicate-registration poison (perturbative AND chain-writing:
   # funds a wallet and permanently bonds a producer). Replays INC-I-147, then
   # re-baselines so the window judges the RECOVERED steady state.
@@ -441,7 +458,8 @@ elif [ "${GS010:-0}" = "1" ]; then
   say "  [gs010] settling 10s, then re-baselining for a clean observation window"
   sleep 10
   build_nodecfg
-elif [ "${GS009:-0}" = "1" ]; then
+fi
+if [ "${GS009:-0}" = "1" ]; then
   # OPT-IN GS-009 fleet rolling-restart (perturbative; NEVER the seed). Replays
   # INC-I-143, then re-baselines so the window judges the RECOVERED steady state.
   say "\n${C_R}▸ GS-009 MODE — FLEET ROLLING-RESTART of all producers (n1..n12, NEVER seed)${C_0}"
@@ -450,19 +468,21 @@ elif [ "${GS009:-0}" = "1" ]; then
   say "  [gs009] settling 10s, then re-baselining for a clean observation window"
   sleep 10
   build_nodecfg
-elif [ "${GS022:-0}" = "1" ]; then
+fi
+if [ "${GS022:-0}" = "1" ]; then
   # OPT-IN GS-022 losing-sibling fork walk on one non-seed producer.
   say "\n${C_R}▸ GS-022 MODE — LOSING-SIBLING FORK WALK (recovery-mode + pause RPCs on one producer)${C_0}"
   gs022_inject
   build_nodecfg
-elif [ "${GS019:-0}" = "1" ]; then
+fi
+if [ "${GS019:-0}" = "1" ]; then
   # OPT-IN GS-019 attestation-aggregate poison. No attestation ingress is
   # reachable from the harness on this build, so the injector delivers nothing
-  # and writes no marker; all three assertions SKIP. Listed last so --gs019
-  # never masks a destructive scenario the operator also asked for.
+  # and writes no marker; all three assertions SKIP.
   say "\n${C_Y}▸ GS-019 MODE — ATTESTATION-AGGREGATE POISON (no reachable ingress on this build: nothing is injected)${C_0}"
   gs019_inject
-elif [ "$CHAOS" = "1" ]; then
+fi
+if [ "$CHAOS" = "1" ]; then
   # OPT-IN chaos: genuinely reproduce failure-mode triggers, then re-baseline so
   # the observation window judges the RECOVERED steady state (a legitimate snap
   # during recovery must not count as a spurious escalation).
@@ -474,18 +494,22 @@ elif [ "$CHAOS" = "1" ]; then
   say "  [chaos] settling 10s, then re-baselining for a clean observation window"
   sleep 10
   build_nodecfg   # fresh log offsets + heights AFTER recovery
-elif [ "$NO_PERTURB" = "1" ]; then
-  say "\n${C_Y}▸ perturbation skipped (GAUNTLET_NO_PERTURB=1) — observational only${C_0}"
-  echo "0" > "$REJOIN_FILE"
-else
-  say "\n${C_C}▸ perturbation: launchd restart of ${RESTART_NODE} (non-destructive)${C_0}"
-  if echo "$LIVE" | grep -qw "$RESTART_NODE"; then
-    "$ROOT/scripts/testnet.sh" restart "$RESTART_NODE" >/dev/null 2>&1 || say "  ${C_Y}restart command returned nonzero (continuing)${C_0}"
-    rejoin="$(wait_rejoin "$RP" "$RESTART_NODE" 90)"; echo "$rejoin" > "$REJOIN_FILE"
-    if [ "$rejoin" -ge 0 ]; then say "  ${RESTART_NODE} rejoined tip in ${rejoin}s"; else say "  ${C_R}${RESTART_NODE} did NOT rejoin within 90s${C_0}"; fi
-  else
-    say "  ${C_Y}${RESTART_NODE} not live — skipping restart, recovery asserted observationally${C_0}"
+fi
+# The default restart and GAUNTLET_NO_PERTURB apply only when no opt-in mode is armed.
+if [ -z "$OPTIN" ]; then
+  if [ "$NO_PERTURB" = "1" ]; then
+    say "\n${C_Y}▸ perturbation skipped (GAUNTLET_NO_PERTURB=1) — observational only${C_0}"
     echo "0" > "$REJOIN_FILE"
+  else
+    say "\n${C_C}▸ perturbation: launchd restart of ${RESTART_NODE} (non-destructive)${C_0}"
+    if echo "$LIVE" | grep -qw "$RESTART_NODE"; then
+      "$ROOT/scripts/testnet.sh" restart "$RESTART_NODE" >/dev/null 2>&1 || say "  ${C_Y}restart command returned nonzero (continuing)${C_0}"
+      rejoin="$(wait_rejoin "$RP" "$RESTART_NODE" 90)"; echo "$rejoin" > "$REJOIN_FILE"
+      if [ "$rejoin" -ge 0 ]; then say "  ${RESTART_NODE} rejoined tip in ${rejoin}s"; else say "  ${C_R}${RESTART_NODE} did NOT rejoin within 90s${C_0}"; fi
+    else
+      say "  ${C_Y}${RESTART_NODE} not live — skipping restart, recovery asserted observationally${C_0}"
+      echo "0" > "$REJOIN_FILE"
+    fi
   fi
 fi
 
@@ -782,7 +806,7 @@ inj_tag(){
   if [ "${GS022:-0}" = "1" ] && [ "$sid" = "GS-022" ]; then echo "inj"; return; fi
   if [ "$CHAOS" = "1" ]; then
     case "$sid" in GS-002|GS-003|GS-004|GS-005|GS-007) echo "inj";; *) echo "obs";; esac
-  elif [ "$NO_PERTURB" != "1" ]; then
+  elif [ "$NO_PERTURB" != "1" ] && [ -z "$OPTIN" ]; then
     case "$sid" in GS-004) echo "inj";; *) echo "obs";; esac
   else echo "obs"; fi
 }

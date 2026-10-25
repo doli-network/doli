@@ -406,6 +406,29 @@ before you trust that archive.
 
 ---
 
+### 1.14. Producer-Set Residue Check (`check-producer-set`, INC-I-261)
+
+**When:** after an upgrade, to find producer-set residue that an older binary persisted (for
+example a pending update that a failed block apply left in the queue). Run it on a **stopped**
+node:
+```bash
+doli-node --network NETWORK --data-dir /path/to/data check-producer-set
+```
+The command is read-only. It replays the block store into a scratch directory and compares the
+rebuilt producer set with the persisted one (details: [cli.md §9.2](./cli.md#92-node-management)).
+
+| Verdict | Exit | Meaning | What to do |
+|---------|------|---------|------------|
+| `EQUAL` | 0 | The persisted producer set and pending queue match the replay. | Nothing. |
+| `DIFFERS` | 2 | The persisted set carries residue that the chain does not produce. | Keep the node stopped, back up the data directory, then rebuild it from a canonical source with the resync fix in [§1.10](#110-state_corrupt--interrupted-rebuild-from-genesis-inc-i-156) or [disaster-recovery.md](./disaster-recovery.md). |
+| `NOT-CHECKABLE` `reason=snap_sync_height` | 3 | The node joined by snap sync, so it has no blocks below its snap floor. | No verdict is possible. Use the §1.10 resync if you need certainty. |
+| `NOT-CHECKABLE` `reason=holed_block_store` | 3 | A height from 1 to the tip is missing from the block store. | Fill the hole first ([§1.9](#19-missing-historical-blocks-snap-sync-gaps)), then run the check again. |
+| `NOT-CHECKABLE` `reason=lock_held` | 3 | Another process holds `state_db` or `blocks` open (the node runs). | Stop the node, then run the check again. |
+
+Exit code 1 is an error (for example a missing `state_db`). The message is on stderr.
+
+---
+
 ### 1.7. Disk full / ENOSPC
 
 **Symptom:** The node stops or returns a clean error mentioning `ENOSPC` /

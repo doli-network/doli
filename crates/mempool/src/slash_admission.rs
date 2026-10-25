@@ -7,8 +7,9 @@ use crypto::{Hash, PublicKey};
 use doli_core::consensus::MAX_SLASH_TXS_PER_BLOCK;
 use doli_core::transaction::OutputType;
 use doli_core::validation::{
-    bond_owner, bond_withdrawal_producer, is_slash_burnable, spends_owned_bond,
-    validate_slash_target, SlashTargetState, ValidationContext, ValidationError,
+    bond_owner, bond_withdrawal_producer, is_slash_burnable, slash_fee_exempt, slash_registrant,
+    spends_owned_bond, validate_not_slashed_registrant, validate_slash_target, SlashTargetState,
+    ValidationContext, ValidationError,
 };
 use doli_core::{Transaction, TxType};
 use storage::{PendingProducerUpdate, ProducerSet, UtxoSet};
@@ -17,26 +18,25 @@ use crate::holdings::HoldingsSources;
 use crate::MempoolError;
 
 /// Producer-set state of the accused of every SlashProducer in `txs`, with
-/// `locked_collateral` judged at `height`. A key that is not a registered
-/// producer is left out. One owner lookup per registered accused, at most
-/// `MAX_SLASH_TXS_PER_BLOCK` per call; past that `locked_collateral` is false.
+/// `locked_collateral` judged at `height`, then of each Registration / AddBond
+/// key not already named (`slash_registrant`, no UTXO read). A key that is not
+/// a registered producer is left out. One owner lookup per registered accused,
+/// at most `MAX_SLASH_TXS_PER_BLOCK` per call; past that `locked_collateral` is false.
 pub fn slash_targets<'a>(
     producers: &ProducerSet,
     utxos: &UtxoSet,
     height: u64,
     txs: impl IntoIterator<Item = &'a Transaction>,
 ) -> Vec<(PublicKey, SlashTargetState)> {
+    let txs: Vec<&Transaction> = txs.into_iter().collect();
     let mut lookups = 0usize;
-    txs.into_iter()
+    let mut targets: Vec<(PublicKey, SlashTargetState)> = txs
+        .iter()
         .filter_map(|tx| tx.slash_data())
         .filter_map(|data| {
             let pk = data.producer_pubkey;
-            let info = producers.get_by_pubkey(&pk)?;
-            let slash_queued = producers
-                .pending_updates_for(&pk)
-                .iter()
-                .any(|u| matches!(u, PendingProducerUpdate::Slash { .. }));
-            let locked_collateral = lookups < MAX_SLASH_TXS_PER_BLOCK && {
+            let mut state = target_state(producers, &pk)?;
+            state.locked_collateral = lookups < MAX_SLASH_TXS_PER_BLOCK && {
                 lookups += 1;
                 utxos
                     .get_by_pubkey_hash(&bond_owner(&pk))
@@ -46,29 +46,51 @@ pub fn slash_targets<'a>(
                             && is_slash_burnable(&e.output, height)
                     })
             };
-            let state = SlashTargetState {
-                active: info.is_active(),
-                slashed: info.is_slashed(),
-                slash_queued,
-                locked_collateral,
-                registered_at: info.registered_at,
-            };
             Some((pk, state))
         })
-        .collect()
+        .collect();
+    let mut named: HashSet<PublicKey> = targets.iter().map(|(pk, _)| *pk).collect();
+    for pk in txs.iter().filter_map(|tx| slash_registrant(tx)) {
+        if named.insert(pk) {
+            targets.extend(target_state(producers, &pk).map(|state| (pk, state)));
+        }
+    }
+    targets
+}
+
+fn target_state(producers: &ProducerSet, pk: &PublicKey) -> Option<SlashTargetState> {
+    let info = producers.get_by_pubkey(pk)?;
+    let slash_queued = producers
+        .pending_updates_for(pk)
+        .iter()
+        .any(|u| matches!(u, PendingProducerUpdate::Slash { .. }));
+    Some(SlashTargetState {
+        active: info.is_active(),
+        slashed: info.is_slashed(),
+        slash_queued,
+        locked_collateral: false,
+        registered_at: info.registered_at,
+    })
 }
 
 /// For a SlashProducer: `ctx` at the next height, carrying the accused's
-/// state, after the shared state check. `None` for any other type. When the
-/// live producer set cannot be read without blocking, a slash judged at/above
-/// the gate is refused with the transient `Busy`; below the gate, or with no
-/// live set wired, the state check is skipped.
+/// state, after the shared state check. The gate and the evidence are checked
+/// first, so a slash below the rule or with failing evidence reads no state.
+/// When the live producer set cannot be read without blocking, a slash with
+/// verified evidence is refused with the transient `Busy`. With no live set
+/// wired, the state check is skipped. A Registration / AddBond runs the
+/// slashed-registrant rule at the next height (fail-open when the set is
+/// locked) and gets `None`, like any other type.
 pub(crate) fn admission_ctx(
     tx: &Transaction,
     ctx: &ValidationContext,
     sources: &HoldingsSources,
     utxo_set: &UtxoSet,
 ) -> Result<Option<ValidationContext>, MempoolError> {
+    if matches!(tx.tx_type, TxType::Registration | TxType::AddBond) {
+        registrant_refusal(tx, ctx, sources)?;
+        return Ok(None);
+    }
     if tx.tx_type != TxType::SlashProducer {
         return Ok(None);
     }
@@ -77,17 +99,43 @@ pub(crate) fn admission_ctx(
     let Some(set) = sources.live.as_ref() else {
         return Ok(Some(mined_at));
     };
-    let Ok(producers) = set.try_read() else {
-        if mined_at.current_height >= mined_at.inc_i_255_slashing_activation_height {
-            return Err(MempoolError::Busy);
-        }
+    if !slash_fee_exempt(tx, &mined_at) {
+        validate_slash_target(tx, &mined_at)?;
         return Ok(Some(mined_at));
+    }
+    let Ok(producers) = set.try_read() else {
+        return Err(MempoolError::Busy);
     };
     let targets = slash_targets(&producers, utxo_set, mined_at.current_height, [tx]);
     drop(producers);
     let mined_at = mined_at.with_slash_targets(targets);
     validate_slash_target(tx, &mined_at)?;
     Ok(Some(mined_at))
+}
+
+/// The slashed-registrant rule for a Registration / AddBond, judged at the
+/// height after `ctx` (the tip). `Ok` below the gate, for any other type, or
+/// when the live producer set is locked or absent.
+pub(crate) fn registrant_refusal(
+    tx: &Transaction,
+    ctx: &ValidationContext,
+    sources: &HoldingsSources,
+) -> Result<(), ValidationError> {
+    let height = ctx.current_height.saturating_add(1);
+    if height < ctx.inc_i_255_slashing_activation_height {
+        return Ok(());
+    }
+    let Some(key) = slash_registrant(tx) else {
+        return Ok(());
+    };
+    let Some(producers) = sources.live.as_ref().and_then(|set| set.try_read().ok()) else {
+        return Ok(());
+    };
+    let state = target_state(&producers, &key);
+    drop(producers);
+    let mut mined_at = ctx.clone().with_slash_targets(state.map(|s| (key, s)));
+    mined_at.current_height = height;
+    validate_not_slashed_registrant(tx, &mined_at)
 }
 
 /// RequestWithdrawal mirror of the block rules, judged at `mined_at`: refused
@@ -213,10 +261,11 @@ pub(crate) fn resident_refusal<'a>(
     Ok(())
 }
 
-/// Resident slashes that fail `validate_slash_target` judged at the height
-/// after `ctx` (the tip). Empty below the gate or when the live producer set
-/// is locked.
-pub(crate) fn stale_slashes<'a>(
+/// Resident slashes that fail `validate_slash_target`, and resident
+/// Registrations / AddBonds that fail `validate_not_slashed_registrant`,
+/// judged at the height after `ctx` (the tip). Empty below the gate or when
+/// the live producer set is locked.
+pub(crate) fn slash_rule_evictions<'a>(
     resident: impl IntoIterator<Item = (&'a Hash, &'a Transaction)>,
     ctx: &ValidationContext,
     sources: &HoldingsSources,
@@ -230,19 +279,38 @@ pub(crate) fn stale_slashes<'a>(
     let Some(producers) = sources.live.as_ref().and_then(|set| set.try_read().ok()) else {
         return Vec::new();
     };
-    let slashes: Vec<(&Hash, &Transaction)> = resident
+    let judged: Vec<(&Hash, &Transaction)> = resident
         .into_iter()
-        .filter(|(_, tx)| tx.tx_type == TxType::SlashProducer)
+        .filter(|(_, tx)| {
+            matches!(
+                tx.tx_type,
+                TxType::SlashProducer | TxType::Registration | TxType::AddBond
+            )
+        })
         .collect();
-    let targets: Vec<_> = slashes
-        .iter()
-        .flat_map(|(_, tx)| slash_targets(&producers, utxo_set, mined_at.current_height, [*tx]))
-        .collect();
+    let is_slash = |tx: &Transaction| tx.tx_type == TxType::SlashProducer;
+    let h = mined_at.current_height;
+    let mut targets = slash_targets(
+        &producers,
+        utxo_set,
+        h,
+        judged.iter().map(|(_, tx)| *tx).filter(|tx| !is_slash(tx)),
+    );
+    // Slash entries last: they carry `locked_collateral` and win the map.
+    targets.extend(
+        judged
+            .iter()
+            .filter(|(_, tx)| is_slash(tx))
+            .flat_map(|(_, tx)| slash_targets(&producers, utxo_set, h, [*tx])),
+    );
     drop(producers);
     let mined_at = mined_at.with_slash_targets(targets);
-    slashes
+    judged
         .into_iter()
-        .filter(|(_, tx)| validate_slash_target(tx, &mined_at).is_err())
+        .filter(|(_, tx)| {
+            validate_slash_target(tx, &mined_at).is_err()
+                || validate_not_slashed_registrant(tx, &mined_at).is_err()
+        })
         .map(|(hash, _)| *hash)
         .collect()
 }

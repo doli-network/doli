@@ -244,6 +244,15 @@ pub(crate) enum Commands {
         yes: bool,
     },
 
+    /// Check a stopped node's persisted producer set against a block replay
+    ///
+    /// Read-only. Replays heights 1..=best_height through apply_block(Replay)
+    /// into a scratch dir under the temp dir, then compares the rebuilt
+    /// ProducerSet (canonical bytes and pending queue) with the persisted one.
+    /// Prints EQUAL, DIFFERS or NOT-CHECKABLE and a key=value summary line.
+    /// Exit code: 0 EQUAL, 2 DIFFERS, 3 NOT-CHECKABLE, 1 error.
+    CheckProducerSet,
+
     /// Restore chain from an archive directory (disaster recovery)
     ///
     /// Imports all blocks from the archive, verifies BLAKE3 checksums,

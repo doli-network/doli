@@ -4,7 +4,9 @@ use crypto::{Hash, PublicKey};
 use super::common::{compute_fifo_breakdown, confirm_bond_lock, display_fifo_breakdown};
 use crate::rpc_client::{format_balance, RpcClient};
 use crate::wallet::Wallet;
-use doli_cli::producer_ledger::{addbond_current_from_rpc, addbond_headroom_check};
+use doli_cli::producer_ledger::{
+    addbond_current_from_rpc, addbond_headroom_check, slashed_key_refusal,
+};
 use doli_cli::producer_tx::{
     build_add_bond_tx, chain_genesis_hash, finalize_producer_tx, AddBondSpec,
 };
@@ -41,6 +43,13 @@ pub(super) async fn handle_add_bond(
             pk_hex
         );
     };
+    let updates = producer
+        .pending_updates
+        .iter()
+        .map(|u| u.update_type.as_str());
+    if let Err(msg) = slashed_key_refusal(&producer.status, updates) {
+        anyhow::bail!("{} (pubkey: {})", msg, pk_hex);
+    }
 
     // Epoch-deferred AddBonds are not in bond_count yet but already spend headroom.
     let pending = producer

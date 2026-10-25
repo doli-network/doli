@@ -951,6 +951,7 @@ impl Mempool {
             .with_producers_weighted(active_producers_snapshot)
             .with_pending_producer_keys(pending_keys);
         validate_transaction(tx, &ctx)?;
+        crate::slash_admission::registrant_refusal(tx, &ctx, &self.producer_holdings)?;
         let genesis = &self.params.genesis_hash;
         zero_flow_policy::check(tx, snapshot, current_height, self.network, genesis)?;
         let key = zero_flow_policy::change_key(tx);
@@ -1415,7 +1416,7 @@ impl Mempool {
         }
 
         to_remove.extend(self.registrations_that_became_duplicates(current_height));
-        to_remove.extend(crate::slash_admission::stale_slashes(
+        to_remove.extend(crate::slash_admission::slash_rule_evictions(
             self.entries.iter().map(|(h, e)| (h, &e.tx)),
             &self.admission_base_ctx((current_height, current_slot), Vec::new()),
             &self.producer_holdings,

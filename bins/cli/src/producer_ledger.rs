@@ -51,6 +51,28 @@ pub fn addbond_current_from_rpc(producer_set_bond_count: Option<u32>, utxo_bond_
     producer_set_bond_count.unwrap_or(utxo_bond_count)
 }
 
+/// Refuses a key the node reports with `status` "slashed" or with a pending
+/// "slash" update: the chain refuses its Registration and AddBond (ERRTX071).
+pub fn slashed_key_refusal<'a>(
+    status: &str,
+    pending_update_types: impl IntoIterator<Item = &'a str>,
+) -> Result<(), String> {
+    if status.eq_ignore_ascii_case("slashed") {
+        return Err(
+            "This key is slashed for life: it cannot register again or add bonds.".to_string(),
+        );
+    }
+    if pending_update_types
+        .into_iter()
+        .any(|t| t.eq_ignore_ascii_case("slash"))
+    {
+        return Err(
+            "This key has a pending slash: it cannot register again or add bonds.".to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// AddBond admission for the CLI (INC-I-203 M3, REQ-BOND-007). `pending` comes
 /// from the caller's `ProducerInfo.pending_updates`; headroom is
 /// `MAX_BONDS_PER_PRODUCER - bond_count - pending`. Saturating throughout: a

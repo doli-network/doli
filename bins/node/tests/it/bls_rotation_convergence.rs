@@ -37,6 +37,8 @@
 use std::collections::HashSet;
 use std::sync::Once;
 
+use crate::inc_i_256_m2_common::{child, in_child};
+
 use crypto::{BlsKeyPair, Hash, KeyPair, PublicKey};
 use doli_core::genesis::genesis_hash;
 use doli_core::network_params::NetworkParams;
@@ -403,6 +405,13 @@ fn precondition_the_three_shipped_defaults_are_still_frozen() {
 /// queue order included.
 #[tokio::test]
 async fn req_rot_007_rebuild_from_blocks_matches_live_apply_across_a_rotation() {
+    if !in_child() {
+        let env = [(
+            "DOLI_BLS_KEY_ROTATION_ACTIVATION_HEIGHT",
+            ROT_AH.to_string(),
+        )];
+        return child("bls_rotation_convergence::req_rot_007_rebuild_from_blocks_matches_live_apply_across_a_rotation", &env);
+    }
     let (node, target, bls, blocks, _t) = seeded_fixture().await;
     let tpk = *target.public_key();
     let new_key = bls.public_key().as_bytes().to_vec();
@@ -486,6 +495,16 @@ async fn req_rot_007_rebuild_from_blocks_matches_live_apply_across_a_rotation() 
 /// the OLD key and the ProducerSet matches a node that never saw the rotation.
 #[tokio::test]
 async fn req_rot_006_reorg_across_the_rotation_restores_the_old_key() {
+    if !in_child() {
+        let env = [(
+            "DOLI_BLS_KEY_ROTATION_ACTIVATION_HEIGHT",
+            ROT_AH.to_string(),
+        )];
+        return child(
+            "bls_rotation_convergence::req_rot_006_reorg_across_the_rotation_restores_the_old_key",
+            &env,
+        );
+    }
     let (mut a, kp, bls, op, _ta) = applied_fixture().await;
     let pk = *kp.public_key();
     let old_key = bls_of(&a, &pk).await;
@@ -595,6 +614,13 @@ async fn applied_fixture_from(kp: &KeyPair) -> (Node, KeyPair, BlsKeyPair, Outpo
 /// is the old key, and `parent_sig_pool` holds nothing.
 #[tokio::test]
 async fn req_rot_011_rollback_across_the_rotation_clears_the_parent_sig_pool() {
+    if !in_child() {
+        let env = [(
+            "DOLI_BLS_KEY_ROTATION_ACTIVATION_HEIGHT",
+            ROT_AH.to_string(),
+        )];
+        return child("bls_rotation_convergence::req_rot_011_rollback_across_the_rotation_clears_the_parent_sig_pool", &env);
+    }
     let (mut node, kp, bls, op, _t) = applied_fixture().await;
     let pk = *kp.public_key();
     let old_key = bls_of(&node, &pk).await;
@@ -655,6 +681,13 @@ async fn req_rot_011_rollback_across_the_rotation_clears_the_parent_sig_pool() {
 /// i.e. whether a mismatched producer can actually recover.
 #[tokio::test]
 async fn req_rot_005_queued_rotation_installs_the_new_key_at_the_epoch_boundary() {
+    if !in_child() {
+        let env = [(
+            "DOLI_BLS_KEY_ROTATION_ACTIVATION_HEIGHT",
+            ROT_AH.to_string(),
+        )];
+        return child("bls_rotation_convergence::req_rot_005_queued_rotation_installs_the_new_key_at_the_epoch_boundary", &env);
+    }
     let (mut node, kp, bls, op, _t) = applied_fixture().await;
     let pk = *kp.public_key();
     let old_key = bls_of(&node, &pk).await;
@@ -688,6 +721,13 @@ async fn req_rot_005_queued_rotation_installs_the_new_key_at_the_epoch_boundary(
 /// what a restart reads — is the persisted `ProducerSet` plus the boundary flush.
 #[tokio::test]
 async fn req_rot_011_queued_rotation_survives_the_persisted_producer_set() {
+    if !in_child() {
+        let env = [(
+            "DOLI_BLS_KEY_ROTATION_ACTIVATION_HEIGHT",
+            ROT_AH.to_string(),
+        )];
+        return child("bls_rotation_convergence::req_rot_011_queued_rotation_survives_the_persisted_producer_set", &env);
+    }
     let (mut node, kp, bls, op, _t) = applied_fixture().await;
     let pk = *kp.public_key();
     let new_key = bls.public_key().as_bytes().to_vec();
@@ -725,6 +765,13 @@ async fn req_rot_011_queued_rotation_survives_the_persisted_producer_set() {
 /// at a non-boundary height NEITHER fires, at a boundary height BOTH do.
 #[tokio::test]
 async fn req_rot_011_boundary_flush_and_pool_clear_agree_above_epoch_zero() {
+    if !in_child() {
+        let env = [(
+            "DOLI_BLS_KEY_ROTATION_ACTIVATION_HEIGHT",
+            ROT_AH.to_string(),
+        )];
+        return child("bls_rotation_convergence::req_rot_011_boundary_flush_and_pool_clear_agree_above_epoch_zero", &env);
+    }
     let (mut node, kp, bls, op, _t) = applied_fixture().await;
     let pk = *kp.public_key();
     let old_key = bls_of(&node, &pk).await;

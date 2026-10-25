@@ -578,6 +578,14 @@ pub enum ValidationError {
         /// Canonical length, `ROTATE_BLS_DATA_LEN`.
         expected: usize,
     },
+
+    /// [ERRTX071] a Registration or AddBond names a producer that is Slashed
+    /// or has a queued Slash. One variant for both types.
+    #[error("[ERRTX071] producer is slashed or slash-queued: producer={producer}")]
+    SlashedRegistrant {
+        /// Hex of the producer key the payload names.
+        producer: String,
+    },
 }
 
 impl ValidationError {
@@ -656,6 +664,7 @@ impl ValidationError {
             Self::RotateBlsProducerMismatch { .. } => "ROTATE_BLS_PRODUCER_MISMATCH",
             Self::RotateBlsOutputShape { .. } => "ROTATE_BLS_OUTPUT_SHAPE",
             Self::RotateBlsBadPayload { .. } => "ROTATE_BLS_BAD_PAYLOAD",
+            Self::SlashedRegistrant { .. } => "SLASHED_REGISTRANT",
         }
     }
 
@@ -926,7 +935,9 @@ impl ValidationError {
                 map.insert("current_height".into(), (*current_height).into());
                 map.insert("activation_height".into(), (*activation_height).into());
             }
-            Self::RotateBlsBadSignature { producer } | Self::RotateBlsBadPop { producer } => {
+            Self::RotateBlsBadSignature { producer }
+            | Self::RotateBlsBadPop { producer }
+            | Self::SlashedRegistrant { producer } => {
                 map.insert("producer".into(), Value::String(producer.clone()));
             }
             Self::RotateBlsBadPoint { reason } => {

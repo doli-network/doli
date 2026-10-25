@@ -1,5 +1,6 @@
 use anyhow::Result;
 use crypto::{bls_sign_pop, BlsSecretKey, Hash, PublicKey};
+use doli_cli::producer_ledger::slashed_key_refusal;
 use doli_cli::producer_tx::{
     build_registration_tx, chain_genesis_hash, finalize_producer_tx, RegistrationSpec,
 };
@@ -43,6 +44,10 @@ pub(super) async fn handle_register(
             .iter()
             .find(|p| p.public_key.eq_ignore_ascii_case(pk_hex))
         {
+            let pending = info.pending_updates.iter().map(|u| u.update_type.as_str());
+            if let Err(msg) = slashed_key_refusal(&info.status, pending) {
+                anyhow::bail!("{} (pubkey: {})", msg, pk_hex);
+            }
             match info.status.to_lowercase().as_str() {
                 "active" => {
                     anyhow::bail!("This key is already registered as an active producer (pubkey: {}, bonds: {}). Use 'doli producer add-bond' to increase your bond count.", pk_hex, info.bond_count);
@@ -50,7 +55,7 @@ pub(super) async fn handle_register(
                 "pending" => {
                     anyhow::bail!("This key already has a pending registration (pubkey: {}). It will activate at the next epoch boundary.", pk_hex);
                 }
-                _ => {} // exited/slashed — allow re-registration
+                _ => {} // exited — allow re-registration
             }
         }
     }

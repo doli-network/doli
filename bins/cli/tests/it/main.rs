@@ -5,6 +5,7 @@
 //! OUTPUT CONTRACT: N/A — fixture file (module aggregator only, no test logic).
 //! INPUT PARTITIONS: N/A — fixture file.
 
+mod b3_m2_register_refuses_slashed;
 mod inc_i_171_m7_ladder_single_source;
 mod inc_i_180_withdrawal_guard;
 mod inc_i_182_m1_producer_txs;

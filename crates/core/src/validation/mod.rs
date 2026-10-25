@@ -42,6 +42,7 @@ mod registration;
 mod rewards_legacy;
 pub mod rotate_bls;
 mod slash_evidence;
+mod slash_registration;
 mod slash_state;
 mod slash_window;
 #[cfg(test)]
@@ -75,6 +76,7 @@ pub use rotate_bls::rotate_stateless;
 pub use slash_evidence::{
     double_production_evidence_fits, evidence_header_admissible, slash_fee_exempt,
 };
+pub use slash_registration::{slash_registrant, validate_not_slashed_registrant};
 pub use slash_state::{
     bond_owner, bond_withdrawal_producer, is_slash_burnable, slashes_first, spends_owned_bond,
     validate_slash_bond_spends, validate_slash_target, SlashBlockBudget, SlashTargetState,

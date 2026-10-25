@@ -798,6 +798,11 @@ so a registration that has mined but not yet crossed the epoch boundary is invis
 A second registration inside that window is rejected by block validation and poisons the next
 block your producer builds (INC-I-147).
 
+**Slashed-key guard.** The same `getProducers` answer also refuses a key with status `slashed`
+or with a pending `slash` update, before anything is submitted. A Slashed key is refused for
+life; nodes refuse its Registration with `[ERRTX071]` from the slashing activation height. An
+`exited` key that was never slashed may still re-register.
+
 **Producer signature (INC-I-182).** After the inputs and outputs are final, the CLI signs the
 transaction with the producer key and appends that signature to `extra_data`, with the chain
 genesis hash from `getChainInfo`. It does this at every height. Nodes require it from
@@ -977,6 +982,10 @@ the notice; a non-interactive stdin without `--yes` exits non-zero and creates n
 # Add 3 more bonds (30 DOLI on mainnet/testnet)
 doli producer add-bond --count 3
 ```
+
+**Slashed-key guard.** The CLI refuses `add-bond` when `getProducers` reports the key with
+status `slashed` or with a pending `slash` update, before anything is submitted. Nodes refuse
+such an AddBond with `[ERRTX071]` from the slashing activation height.
 
 **Cap headroom check (INC-I-203).** A producer may hold at most
 `MAX_BONDS_PER_PRODUCER` (3,000) bonds. The CLI reads the producer's
@@ -1694,7 +1703,35 @@ doli-node recover [--yes]
 #   reindex rebuilds height_index → recover replays blocks → start node
 doli-node --network NETWORK --data-dir /path/to/data reindex
 doli-node --network NETWORK --data-dir /path/to/data recover --yes
+
+# Check a STOPPED node's persisted producer set against a block replay (read-only)
+doli-node --network NETWORK --data-dir /path/to/data check-producer-set
 ```
+
+**`check-producer-set`** (no flags besides the global `--network`, `--data-dir`, `--log-level`).
+It replays heights `1..=best_height` of the block store through `apply_block(Replay)` on a
+headless node in a scratch directory under the temp dir (`TMPDIR`), then compares the rebuilt
+ProducerSet (canonical bytes and the ordered pending queue) with the persisted one.
+
+- **Read-only:** it opens `state_db` and `blocks` with RocksDB read-only opens (no copy). They take
+  no lock and write no file in the data directory; any RocksDB info log goes to the scratch directory.
+  It probes each `LOCK` file with a non-blocking fcntl write lock that it releases at once, and it
+  never creates or writes that file. The scratch directory is deleted before the command exits.
+- **Cost:** the replay takes about as long as `recover`. The scratch directory needs free space
+  of about the size of `blocks/` plus `state_db/`.
+- **Devnet:** reads `<data-dir>/chainspec.json` when present, as `run` does.
+- **Output:** one verdict line, then one `key=value` summary line:
+
+| Verdict | Summary line | Exit |
+|---------|--------------|------|
+| `EQUAL` | `height=<h> producers=<n> pending=<k>` | 0 |
+| `DIFFERS` | `height=<h> producers=<p>/<r> status_mismatches=<n> pending=<p>/<r>` (`p` persisted, `r` rebuilt) | 2 |
+| `NOT-CHECKABLE` | `reason=snap_sync_height` \| `reason=holed_block_store` \| `reason=lock_held` | 3 |
+
+`status_mismatches` counts producers whose status differs, including a producer present on one
+side only. Any error (for example a missing `state_db`, or a replayed tip hash that is not the
+persisted best hash) exits 1 with the message on stderr. What to do with each verdict:
+[troubleshooting.md §1.14](./troubleshooting.md#114-producer-set-residue-check-check-producer-set-inc-i-261).
 
 ---
 

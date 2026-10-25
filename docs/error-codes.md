@@ -247,6 +247,14 @@ Active at and above `inc_i_182_producer_auth_activation_height` (INC-I-182), for
 | `ERRTX069` | missed_producers contains key not in epoch producer list | `pubkey_prefix`, `list_size` |
 | `ERRTX070` | missed_producers would exceed total exclusion cap | `total_after`, `max_total`, `currently_excluded` |
 
+### Slashed Registrant (validation/slash_registration.rs)
+
+Active at and above `inc_i_255_slashing_activation_height` (the effective slashing height). One code for Registration and AddBond, on mempool admission, the block builder, apply and replay.
+
+| Code | Description | Context Variables |
+|------|-------------|-------------------|
+| `ERRTX071` | `producer is slashed or slash-queued`: the Registration key, or the producer an AddBond names, is Slashed or has a queued Slash. Operator action: no retry can succeed. A Slashed key is refused for life. A slash-queued key becomes Slashed at the next epoch boundary, unless a reorg removes the slash. This key cannot register or add bonds; use a new key. | `producer` (hex) |
+
 ## MPTX -- Mempool Transaction Validation
 
 Used in `MempoolError::InvalidTransaction(String)` in `crates/mempool/src/pool.rs`. Pre-block mempool admission checks.
