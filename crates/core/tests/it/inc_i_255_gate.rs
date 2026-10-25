@@ -11,7 +11,7 @@
 //   no mutable params, no receiver writes, no store writes (pure)
 // PATHS: P-DEF (defaults) | P-ENV (load in a re-exec child, fresh OnceLock) | P-FN (hand-set gate fields)
 // INPUT PARTITIONS:
-//   P-DEF: mainnet, testnet -> u64::MAX; devnet -> 0
+//   P-DEF: mainnet -> u64::MAX; testnet -> 330_849 (pinned 2026-10-25); devnet -> 0
 //   P-ENV: nothing set | slash env set | sig env raised (devnet) | root env raised (testnet, devnet) | all three set
 //   P-FN:  each operand the strict max | all equal | one operand u64::MAX | all zero
 //   ctx:   new() at heights 0, 1_000, u64::MAX - 1 | setter with a sentinel
@@ -31,6 +31,9 @@ const SIG_ENV: &str = "DOLI_INC_I_236_BLOCK_SIGNATURE_ACTIVATION_HEIGHT";
 const ROOT_ENV: &str = "DOLI_INC_I_181_PENDING_ROOT_ACTIVATION_HEIGHT";
 const CHILD_ENV: &str = "INC_I_255_GATE_ENV_CHILD";
 const NETWORKS: [Network; 3] = [Network::Mainnet, Network::Testnet, Network::Devnet];
+/// Testnet pin of the four defense gates (user decision 2026-10-25); see
+/// `network_params::tests_defense_pin`.
+const TESTNET_PIN: u64 = 330_849;
 
 fn gates(p: &NetworkParams) -> [u64; 3] {
     [
@@ -103,7 +106,7 @@ fn assert_loaded_ordering(what: &str) {
 fn inc_i_255_defaults_per_network() {
     for (network, expected) in [
         (Network::Mainnet, u64::MAX),
-        (Network::Testnet, u64::MAX),
+        (Network::Testnet, TESTNET_PIN),
         (Network::Devnet, 0),
     ] {
         assert_eq!(
@@ -127,7 +130,8 @@ fn inc_i_255_effective_on_defaults_is_max_of_three_gates() {
     );
     assert_eq!(
         NetworkParams::defaults(Network::Testnet).effective_slashing_activation_height(),
-        u64::MAX
+        TESTNET_PIN,
+        "testnet: 236 == 255 == pin and 181 (97_886) is below it"
     );
     assert_eq!(
         NetworkParams::defaults(Network::Devnet).effective_slashing_activation_height(),
@@ -194,7 +198,7 @@ fn inc_i_255_env_unset_loads_defaults_and_ordering_holds() {
     }
     let [mainnet, testnet, devnet] = loaded();
     assert_eq!(mainnet.inc_i_255_slashing_activation_height, u64::MAX);
-    assert_eq!(testnet.inc_i_255_slashing_activation_height, u64::MAX);
+    assert_eq!(testnet.inc_i_255_slashing_activation_height, TESTNET_PIN);
     assert_eq!(devnet.inc_i_255_slashing_activation_height, 0);
     for network in NETWORKS {
         assert_eq!(
@@ -227,8 +231,7 @@ fn inc_i_255_env_override_honoured_on_devnet_only() {
         "mainnet must ignore the override"
     );
     assert_eq!(
-        testnet.inc_i_255_slashing_activation_height,
-        u64::MAX,
+        testnet.inc_i_255_slashing_activation_height, TESTNET_PIN,
         "testnet must ignore the override"
     );
     assert_eq!(
@@ -281,7 +284,11 @@ fn inc_i_255_env_raised_root_gate_lifts_effective() {
         NetworkParams::defaults(Network::Mainnet).inc_i_181_pending_root_activation_height
     );
     assert_eq!(devnet.effective_slashing_activation_height(), 900);
-    assert_eq!(testnet.effective_slashing_activation_height(), u64::MAX);
+    assert_eq!(
+        testnet.effective_slashing_activation_height(),
+        TESTNET_PIN,
+        "a root env of 900 stays below the testnet pin"
+    );
     assert_eq!(mainnet.effective_slashing_activation_height(), u64::MAX);
     assert_loaded_ordering("root env 900");
 }
@@ -303,7 +310,7 @@ fn inc_i_255_env_all_three_set_effective_is_max() {
     );
     assert_eq!(devnet.effective_slashing_activation_height(), 700);
     assert_eq!(mainnet.inc_i_255_slashing_activation_height, u64::MAX);
-    assert_eq!(testnet.inc_i_255_slashing_activation_height, u64::MAX);
-    assert_eq!(testnet.effective_slashing_activation_height(), u64::MAX);
+    assert_eq!(testnet.inc_i_255_slashing_activation_height, TESTNET_PIN);
+    assert_eq!(testnet.effective_slashing_activation_height(), TESTNET_PIN);
     assert_loaded_ordering("all three env set");
 }

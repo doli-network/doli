@@ -197,7 +197,8 @@ fn req_auth_sec_001_small_order_key_rejected() {
 fn req_auth_001_per_network_activation_heights() {
     for (network, expected) in [
         (Network::Mainnet, u64::MAX),
-        (Network::Testnet, u64::MAX),
+        // Testnet pin of the four defense gates (user decision 2026-10-25).
+        (Network::Testnet, 330_849),
         (Network::Devnet, 0),
     ] {
         assert_eq!(

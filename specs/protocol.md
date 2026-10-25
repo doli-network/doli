@@ -377,7 +377,7 @@ This is the only slashable offense because it is the only one that cannot happen
 | Network | `inc_i_255_slashing_activation_height` | Override |
 |---------|----------------------------------------|----------|
 | Mainnet | `u64::MAX` | None |
-| Testnet | `u64::MAX` | None |
+| Testnet | `330849` (pinned 2026-10-25, with INC-I-236, INC-I-257 and INC-I-182) | None |
 | Devnet | 0 | `DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT` (devnet only) |
 
 The slash rules use the effective height
@@ -392,7 +392,8 @@ effective = max(inc_i_255_slashing_activation_height,
 - Evidence is authentic only when blocks carry the INC-I-236 producer signature.
 - At and above the INC-I-181 gate, the pending producer-update queue (which holds a queued Slash) is part of the state root.
 - An env override therefore cannot put the slash rules below either gate.
-- On mainnet and testnet the effective height is `u64::MAX`. Slashing is not active there.
+- On mainnet the effective height is `u64::MAX`. Slashing is not active there.
+- On testnet the effective height is `330849`: the INC-I-255 and INC-I-236 gates are both pinned there (2026-10-25) and the INC-I-181 gate (97886) is below it.
 
 Block validation, the builder and apply judge the rules at the height of the block that holds the transaction. Mempool admission and the equivocation handler judge them at `best_height + 1`.
 
@@ -1107,8 +1108,8 @@ and therefore its penalty tier.
 
 #### 3.13.1 Unbonding lock (INC-I-257)
 
-Gate: `inc_i_257_unbonding_activation_height` — mainnet `u64::MAX`, testnet
-`u64::MAX` (not yet scheduled), devnet `0`. The env override
+Gate: `inc_i_257_unbonding_activation_height` — mainnet `u64::MAX`,
+testnet `330849` (pinned 2026-10-25, the same height as the INC-I-255 gate), devnet `0`. The env override
 `DOLI_INC_I_257_UNBONDING_ACTIVATION_HEIGHT` is read on devnet only. The gate
 must not be above the effective slashing height, so that no height range has
 working slashing and an unlocked payout.
@@ -1164,8 +1165,8 @@ spendable.
 
 #### 3.13.2 Producer authorization (INC-I-182)
 
-Gate: `inc_i_182_producer_auth_activation_height` — mainnet `u64::MAX`, testnet
-`u64::MAX` (not yet scheduled), devnet `0`. The env override
+Gate: `inc_i_182_producer_auth_activation_height` — mainnet `u64::MAX`,
+testnet `330849` (pinned 2026-10-25, the same height as the INC-I-255 gate), devnet `0`. The env override
 `DOLI_INC_I_182_PRODUCER_AUTH_ACTIVATION_HEIGHT` is read on devnet only.
 
 At block height `H >= gate`, a Registration, AddBond or RequestWithdrawal is valid
@@ -2645,10 +2646,10 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | Fee-exempt coinbase credit (`inc_i_233_activation_height`, §3.6) | 612,000 | 94,500 | 0 | Non-mainnet (`DOLI_INC_I_233_ACTIVATION_HEIGHT`) |
 | Output-Creation Authority (`inc_i_234_activation_height`, §3.22.1) | 612,000 | 78,199 | 0 | Non-mainnet (`DOLI_INC_I_234_ACTIVATION_HEIGHT`) |
 | Pending-updates state-root cover (`inc_i_181_pending_root_activation_height`) | 612,000 | 97,886 | 0 | Non-mainnet (`DOLI_INC_I_181_PENDING_ROOT_ACTIVATION_HEIGHT`) |
-| Block producer signature (`inc_i_236_block_signature_activation_height`) | `u64::MAX` | `u64::MAX` | 0 | Devnet only (`DOLI_INC_I_236_BLOCK_SIGNATURE_ACTIVATION_HEIGHT`) |
-| Equivocation slashing (`inc_i_255_slashing_activation_height`, §3.10.1) | `u64::MAX` | `u64::MAX` | 0 | Devnet only (`DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT`) |
-| Unbonding lock (`inc_i_257_unbonding_activation_height`, §3.13.1) | `u64::MAX` | `u64::MAX` | 0 | Devnet only (`DOLI_INC_I_257_UNBONDING_ACTIVATION_HEIGHT`) |
-| Producer authorization (`inc_i_182_producer_auth_activation_height`, §3.13.2) | `u64::MAX` | `u64::MAX` | 0 | Devnet only (`DOLI_INC_I_182_PRODUCER_AUTH_ACTIVATION_HEIGHT`) |
+| Block producer signature (`inc_i_236_block_signature_activation_height`) | `u64::MAX` | 330,849 (pinned 2026-10-25) | 0 | Devnet only (`DOLI_INC_I_236_BLOCK_SIGNATURE_ACTIVATION_HEIGHT`) |
+| Equivocation slashing (`inc_i_255_slashing_activation_height`, §3.10.1) | `u64::MAX` | 330,849 (pinned 2026-10-25) | 0 | Devnet only (`DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT`) |
+| Unbonding lock (`inc_i_257_unbonding_activation_height`, §3.13.1) | `u64::MAX` | 330,849 (pinned 2026-10-25) | 0 | Devnet only (`DOLI_INC_I_257_UNBONDING_ACTIVATION_HEIGHT`) |
+| Producer authorization (`inc_i_182_producer_auth_activation_height`, §3.13.2) | `u64::MAX` | 330,849 (pinned 2026-10-25) | 0 | Devnet only (`DOLI_INC_I_182_PRODUCER_AUTH_ACTIVATION_HEIGHT`) |
 | Data Directory | `~/.doli/mainnet/` | `~/.doli/testnet/` | `~/.doli/devnet/` | - |
 | Config File | `.env` in data dir | `.env` in data dir | `.env` in data dir | - |
 

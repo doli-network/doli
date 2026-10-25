@@ -11,14 +11,14 @@
 // OUTPUT CONTRACT: Node::handle_new_block(Block, PeerId)
 //   O1 chain_state.best_height / best_hash; O2 return
 // INPUT PARTITIONS
-//   IP-NET testnet (AH = u64::MAX, full production path) | devnet (AH = 0)
+//   IP-NET testnet (AH = 330_849, far above a fresh node's tip; full production path) | devnet (AH = 0)
 //   IP-PI  signed by producer | empty | corrupted 64 bytes
 // MATRIX
 //   O1,O2(produce) x testnet          -> req_auth_002_produced_block_is_signed_below_ah
 //   O1(validate_for_apply) x devnet x {signed, empty} -> req_auth_001_node_validation_ctx_enforces_devnet_ah
 //   O1(handle_new_block) x devnet x {empty, corrupted} then signed -> req_auth_sec_002_*
 // INPUT PARTITIONS:
-//   produce: testnet (AH u64::MAX) -> 64-byte pi, strict verify, hash unchanged, accepted at AH 0
+//   produce: testnet (AH 330_849, block far below it) -> 64-byte pi, strict verify, hash unchanged, accepted at AH 0
 //   validate_for_apply: devnet AH 0 x {signed -> Ok, empty -> signature error}
 //   handle_new_block: devnet x {empty, corrupted 64 B} first -> tip unchanged; signed next -> tip = signed hash
 
@@ -37,17 +37,18 @@ use super::inc_i_236_m2_common::{
 async fn req_auth_002_produced_block_is_signed_below_ah() {
     let kp = KeyPair::generate();
     let (mut node, _tmp) = testnet_producer_node(&kp).await;
-    assert_eq!(
-        node.config
-            .network
-            .params()
-            .inc_i_236_block_signature_activation_height,
-        u64::MAX,
-        "PRECONDITION: testnet AH is unpinned, so this block is below the AH"
-    );
+    let ah = node
+        .config
+        .network
+        .params()
+        .inc_i_236_block_signature_activation_height;
     let prev = tip(&node).await;
     let block = produce_one(&mut node).await;
     let height = node.chain_state.read().await.best_height;
+    assert!(
+        height < ah,
+        "PRECONDITION: this block ({height}) is below the testnet AH ({ah}), so the rule is off"
+    );
     let off = node_ctx(&node, &block, prev, height, u64::MAX);
     let pre = validate_block_with_mode(&block, &off, ValidationMode::Full);
     assert!(

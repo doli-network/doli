@@ -42,6 +42,10 @@ mod tests_inc_i_233;
 #[cfg(test)]
 mod tests_inc_i_234;
 
+/// Testnet pin of the four defense gates (236/255/257/182) at 330_849; mainnet frozen.
+#[cfg(test)]
+mod tests_defense_pin;
+
 #[cfg(test)]
 mod tests_oracle;
 

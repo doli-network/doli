@@ -553,10 +553,15 @@ impl NetworkParams {
                 // 176_200 is ~13 min above it. Once crossed this height is IMMUTABLE.
                 bls_key_rotation_activation_height: 176_200,
                 inc_i_234_activation_height: 78_199,
-                inc_i_236_block_signature_activation_height: u64::MAX,
-                inc_i_255_slashing_activation_height: u64::MAX,
-                inc_i_257_unbonding_activation_height: u64::MAX,
-                inc_i_182_producer_auth_activation_height: u64::MAX,
+                // Defense pin (user decision 2026-10-25): the four gates share ONE
+                // height, each in its own field. The six producers were stopped at
+                // tip 330_779 (16:20Z), so 330_849 is 70 blocks of lead and no stored
+                // block crosses it. Pin order holds with equal heights (255 >= 257).
+                // IMMUTABLE once crossed (INC-I-054). Mainnet stays u64::MAX.
+                inc_i_236_block_signature_activation_height: 330_849,
+                inc_i_255_slashing_activation_height: 330_849,
+                inc_i_257_unbonding_activation_height: 330_849,
+                inc_i_182_producer_auth_activation_height: 330_849,
                 // INC-I-233 F4 coinbase credit. PINNED 94_500 on testnet (tip 94_131 at
                 // 2026-09-26 09:48Z, ~1 h lead, user decision). IMMUTABLE once crossed.
                 inc_i_233_activation_height: 94_500,

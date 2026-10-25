@@ -1295,8 +1295,9 @@ delegation-mitigation menu (`specs/delegation-architecture.md` §7.2.1).
 The slash rules apply at and above
 `NetworkParams::effective_slashing_activation_height()`: the maximum of
 `inc_i_255_slashing_activation_height`, the INC-I-236 block-signature gate
-and the INC-I-181 pending-root gate. Mainnet and testnet: `u64::MAX` (not
-active). Devnet: 0. Below that height every path keeps its old verdict.
+and the INC-I-181 pending-root gate. Mainnet: `u64::MAX` (not active).
+Testnet: `330849` (pinned 2026-10-25). Devnet: 0. Below that height every
+path keeps its old verdict.
 Full rules: `specs/protocol.md` §3.10.
 
 ```

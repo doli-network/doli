@@ -53,6 +53,10 @@ fn spawned_child(test: &str, env: &[(&str, u64)]) -> bool {
     true
 }
 
+/// Testnet pin of the four defense gates (user decision 2026-10-25); see
+/// `network_params::tests_defense_pin`.
+const TESTNET_PIN: u64 = 330_849;
+
 fn gates(params: [&NetworkParams; 3]) -> [u64; 3] {
     params.map(|p| p.inc_i_182_producer_auth_activation_height)
 }
@@ -65,7 +69,7 @@ fn loaded() -> [u64; 3] {
 #[test]
 fn inc_i_182_m1_req_pauth_003_gate_defaults_per_network() {
     let d = NETWORKS.map(NetworkParams::defaults);
-    assert_eq!(gates([&d[0], &d[1], &d[2]]), [u64::MAX, u64::MAX, 0]);
+    assert_eq!(gates([&d[0], &d[1], &d[2]]), [u64::MAX, TESTNET_PIN, 0]);
 }
 
 // REQ-PAUTH-003 — Decision: a failure means a context site that never sets the gate enforces the rule (old test and tool contexts break) or the builder clobbers a neighbour gate.
@@ -106,7 +110,7 @@ fn inc_i_182_m1_req_pauth_003_env_unset_loads_defaults() {
     if spawned_child("inc_i_182_m1_req_pauth_003_env_unset_loads_defaults", &[]) {
         return;
     }
-    assert_eq!(loaded(), [u64::MAX, u64::MAX, 0]);
+    assert_eq!(loaded(), [u64::MAX, TESTNET_PIN, 0]);
 }
 
 fn env_case(value: u64) {
@@ -117,7 +121,7 @@ fn env_case(value: u64) {
     );
     assert_eq!(
         loaded(),
-        [u64::MAX, u64::MAX, value],
+        [u64::MAX, TESTNET_PIN, value],
         "only devnet may honour {GATE_ENV}={value}"
     );
 }

@@ -119,7 +119,8 @@ fn req_auth_014_below_ah_verdict_ignores_pi_all_modes() {
 fn req_auth_015_defaults_unpinned_on_mainnet_and_testnet() {
     for (network, expected) in [
         (Network::Mainnet, u64::MAX),
-        (Network::Testnet, u64::MAX),
+        // Testnet pin of the four defense gates (user decision 2026-10-25).
+        (Network::Testnet, 330_849),
         (Network::Devnet, 0),
     ] {
         assert_eq!(
@@ -157,8 +158,8 @@ fn req_auth_015_env_override_honoured_on_devnet_only() {
     );
     assert_eq!(
         NetworkParams::load(Network::Testnet).inc_i_236_block_signature_activation_height,
-        u64::MAX,
-        "testnet must ignore the override"
+        330_849,
+        "testnet must ignore the override and keep the 2026-10-25 pin"
     );
     assert_eq!(
         NetworkParams::load(Network::Devnet).inc_i_236_block_signature_activation_height,
