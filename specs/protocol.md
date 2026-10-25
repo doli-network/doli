@@ -376,7 +376,7 @@ This is the only slashable offense because it is the only one that cannot happen
 
 | Network | `inc_i_255_slashing_activation_height` | Override |
 |---------|----------------------------------------|----------|
-| Mainnet | `u64::MAX` | None |
+| Mainnet | `806859` (pinned with INC-I-236, INC-I-257 and INC-I-182) | None |
 | Testnet | `330849` (pinned with INC-I-236, INC-I-257 and INC-I-182) | None |
 | Devnet | 0 | `DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT` (devnet only) |
 

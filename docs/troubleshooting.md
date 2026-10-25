@@ -583,8 +583,8 @@ ps aux | grep doli-node
 ```
 
 **Slashing log lines (INC-I-255).** Slashing is active only at and above
-`effective_slashing_activation_height()`. On mainnet and testnet that height is
-`u64::MAX`, so only the two `EQUIVOCATION` lines can appear there.
+`effective_slashing_activation_height()`. On mainnet that height is `806859` and
+on testnet `330849`; below it only the two `EQUIVOCATION` lines can appear.
 
 | Level | Log text | Meaning |
 |-------|----------|---------|
