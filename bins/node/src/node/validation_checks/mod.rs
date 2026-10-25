@@ -2,6 +2,7 @@ use super::*;
 use crate::node::attestation::{commit, width};
 
 mod gossip_txs;
+mod slash_facts;
 mod slash_withdrawal;
 mod withdrawal_economics;
 
@@ -228,12 +229,9 @@ impl Node {
             .map(|p| p.public_key)
             .collect();
         let pending_keys = producers.pending_registration_keys();
-        let slash_targets = mempool::slash_admission::slash_targets(
-            &producers,
-            &*self.utxo_set.read().await,
-            height,
-            &block.transactions,
-        );
+        let slash_targets = self
+            .slash_facts(Some(&producers), height, &block.transactions)
+            .await;
         drop(producers);
 
         // Bond weights from epoch-locked snapshot (single source of truth).
@@ -877,7 +875,7 @@ impl Node {
             // The pool UTXO set is deterministic — comparing inputs against it
             // is safe even during sync/reorg. Previously gated behind Full-only,
             // which let syncing nodes accept EpochReward TXs with stale inputs.
-            // Replay mode skips: historical blocks (e.g., E362) have mismatched
+            // Replay mode skips both arms: historical blocks (e.g., E362) have mismatched
             // inputs that are part of the chain's consensus history.
             if mode != ValidationMode::Replay
                 && height >= doli_core::consensus::EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT
@@ -910,7 +908,7 @@ impl Node {
                         format_epoch_inputs_mismatch(height, &expected_inputs, &actual_inputs)
                     );
                 }
-            } else if !epoch_tx.inputs.is_empty() {
+            } else if mode != ValidationMode::Replay && !epoch_tx.inputs.is_empty() {
                 anyhow::bail!(
                     "[ECON_EPOCH_PRE_INPUTS] EpochReward at height={} (pre-activation) must not have inputs",
                     height

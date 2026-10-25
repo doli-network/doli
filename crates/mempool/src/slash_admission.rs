@@ -18,10 +18,11 @@ use crate::holdings::HoldingsSources;
 use crate::MempoolError;
 
 /// Producer-set state of the accused of every SlashProducer in `txs`, with
-/// `locked_collateral` judged at `height`, then of each Registration / AddBond
-/// key not already named (`slash_registrant`, no UTXO read). A key that is not
-/// a registered producer is left out. One owner lookup per registered accused,
-/// at most `MAX_SLASH_TXS_PER_BLOCK` per call; past that `locked_collateral` is false.
+/// `locked_collateral` judged at `height` and `oldest_bond_slot`, then of each
+/// Registration / AddBond key not already named (`slash_registrant`, no UTXO
+/// read). A key that is not a registered producer is left out. One owner lookup
+/// per registered accused, at most `MAX_SLASH_TXS_PER_BLOCK` per call; past that
+/// `locked_collateral` is false and `oldest_bond_slot` is `None`.
 pub fn slash_targets<'a>(
     producers: &ProducerSet,
     utxos: &UtxoSet,
@@ -36,16 +37,17 @@ pub fn slash_targets<'a>(
         .filter_map(|data| {
             let pk = data.producer_pubkey;
             let mut state = target_state(producers, &pk)?;
-            state.locked_collateral = lookups < MAX_SLASH_TXS_PER_BLOCK && {
+            if lookups < MAX_SLASH_TXS_PER_BLOCK {
                 lookups += 1;
-                utxos
-                    .get_by_pubkey_hash(&bond_owner(&pk))
-                    .iter()
-                    .any(|(_, e)| {
-                        e.output.output_type == OutputType::Unbonding
-                            && is_slash_burnable(&e.output, height)
-                    })
-            };
+                for (_, e) in utxos.get_by_pubkey_hash(&bond_owner(&pk)) {
+                    state.locked_collateral |= e.output.output_type == OutputType::Unbonding
+                        && is_slash_burnable(&e.output, height);
+                    if let Some(slot) = e.output.bond_creation_slot() {
+                        state.oldest_bond_slot =
+                            Some(state.oldest_bond_slot.map_or(slot, |s| s.min(slot)));
+                    }
+                }
+            }
             Some((pk, state))
         })
         .collect();
@@ -70,6 +72,7 @@ fn target_state(producers: &ProducerSet, pk: &PublicKey) -> Option<SlashTargetSt
         slash_queued,
         locked_collateral: false,
         registered_at: info.registered_at,
+        oldest_bond_slot: None,
     })
 }
 

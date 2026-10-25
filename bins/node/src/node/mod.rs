@@ -52,12 +52,11 @@ mod orphan_chase;
 
 // Phase 4 disk cleanup helpers, re-exported for integration tests (lib target only).
 #[allow(unused_imports)]
-pub use init::cleanup_orphan_utxo_store;
-#[allow(unused_imports)]
-pub use init::recover_body_gaps;
+pub use init::{cleanup_orphan_utxo_store, recover_body_gaps};
 mod periodic;
 mod producer_merge;
 mod production;
+mod replay_chainspec;
 mod rewards;
 #[allow(unused_imports)]
 pub use rewards::IncompleteEpochStoreError;

@@ -28,6 +28,8 @@ pub struct SlashTargetState {
     pub locked_collateral: bool,
     /// Height of the accused's current registration.
     pub registered_at: u64,
+    /// Smallest stamped slot of the bond owner's Bond UTXOs; `None` when none or not looked up.
+    pub oldest_bond_slot: Option<u32>,
 }
 
 /// True when a slash at `height` burns `output`: every Bond, and an Unbonding

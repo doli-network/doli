@@ -96,10 +96,12 @@ fn inc_i_257_m2_req_unbond_010_burnable_truth_table() {
     }
 }
 
+/// An active accused holds its genesis Bond UTXOs (slot 0); an exited one holds none.
 fn state(active: bool, locked_collateral: bool) -> SlashTargetState {
     SlashTargetState {
         active,
         locked_collateral,
+        oldest_bond_slot: active.then_some(0),
         ..SlashTargetState::default()
     }
 }

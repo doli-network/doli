@@ -29,6 +29,7 @@ mod inc_i_257_m1_mempool_lock;
 mod inc_i_257_m25_mempool_height;
 mod inc_i_257_m2_slash_admission;
 mod inc_i_257_m2_slash_targets;
+mod inc_i_262_m2_bond_slot_facts;
 
 /// INC-I-203 M2 outcome metric. Root-level because libtest's `--exact` matches
 /// the full `module::fn` name and the milestone command addresses it bare.

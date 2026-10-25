@@ -8,9 +8,10 @@
 #![allow(dead_code)]
 
 use crypto::KeyPair;
-use doli_core::transaction::{SlashingEvidence, Transaction};
-use doli_core::validation::ValidationMode;
+use doli_core::transaction::{OutputType, SlashingEvidence, Transaction};
+use doli_core::validation::{bond_owner, ValidationMode};
 use doli_core::Block;
+use storage::UtxoSet;
 
 use super::inc_i_255_m1_common::{
     apply_slash_msg, canonical, chain_genesis, evidence_header, full_block_with, mempool_slash_msg,
@@ -128,13 +129,32 @@ async fn on_tip(r: &mut Rig, block: Block, mode: ValidationMode) -> Verdict {
     }
 }
 
-/// Normal-lane admission judged as at the offence slot, far above the tip, so
-/// the builder judges a slash the tip-level admission refused.
+/// Normal-lane admission judged as at the offence slot, far above the tip, on
+/// a copy of the accused's owner entries with every Bond re-stamped at slot 0,
+/// so the builder judges a slash the tip-level admission refused.
 async fn force_resident(r: &Rig, tx: &Transaction, tip: u64) -> bool {
+    let accused = tx.slash_data().expect("FIXTURE: a slash").producer_pubkey;
+    let mut scratch = UtxoSet::new();
+    for (at, mut e) in r
+        .node
+        .utxo_set
+        .read()
+        .await
+        .get_by_pubkey_hash(&bond_owner(&accused))
+    {
+        if e.output.output_type == OutputType::Bond {
+            e.output.extra_data = 0u32.to_le_bytes().to_vec();
+        }
+        scratch.insert(at, e).expect("FIXTURE: scratch owner entry");
+    }
     let mut pool = r.node.mempool.write().await;
-    let utxo = r.node.utxo_set.read().await;
-    pool.add_transaction(tx.clone(), &utxo, tip + FORCE_HEIGHT_SKEW, offence_slot(tx))
-        .is_ok()
+    pool.add_transaction(
+        tx.clone(),
+        &scratch,
+        tip + FORCE_HEIGHT_SKEW,
+        offence_slot(tx),
+    )
+    .is_ok()
 }
 
 /// The same `tx` on the same parent: mempool admission (node arguments),

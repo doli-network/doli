@@ -56,3 +56,5 @@ mod inc_i_257_m1_spend_lock;
 mod inc_i_257_m25_guard_decode;
 mod inc_i_257_m2_bond_rules;
 mod inc_i_257_m2_slash_reach;
+mod inc_i_262_m2_pin_order;
+mod inc_i_262_m2_slot_floor;

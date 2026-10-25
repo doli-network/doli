@@ -17,7 +17,9 @@ use doli_core::{network_params, Network};
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
+mod chainspec_select;
 mod cli;
+mod cli_release;
 mod commands;
 mod config;
 mod devnet;
@@ -260,6 +262,9 @@ async fn main() -> Result<()> {
             if code != 0 {
                 std::process::exit(code);
             }
+        }
+        Some(Commands::ExitedBondCensus) => {
+            operations::exited_bond_census(&data_dir)?;
         }
         Some(Commands::Restore {
             from,

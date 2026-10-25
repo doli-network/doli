@@ -165,6 +165,7 @@ fn target(kind: Kind) -> SlashTargetState {
     match kind {
         Kind::AddBond => SlashTargetState {
             active: true,
+            oldest_bond_slot: Some(0),
             ..Default::default()
         },
         Kind::Registration => SlashTargetState {
@@ -177,6 +178,7 @@ fn target(kind: Kind) -> SlashTargetState {
 fn ctx(slash_gate: u64, kind: Kind) -> ValidationContext {
     let other_active = SlashTargetState {
         active: true,
+        oldest_bond_slot: Some(0),
         ..Default::default()
     };
     let mut c = ctx_at(HEIGHT, slash_gate, HEIGHT)

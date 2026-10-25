@@ -8,6 +8,7 @@
 //! The binary (main.rs) has its own module tree for the actual node.
 //! This lib re-declares the modules needed by integration tests.
 
+mod chainspec_select;
 pub mod config;
 pub mod metrics;
 pub mod metrics_gossip;

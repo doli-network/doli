@@ -26,6 +26,23 @@ async fn node(producers: &[KeyPair]) -> (Node, TempDir) {
     let node = Node::new_for_test(temp.path().to_path_buf(), producers.to_vec())
         .await
         .expect("Node::new_for_test failed");
+    let unit = node.config.network.bond_unit();
+    for kp in producers {
+        let pk = kp.public_key().as_bytes();
+        let at = storage::Outpoint::new(crypto::hash::hash_with_domain(b"genesis_bond", pk), 0);
+        let owner = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pk);
+        let entry = storage::UtxoEntry {
+            output: doli_core::transaction::Output::bond(unit, owner, u64::MAX, 0),
+            height: 0,
+            is_coinbase: false,
+            is_epoch_reward: false,
+        };
+        node.utxo_set
+            .write()
+            .await
+            .insert(at, entry)
+            .expect("FIXTURE: genesis bond, stamped at slot 0 as genesis does");
+    }
     (node, temp)
 }
 

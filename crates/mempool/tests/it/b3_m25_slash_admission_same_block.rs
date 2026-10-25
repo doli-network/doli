@@ -30,7 +30,7 @@ use doli_core::transaction::{sign_producer_auth, Input, Output, Transaction, TxT
 use mempool::{Mempool, MempoolError, MempoolPolicy};
 use storage::{Outpoint, ProducerSet, UtxoEntry, UtxoSet};
 
-use super::inc_i_256_m1_fixture::{slash as fixture_slash, spawned_child};
+use super::inc_i_256_m1_fixture::{bond_at, slash as fixture_slash, spawned_child};
 
 const CODE: &str = "ERRTX071";
 const FEE: u64 = 100_000;
@@ -52,9 +52,11 @@ fn addr(pk: &PublicKey) -> Hash {
 
 fn rig(registered: &[&KeyPair]) -> Rig {
     let mut ps = ProducerSet::new();
+    let mut utxo = UtxoSet::new();
     for kp in registered {
         ps.register_genesis_producer(*kp.public_key(), 1, Network::Devnet.bond_unit())
             .expect("FIXTURE: register producer");
+        bond_at(&mut utxo, kp.public_key(), 0);
     }
     let producers = Arc::new(tokio::sync::RwLock::new(ps));
     let mut pool = Mempool::new(
@@ -65,7 +67,7 @@ fn rig(registered: &[&KeyPair]) -> Rig {
     pool.share_producer_set(producers.clone());
     Rig {
         pool,
-        utxo: UtxoSet::new(),
+        utxo,
         _producers: producers,
     }
 }

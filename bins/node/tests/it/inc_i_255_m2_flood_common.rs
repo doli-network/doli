@@ -34,6 +34,11 @@ pub async fn flock(n: usize) -> Flock {
         .expect("Node::new_for_test failed");
     install_production_utxo_backend(&node).await;
     let accused: Vec<KeyPair> = (0..n).map(|_| KeyPair::generate()).collect();
+    let keys: Vec<PublicKey> = std::iter::once(&reporter)
+        .chain(&accused)
+        .map(|kp| *kp.public_key())
+        .collect();
+    seed_genesis_bonds(&node, &keys).await;
     let unit = node.config.network.bond_unit();
     {
         let mut ps = node.producer_set.write().await;

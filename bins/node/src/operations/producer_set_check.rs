@@ -15,10 +15,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Result};
 use crypto::Hash;
+use doli_core::chainspec::ChainSpec;
 use doli_core::validation::ValidationMode;
 use doli_core::Network;
-use storage::{BlockStore, ProducerSet, StateDb};
+use storage::{BlockStore, ChainState, ProducerSet, StateDb};
 
+use crate::chainspec_select::network_chainspec;
 use crate::node::Node;
 
 const EXIT_DIFFERS: i32 = 2;
@@ -27,7 +29,7 @@ const SCRATCH_PREFIX: &str = "doli-check-producer-set-";
 
 /// Scratch directory `<temp>/doli-check-producer-set-<pid>-<nanos>`, removed
 /// on drop.
-struct Scratch(PathBuf);
+pub(super) struct Scratch(pub(super) PathBuf);
 
 impl Scratch {
     fn create() -> Result<Self> {
@@ -114,37 +116,24 @@ fn pid_dead(pid: libc::pid_t) -> bool {
 ///
 /// Returns the exit code: 0 EQUAL, 2 DIFFERS, 3 NOT-CHECKABLE. Errors map to 1.
 pub(crate) async fn check_producer_set(network: Network, data_dir: &Path) -> Result<i32> {
-    let state_path = data_dir.join("state_db");
-    let blocks_path = data_dir.join("blocks");
-    for p in [&state_path, &blocks_path] {
-        if !p.is_dir() {
-            bail!("{} not found", p.display());
-        }
-    }
-    if lock_held(&state_path)? || lock_held(&blocks_path)? {
+    let Some(st) = open_stopped(data_dir)? else {
         return not_checkable("lock_held");
-    }
-
-    let scratch = Scratch::create()?;
-    #[cfg(unix)]
-    let _on_signal = SignalCleanup::arm(&scratch.0)?;
-    let state_db = StateDb::open_read_only(&state_path, &scratch.0)?;
-    let cs = state_db
-        .get_chain_state()
-        .ok_or_else(|| anyhow!("state_db holds no chain state"))?;
+    };
+    let cs = &st.cs;
     if cs.snap_sync_height.is_some() {
         return not_checkable("snap_sync_height");
     }
-    let blocks = BlockStore::open_read_only(&blocks_path, &scratch.0)?;
+    let blocks = BlockStore::open_read_only(&data_dir.join("blocks"), &st.scratch.0)?;
     let tip = cs.best_height;
     if !blocks.has_contiguous_bodies(1, tip) {
         return not_checkable("holed_block_store");
     }
-    let persisted = state_db.load_producer_set();
-    drop(state_db);
+    let persisted = st.state_db.load_producer_set();
+    drop(st.state_db);
+    let spec = network_chainspec(network, None, data_dir).map_err(|e| anyhow!(e))?;
 
-    let Some((rebuilt, hash)) = rebuild(network, &blocks, tip, scratch.0.join("replay")).await?
-    else {
+    let replay = st.scratch.0.join("replay");
+    let Some((rebuilt, hash)) = rebuild(network, spec, &blocks, tip, replay).await? else {
         return not_checkable("holed_block_store");
     };
     if hash != cs.best_hash {
@@ -177,16 +166,17 @@ pub(crate) async fn check_producer_set(network: Network, data_dir: &Path) -> Res
     )
 }
 
-/// Replays `1..=tip` from `blocks` into a headless node at `dir`.
+/// Replays `1..=tip` from `blocks` into a headless node at `dir` on `spec`.
 ///
 /// `None` when a height has no block.
 async fn rebuild(
     network: Network,
+    spec: Option<ChainSpec>,
     blocks: &BlockStore,
     tip: u64,
     dir: PathBuf,
 ) -> Result<Option<(ProducerSet, Hash)>> {
-    let mut node = Node::new_for_replay(dir, network)
+    let mut node = Node::new_for_replay_with_chainspec(dir, network, spec)
         .await
         .map_err(|e| anyhow!("Failed to construct replay node: {}", e))?;
     for height in 1..=tip {
@@ -200,6 +190,45 @@ async fn rebuild(
     let ps = node.producer_set.read().await.clone();
     let hash = node.chain_state.read().await.best_hash;
     Ok(Some((ps, hash)))
+}
+
+/// A stopped node's `state_db`, opened read-only, and its chain state. Fields
+/// drop in order: the scratch dir goes last.
+pub(super) struct Stopped {
+    pub(super) state_db: StateDb,
+    pub(super) cs: ChainState,
+    #[cfg(unix)]
+    _on_signal: SignalCleanup,
+    pub(super) scratch: Scratch,
+}
+
+/// Opens `data_dir/state_db` read-only with its RocksDB logs in a new scratch
+/// dir. `Ok(None)` when another process holds the `state_db` or `blocks` LOCK.
+pub(super) fn open_stopped(data_dir: &Path) -> Result<Option<Stopped>> {
+    let state_path = data_dir.join("state_db");
+    let blocks_path = data_dir.join("blocks");
+    for p in [&state_path, &blocks_path] {
+        if !p.is_dir() {
+            bail!("{} not found", p.display());
+        }
+    }
+    if lock_held(&state_path)? || lock_held(&blocks_path)? {
+        return Ok(None);
+    }
+    let scratch = Scratch::create()?;
+    #[cfg(unix)]
+    let _on_signal = SignalCleanup::arm(&scratch.0)?;
+    let state_db = StateDb::open_read_only(&state_path, &scratch.0)?;
+    let cs = state_db
+        .get_chain_state()
+        .ok_or_else(|| anyhow!("state_db holds no chain state"))?;
+    Ok(Some(Stopped {
+        state_db,
+        cs,
+        #[cfg(unix)]
+        _on_signal,
+        scratch,
+    }))
 }
 
 fn queue_bytes(ps: &ProducerSet) -> Result<Vec<u8>> {

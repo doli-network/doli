@@ -13,24 +13,27 @@
 // MATRIX
 //   O1,O2 x P-MID  -> Ok; spent = accused bonds; created = coinbase; supply += coinbase - burned (inc_i_255_m2_probe_burn)
 //   O1,O2 x P-E0   -> same                                         (inc_i_255_m2_b10_epoch0_*)
-//   O1-O3 x P-ZERO -> Ok; spent = []; slash recorded               (inc_i_255_m2_b10_zero_bond_*)
+//   O1-O3 x P-ZERO -> locked payout: Ok, spent = payout; none: refused (inc_i_255_m2_b10_zero_bond_*)
 //   O1,O2 x P-OFF  -> Ok (Replay); spent = []                       (inc_i_255_m2_b10_below_gate_*)
 //   O2,O4 x P-MID  -> burned set and root equal on both backends    (inc_i_255_m2_b10_both_backends_*)
 // INPUT PARTITIONS:
-//   accused UTXOs: own bonds incl. one delegated away | zero bonds | a normal coin (never burned)
+//   accused UTXOs: own bonds incl. one delegated away | zero bonds (+ a locked Unbonding payout | nothing) | a normal coin (never burned)
 //   other owners: delegator bonds delegated to the accused | honest producer bonds
 //   height: epoch 0 | mid-epoch after a boundary; gate: devnet default | env-raised
 
 use std::collections::HashSet;
 
+use doli_core::transaction::{Output, OutputType};
 use doli_core::validation::ValidationMode;
-use storage::{Outpoint, UtxoSet};
+use storage::{Outpoint, UtxoEntry, UtxoSet};
 
 use super::inc_i_255_m1_common::{in_child, run_in_child, slash_recorded};
 use super::inc_i_255_m2_common::*;
 
 const BELOW: u64 = 1_000_000_000;
 const MOD: &str = "inc_i_255_m2_effect_burn::";
+const PAYOUT_TAG: u8 = 0x5E;
+const LOCK: u64 = 1_000_000;
 
 fn diff(before: &[Outpoint], after: &[Outpoint]) -> (HashSet<Outpoint>, HashSet<Outpoint>) {
     let (b, a): (HashSet<_>, HashSet<_>) = (
@@ -115,18 +118,37 @@ async fn inc_i_255_m2_b10_epoch0_slash_block_burns_every_owned_bond() {
     burn_at(1).await;
 }
 
-// REQ-SLASH-003 — Decision: a failure means an accused with no live Bond UTXO makes the slash block invalid, so an offender escapes by withdrawing first.
+// REQ-SLASH-003 / REQ-DEF-003 — Decision: a failure means an offender escapes by withdrawing every bond first (its locked Unbonding payout is not burned), or a slash with nothing burnable (no Bond UTXO, no locked collateral) is mined.
 #[tokio::test]
-async fn inc_i_255_m2_b10_zero_bond_accused_is_still_a_valid_slash() {
+async fn inc_i_255_m2_b10_zero_bond_accused_slashable_only_with_locked_collateral() {
     let mut r = rig_with(&Keys::new(), 0).await;
     let pk = r.accused_pk();
+    let payout = outpoints(PAYOUT_TAG, 1)[0];
+    let locked = UtxoEntry {
+        output: Output {
+            output_type: OutputType::Unbonding,
+            amount: r.unit(),
+            pubkey_hash: addr(&pk),
+            lock_until: LOCK,
+            extra_data: Vec::new(),
+        },
+        height: 0,
+        is_coinbase: false,
+        is_epoch_reward: false,
+    };
+    r.node
+        .utxo_set
+        .write()
+        .await
+        .insert(payout, locked)
+        .expect("FIXTURE: seed the locked payout");
     let before = snap(&r.node).await;
     let block = r.next_block(vec![r.slash()], 0).await;
     let (minted, cb_ops) = coinbase_outputs(&block);
     let res = r.apply(block).await;
     assert!(
         res.is_ok(),
-        "a slash against an accused with zero Bond UTXOs must apply; got {:?}",
+        "zero Bond UTXOs, a locked Unbonding payout: the slash must apply; got {:?}",
         res.err().map(|e| format!("{e:#}"))
     );
     assert!(
@@ -135,9 +157,28 @@ async fn inc_i_255_m2_b10_zero_bond_accused_is_still_a_valid_slash() {
     );
     let after = snap(&r.node).await;
     let (spent, created) = diff(&before.ops, &after.ops);
-    assert!(spent.is_empty(), "nothing to burn; spent {spent:?}");
+    assert_eq!(
+        spent,
+        HashSet::from([payout]),
+        "the locked payout is burned"
+    );
     assert_eq!(created, cb_ops.into_iter().collect::<HashSet<_>>());
-    assert_eq!(after.supply, before.supply + minted);
+    assert_eq!(after.supply, before.supply + minted - r.unit());
+
+    let mut bare = rig_with(&Keys::new(), 0).await;
+    let tip = bare.best().await;
+    let block = bare.next_block(vec![bare.slash()], 0).await;
+    let res = bare.apply(block).await;
+    let msg = res
+        .as_ref()
+        .err()
+        .map(|e| format!("{e:#}"))
+        .unwrap_or_default();
+    assert!(
+        msg.contains("predates the accused's current registration"),
+        "zero Bond UTXOs and nothing locked: nothing is burnable, the slash block is refused; got {msg:?}"
+    );
+    assert_eq!(bare.best().await, tip, "a refused block moves no tip");
 }
 
 async fn below_gate_body() {

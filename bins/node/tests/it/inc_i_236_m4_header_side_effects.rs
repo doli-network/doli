@@ -21,6 +21,7 @@ use super::inc_i_236_m4_common::{
     canonical_two, feed, header_block, proofs_against, reporter_node, slash_txs_against,
     stuck_fork_raised, wall_slot,
 };
+use super::inc_i_255_m1_common::seed_genesis_bonds;
 
 async fn assert_no_slash_side_effects(node: &doli_node::node::Node, victim: &KeyPair) {
     let pk = victim.public_key();
@@ -100,6 +101,8 @@ async fn req_auth_007_two_validly_signed_conflicting_headers_still_detected() {
     let (mut node, _reporter, victim, _tmp) = reporter_node().await;
     let genesis = node.chain_state.read().await.best_hash;
     let pk = *victim.public_key();
+    // The real genesis gives the victim a Bond UTXO stamped at slot 0; new_for_test does not.
+    seed_genesis_bonds(&node, &[pk]).await;
     let slot = wall_slot(&node);
     let a = header_block(&mut node, 1, slot, genesis, &pk, Some(&victim), 0).await;
     let b = header_block(&mut node, 1, slot, genesis, &pk, Some(&victim), 1).await;

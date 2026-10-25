@@ -38,6 +38,8 @@ use doli_core::validation::ValidationError;
 use mempool::{AddTransactionResult, Mempool, MempoolError, MempoolPolicy};
 use storage::{Outpoint, PendingProducerUpdate, ProducerSet, UtxoEntry, UtxoSet};
 
+use super::inc_i_256_m1_fixture::bond_at;
+
 const SLOT: u32 = 7;
 
 struct Rig {
@@ -48,9 +50,11 @@ struct Rig {
 
 fn rig(accused: &[&KeyPair]) -> Rig {
     let mut ps = ProducerSet::new();
+    let mut utxo = UtxoSet::new();
     for kp in accused {
         ps.register_genesis_producer(*kp.public_key(), 1, Network::Devnet.bond_unit())
             .expect("FIXTURE: register accused");
+        bond_at(&mut utxo, kp.public_key(), 0);
     }
     let producers = Arc::new(tokio::sync::RwLock::new(ps));
     let mut pool = Mempool::new(
@@ -62,7 +66,7 @@ fn rig(accused: &[&KeyPair]) -> Rig {
     Rig {
         pool,
         producers,
-        utxo: UtxoSet::new(),
+        utxo,
     }
 }
 

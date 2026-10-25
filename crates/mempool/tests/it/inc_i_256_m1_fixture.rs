@@ -38,12 +38,15 @@ pub(crate) fn policy(max_count: usize, max_age: u64) -> MempoolPolicy {
     }
 }
 
-/// Devnet pool sharing a live producer set where each `accused` is Active.
+/// Devnet pool sharing a live producer set where each `accused` is Active and
+/// holds its genesis Bond UTXO.
 pub(crate) fn rig(policy: MempoolPolicy, accused: &[&KeyPair]) -> Rig {
     let mut ps = ProducerSet::new();
+    let mut utxo = UtxoSet::new();
     for kp in accused {
         ps.register_genesis_producer(*kp.public_key(), 1, Network::Devnet.bond_unit())
             .expect("FIXTURE: register accused");
+        bond_at(&mut utxo, kp.public_key(), 0);
     }
     let producers = Arc::new(tokio::sync::RwLock::new(ps));
     let mut pool = Mempool::new(policy, ConsensusParams::devnet(), Network::Devnet);
@@ -51,8 +54,15 @@ pub(crate) fn rig(policy: MempoolPolicy, accused: &[&KeyPair]) -> Rig {
     Rig {
         pool,
         producers,
-        utxo: UtxoSet::new(),
+        utxo,
     }
+}
+
+/// The registration Bond UTXO of `pk` (one fixed outpoint), stamped with the
+/// slot of its block as apply stamps it; a genesis producer's is slot 0.
+pub(crate) fn bond_at(utxo: &mut UtxoSet, pk: &PublicKey, slot: u32) {
+    let bond = Output::bond(Network::Devnet.bond_unit(), addr(pk), u64::MAX, slot);
+    seed(utxo, Outpoint::new(addr(pk), 0), bond);
 }
 
 fn vdf_input(prev: &Hash, merkle: &Hash, slot: u32, producer: &PublicKey) -> Hash {

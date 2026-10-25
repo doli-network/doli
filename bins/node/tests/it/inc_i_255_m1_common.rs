@@ -5,16 +5,17 @@
 
 #![allow(dead_code)]
 
-use crypto::{Hash, KeyPair, PublicKey, Signature};
+use crypto::hash::hash_with_domain;
+use crypto::{Hash, KeyPair, PublicKey, Signature, ADDRESS_DOMAIN};
 use doli_core::block::{compute_merkle_root, Block, BlockHeader};
 use doli_core::tpop::heartbeat::hash_chain_vdf;
-use doli_core::transaction::{SlashData, SlashingEvidence, Transaction};
+use doli_core::transaction::{Output, SlashData, SlashingEvidence, Transaction};
 use doli_core::validation::{ValidationError, ValidationMode};
 use doli_core::Network;
 use doli_node::node::Node;
 use mempool::MempoolError;
 use network::EquivocationProof;
-use storage::PendingProducerUpdate;
+use storage::{Outpoint, PendingProducerUpdate, UtxoEntry};
 use tempfile::TempDir;
 use vdf::{VdfOutput, VdfProof};
 
@@ -56,6 +57,7 @@ pub async fn world_with(reporter: &KeyPair, accused: &KeyPair) -> World {
     .await
     .expect("Node::new_for_test failed");
     install_production_utxo_backend(&node).await;
+    seed_genesis_bonds(&node, &[*reporter.public_key(), *accused.public_key()]).await;
     World {
         node,
         reporter: reporter.clone(),
@@ -66,6 +68,29 @@ pub async fn world_with(reporter: &KeyPair, accused: &KeyPair) -> World {
 
 pub async fn world() -> World {
     world_with(&KeyPair::generate(), &KeyPair::generate()).await
+}
+
+/// Outpoint of the genesis Bond UTXO of `pk`.
+pub fn genesis_bond_outpoint(pk: &PublicKey) -> Outpoint {
+    Outpoint::new(hash_with_domain(b"genesis_bond", pk.as_bytes()), 0)
+}
+
+/// One Bond UTXO per key at its genesis outpoint, stamped at slot 0, as the
+/// genesis block creates it.
+pub async fn seed_genesis_bonds(node: &Node, keys: &[PublicKey]) {
+    let unit = node.config.network.bond_unit();
+    let mut utxo = node.utxo_set.write().await;
+    for pk in keys {
+        let at = genesis_bond_outpoint(pk);
+        let owner = hash_with_domain(ADDRESS_DOMAIN, pk.as_bytes());
+        let entry = UtxoEntry {
+            output: Output::bond(unit, owner, u64::MAX, 0),
+            height: 0,
+            is_coinbase: false,
+            is_epoch_reward: false,
+        };
+        utxo.insert(at, entry).expect("FIXTURE: seed genesis bond");
+    }
 }
 
 pub fn chain_genesis() -> Hash {

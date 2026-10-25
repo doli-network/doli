@@ -45,7 +45,8 @@ impl Drop for Db {
     }
 }
 
-/// RocksDB-backed set where `owner_of` holds `n` Normal UTXOs.
+/// RocksDB-backed set where `owner_of` holds its genesis Bond UTXO (slot 0)
+/// and `n - 1` Normal UTXOs.
 pub(super) fn db_with(owner_of: &KeyPair, n: u32, tag: &str) -> Db {
     let dir = std::env::temp_dir().join(format!("b3-m2-scan-{tag}-{n}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -55,8 +56,12 @@ pub(super) fn db_with(owner_of: &KeyPair, n: u32, tag: &str) -> Db {
     for i in 0..n {
         let mut h = [0u8; 32];
         h[..4].copy_from_slice(&i.to_le_bytes());
+        let output = match i {
+            0 => doli_core::transaction::Output::bond(1, owner, u64::MAX, 0),
+            _ => doli_core::transaction::Output::normal(1, owner),
+        };
         let entry = UtxoEntry {
-            output: doli_core::transaction::Output::normal(1, owner),
+            output,
             height: 0,
             is_coinbase: false,
             is_epoch_reward: false,

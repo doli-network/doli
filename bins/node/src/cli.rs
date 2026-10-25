@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+pub(crate) use crate::cli_release::ReleaseCommands;
+
 /// Expand `~` or `~/...` to the user's home directory.
 /// Shell tilde expansion doesn't happen inside Rust — clap default values
 /// and CLI arguments with `~` arrive as literal strings/paths.
@@ -29,7 +31,7 @@ pub(crate) struct Cli {
     pub config: PathBuf,
 
     /// Data directory (overrides network default)
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     pub data_dir: Option<PathBuf>,
 
     /// Log level (trace, debug, info, warn, error)
@@ -253,6 +255,13 @@ pub(crate) enum Commands {
     /// Exit code: 0 EQUAL, 2 DIFFERS, 3 NOT-CHECKABLE, 1 error.
     CheckProducerSet,
 
+    /// List Exited producers that still own Bond UTXOs (read-only)
+    ///
+    /// Prints one JSON line per producer, then one summary line
+    /// `height= exited_with_bonds= bond_utxos= total=`. Exit code: 0 done, 1 error
+    /// (a locked store is an error).
+    ExitedBondCensus,
+
     /// Restore chain from an archive directory (disaster recovery)
     ///
     /// Imports all blocks from the archive, verifies BLAKE3 checksums,
@@ -473,27 +482,5 @@ pub(crate) enum DevnetCommands {
         /// DOLI to fund each new wallet (default: auto = bonds + 1)
         #[arg(long)]
         fund_amount: Option<u64>,
-    },
-}
-
-#[derive(Subcommand)]
-pub(crate) enum ReleaseCommands {
-    /// Sign a release with a maintainer key
-    ///
-    /// Produces a JSON signature that can be fed into publish_release.sh.
-    /// Signs "version:sha256" using Ed25519 — same format verified by nodes.
-    Sign {
-        /// Path to maintainer/producer key file (JSON wallet format)
-        #[arg(long)]
-        key: PathBuf,
-
-        /// Version tag (e.g., v0.2.0)
-        #[arg(long)]
-        version: String,
-
-        /// SHA-256 hash of the canonical binary (linux-x64-musl).
-        /// If omitted, fetches CHECKSUMS.txt from the GitHub release.
-        #[arg(long)]
-        hash: Option<String>,
     },
 }

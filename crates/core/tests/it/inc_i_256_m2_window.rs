@@ -6,15 +6,17 @@
 //   O1 mutable params: none (both shared refs)
 //   O2 receiver: none (free fn); no store writes, no globals
 //   O3 return: Ok | InvalidSlash(EXPIRED) | InvalidSlash(PREDATES) | InvalidSlash(existing state refusal)
-// PATHS: P-OK | P-X age >= unbonding_period | P-Y tenure == 0 or age > tenure | P-STATE state
-//        refusal first | P-BELOW current_height < slash gate | P-OTHER non-slash tx
+// PATHS: P-OK | P-X age >= unbonding_period | P-Y tenure == 0, age > current_height - gate, or
+//        offence slot < oldest_bond_slot (no locked collateral) | P-STATE state refusal first
+//        | P-BELOW current_height < slash gate | P-OTHER non-slash tx
 //   age = (prev_slot +sat 1) -sat offence_slot; tenure = current_height -sat max(registered_at, gate)
-//   Soundness needs only offence_slot >= slot(floor block): with tenure >= 1 that slot is at most
-//   judged - tenure, so age == tenure is inside the registration (on a dense chain it IS the
-//   floor block's own slot). With tenure 0 the floor block is the judged block: no slash is valid.
+//   Gate bound: the gate block's slot is at most judged - (current_height - gate), so age equal to
+//   that is after the gate. Registration floor: the registration Bond UTXO is stamped with the
+//   registration block's slot. With tenure 0 the floor block is the judged block: no slash is valid.
 // INPUT PARTITIONS:
 //   age vs period: period - 1 (Ok) | period (X)
 //   age vs tenure: tenure - 1 (Ok) | tenure (Ok) | tenure + 1 (Y) | tenure 0 + age 0 (Y)
+//   offence vs registration Bond slot: equal (Ok, any age up to height - gate) | one below (Y)
 //   floor: gate > registered_at | registered_at > gate | current_height == gate (tenure 0)
 //   chain: dense (offence at the floor slot: age == tenure, k = 1, 2, 5) | sparse (caveat)
 //   saturation: prev_slot u32::MAX | offence slot > judged slot | current_height < floor
@@ -22,7 +24,7 @@
 //          | age == tenure == period (X)
 // MATRIX: O3 x 24 cells, one test per path family:
 //   P-OK,P-X x period            -> inc_i_256_m2_window_age_period_minus_one_ok_period_expired
-//   P-OK,P-Y x tenure (sparse)   -> slash_window_registration_floor_age_equal_tenure_ok_plus_one_predates
+//   P-OK,P-Y x registration slot -> slash_window_registration_floor_slot_ok_one_slot_before_predates
 //   P-OK,P-Y x dense floor slot  -> slash_window_accepts_offence_at_the_floor_block_slot
 //                                   slash_window_floor_slot_offence_valid_while_age_equals_tenure
 //   P-OK,P-Y x sparse caveat     -> slash_window_sparse_chain_refuses_tenure_plus_one_and_the_caveat
@@ -58,12 +60,22 @@ fn pair_tx(offence_slot: u32) -> Transaction {
     Transaction::new_slash_producer(SlashData::double_production(pk, a, b))
 }
 
-fn active(registered_at: u64) -> SlashTargetState {
+/// Active accused whose registration Bond UTXO is stamped at slot `bond_slot`.
+fn bonded(registered_at: u64, bond_slot: u32) -> SlashTargetState {
     SlashTargetState {
         active: true,
         registered_at,
+        oldest_bond_slot: Some(bond_slot),
         ..SlashTargetState::default()
     }
+}
+
+/// `bonded` on a dense chain: the registration block's slot equals its height.
+fn active(registered_at: u64) -> SlashTargetState {
+    bonded(
+        registered_at,
+        u32::try_from(registered_at).expect("FIXTURE: height fits a slot"),
+    )
 }
 
 /// Verdict at `height` (slash gate `GATE`, signature gate 0) with parent slot `prev_slot`.
@@ -118,21 +130,30 @@ fn inc_i_256_m2_window_age_period_minus_one_ok_period_expired() {
     assert_expired(&x, "age 100 == period 100");
 }
 
-// R-4 (AUDIT-P2-547) / INC-I-256 — Decision: a failure means evidence inside the current registration (age <= tenure) is refused, or an offence one slot further back than the tenure allows still slashes.
+// R-4 (AUDIT-P2-547) / INC-I-256 / INC-I-262 — Decision: a failure means evidence inside the current registration (offence slot >= the registration Bond slot) is refused once missed slots follow it, or an offence one slot before the registration slot still slashes.
 #[test]
-fn slash_window_registration_floor_age_equal_tenure_ok_plus_one_predates() {
-    let (height, registered_at, offence) = (1_300, 1_200, 1_250u32);
-    let tx = pair_tx(offence);
-    let inside = judge(&tx, height, offence + 98, WIDE, active(registered_at));
-    assert_eq!(inside, Ok(()), "age 99 < tenure 100");
-    let at_tenure = judge(&tx, height, offence + 99, WIDE, active(registered_at));
-    assert_eq!(
-        at_tenure,
-        Ok(()),
-        "age 100 == tenure 100: the floor block's slot is at most 1350 - 100 = offence slot 1250"
-    );
-    let y = judge(&tx, height, offence + 100, WIDE, active(registered_at));
-    assert_predates(&y, "age 101 == tenure 100 + 1");
+fn slash_window_registration_floor_slot_ok_one_slot_before_predates() {
+    // Registration block at height 1200, slot 1250; judged at height 1300.
+    let (height, registered_at, floor) = (1_300, 1_200, 1_250u32);
+    let t = bonded(registered_at, floor);
+    for prev in [floor + 98, floor + 99, floor + 100] {
+        let age = prev + 1 - floor;
+        let inside = judge(&pair_tx(floor), height, prev, WIDE, t);
+        assert_eq!(
+            inside,
+            Ok(()),
+            "offence at the registration slot {floor}: age {age} <= height - gate 300, 100 blocks since registration"
+        );
+        let before = judge(&pair_tx(floor - 1), height, prev, WIDE, t);
+        assert_predates(
+            &before,
+            &format!(
+                "offence slot {} < registration slot {floor}, age {}",
+                floor - 1,
+                age + 1
+            ),
+        );
+    }
 }
 
 // R-4 (AUDIT-P2-547) — Decision: a failure means an offence before the activation height (the floor for a genesis producer) can be punished retroactively.
@@ -157,10 +178,14 @@ fn inc_i_256_m2_window_floor_is_registration_above_gate() {
     let old_tenure = judge(&pair_tx(1_030), height, 1_049, WIDE, active(registered_at));
     assert_predates(
         &old_tenure,
-        "offence 1030 before registration 1040, age 20 >= tenure 10",
+        "offence slot 1030 before the registration Bond slot 1040, age 20 <= height - gate 50",
     );
     let new_tenure = judge(&pair_tx(1_045), height, 1_049, WIDE, active(registered_at));
-    assert_eq!(new_tenure, Ok(()), "age 5 < tenure 10");
+    assert_eq!(
+        new_tenure,
+        Ok(()),
+        "offence slot 1045 >= registration slot 1040"
+    );
 }
 
 // R-4 (AUDIT-P2-546) — Decision: a failure means the window replaces the existing one-slash-per-offence refusals, so reused evidence gets a different error on different paths.

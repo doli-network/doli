@@ -17,24 +17,53 @@
 //   O5, O6 x P-BUILDER -> not selected, no ERRTX-PAUTH001 (..._after_slash_builder_never_selects_self_exit)
 //   O1 x P-APPLY -> [ECON_WITHDRAWAL_SLASHED], no ERRTX-PAUTH001 (..._after_slash_apply_refuses_with_run_b_error)
 // INPUT PARTITIONS:
-//   P ledger 3 bonds, 0 Bond UTXOs, one Normal coin; exit: P-signed, zero Bond inputs, full allowance
+//   P ledger 3 bonds, 0 Bond UTXOs, one Normal coin, one locked Unbonding payout (burned by the slash);
+//   exit: P-signed, zero Bond inputs, full allowance
 
-use storage::ProducerStatus;
+use doli_core::transaction::{Output, OutputType};
+use storage::{ProducerStatus, UtxoEntry};
 
 use super::inc_i_182_m2_node_fx::*;
+use super::inc_i_255_m2_common::{addr, outpoints};
 use super::inc_i_255_m4_common::resident;
 
 const MOD: &str = "inc_i_182_m2_after_slash::";
 const RUN_B_MEMPOOL: &str = "slashed or slash-queued producer";
 const RUN_B_BLOCK: &str = "ECON_WITHDRAWAL_SLASHED";
+const PAYOUT_TAG: u8 = 0x5E;
 
 async fn slash_block(s: &mut Sx) {
     let slash = s.r.slash();
     s.r.step(vec![slash]).await;
 }
 
+/// P with zero Bond UTXOs and an earlier withdrawal's payout still locked:
+/// the burnable collateral that makes the slash valid.
+async fn zero_bond_with_locked_payout() -> Sx {
+    let s = sx(0).await;
+    let payout = UtxoEntry {
+        output: Output {
+            output_type: OutputType::Unbonding,
+            amount: s.r.unit(),
+            pubkey_hash: addr(&s.pk()),
+            lock_until: LOCK,
+            extra_data: Vec::new(),
+        },
+        height: 0,
+        is_coinbase: false,
+        is_epoch_reward: false,
+    };
+    s.r.node
+        .utxo_set
+        .write()
+        .await
+        .insert(outpoints(PAYOUT_TAG, 1)[0], payout)
+        .expect("FIXTURE: seed the locked payout");
+    s
+}
+
 async fn slashed() -> Sx {
-    let mut s = sx(0).await;
+    let mut s = zero_bond_with_locked_payout().await;
     slash_block(&mut s).await;
     s
 }
@@ -83,7 +112,7 @@ async fn inc_i_182_m2_req_pauth_004_after_slash_builder_never_selects_self_exit(
             "{MOD}inc_i_182_m2_req_pauth_004_after_slash_builder_never_selects_self_exit"
         ));
     }
-    let mut s = sx(0).await;
+    let mut s = zero_bond_with_locked_payout().await;
     let tx = s.self_exit(Form::Signed);
     let before = s.admit(&tx).await;
     assert!(

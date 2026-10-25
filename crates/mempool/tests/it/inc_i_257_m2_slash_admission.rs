@@ -9,7 +9,7 @@
 //   O1 return (Ok | Err, InvalidSlash message); O2 residency of the tx (receiver: contains)
 //   no store writes; the UtxoSet and the shared producer set are read-only
 // PATHS: P-LOCKED Exited accused, Unbonding locked at tip + 1 | P-UNLOCKED Unbonding lock reached at tip + 1
-//        | P-NONE Exited accused, no Unbonding | P-ACTIVE Active accused, no Unbonding (control)
+//        | P-NONE Exited accused, no Unbonding | P-ACTIVE Active accused, genesis Bond, no Unbonding (control)
 //        | P-BOND Transfer creating a Bond output | P-NORMAL the same Transfer paying Normal (control)
 // INPUT PARTITIONS:
 //   tip vs lock L: tip = L - 2 (judged L - 1, locked) | tip = L - 1 (judged L, unlocked)
@@ -164,7 +164,13 @@ fn inc_i_257_m2_req_unbond_011_mempool_admits_slash_while_collateral_locked() {
 fn inc_i_257_m2_req_unbond_012_mempool_refuses_slash_without_collateral() {
     let accused = KeyPair::generate();
     let empty = UtxoSet::new();
-    let (active, resident) = offer_slash(&accused, ProducerStatus::Active, &empty, L - 2);
+    let mut bonded = UtxoSet::new();
+    seed(
+        &mut bonded,
+        0x04,
+        Output::bond(unit(), addr(accused.public_key()), u64::MAX, 0),
+    );
+    let (active, resident) = offer_slash(&accused, ProducerStatus::Active, &bonded, L - 2);
     assert!(
         active.is_ok() && resident,
         "NON-VACUITY: a slash of an Active accused is admitted; got {active:?}"

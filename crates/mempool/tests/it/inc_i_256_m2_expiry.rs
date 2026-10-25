@@ -25,7 +25,7 @@ use doli_core::validation::ValidationError;
 use doli_core::Transaction;
 use mempool::{MempoolError, MempoolPolicy};
 
-use crate::inc_i_256_m1_fixture::{policy, rig, slash, Rig, SLOT};
+use crate::inc_i_256_m1_fixture::{bond_at, policy, rig, slash, Rig, SLOT};
 
 const EXPIRED: &str = "slash evidence expired";
 const PREDATES: &str = "predates the accused's current registration";
@@ -41,13 +41,16 @@ fn fresh(kp: &KeyPair) -> (Rig, Transaction) {
     (r, slash(kp, (0xA1, 0xB2)))
 }
 
-fn set_registered_at(r: &Rig, kp: &KeyPair, height: u64) {
+/// Registration at `height` on a dense chain: its Bond UTXO is stamped at slot `height`.
+fn set_registered_at(r: &mut Rig, kp: &KeyPair, height: u64) {
     r.producers
         .try_write()
         .expect("FIXTURE: lock")
         .get_by_pubkey_mut(kp.public_key())
         .expect("FIXTURE: registered")
         .registered_at = height;
+    let slot = u32::try_from(height).expect("FIXTURE: height fits a slot");
+    bond_at(&mut r.utxo, kp.public_key(), slot);
 }
 
 /// Offer `tx` at a dense tip (height == slot == `tip`); (result, resident).
@@ -101,21 +104,21 @@ fn inc_i_256_m2_pre_registration_pair_refused_at_admission() {
     let tip = 60;
     let x = KeyPair::generate();
     let (mut r, s) = fresh(&x);
-    set_registered_at(&r, &x, 5);
+    set_registered_at(&mut r, &x, 5);
     let (res, resident) = offer(&mut r, &s, tip);
     assert!(
         res.is_ok() && resident,
-        "NON-VACUITY: registered at 5, offence slot {SLOT}: age 54 < tenure 56; got {res:?}"
+        "NON-VACUITY: registered at 5 (Bond slot 5), offence slot {SLOT}: age 54 < height - gate; got {res:?}"
     );
 
     let y = KeyPair::generate();
     let (mut r, s) = fresh(&y);
-    set_registered_at(&r, &y, 50);
+    set_registered_at(&mut r, &y, 50);
     let (res, resident) = offer(&mut r, &s, tip);
     let m = slash_msg(&res);
     assert!(
         m.contains(PREDATES) && !m.contains(EXPIRED) && !resident,
-        "registered at 50, offence slot {SLOT}: age 54 >= tenure 11 must be refused with the tenure error; got {res:?}, resident={resident}"
+        "registered at 50 (Bond slot 50), offence slot {SLOT} < 50 must be refused with the predates error; got {res:?}, resident={resident}"
     );
 }
 

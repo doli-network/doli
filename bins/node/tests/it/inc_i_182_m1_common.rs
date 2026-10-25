@@ -17,7 +17,9 @@ use storage::{Outpoint, ProducerSet};
 use tracing_subscriber::layer::{Context, SubscriberExt};
 use tracing_subscriber::Layer;
 
-use super::inc_i_255_m1_common::{admit, full_block_with, tip, world, World};
+use super::inc_i_255_m1_common::{
+    admit, full_block_with, genesis_bond_outpoint, tip, world, World,
+};
 use super::inc_i_255_m2_common::addr;
 use super::inc_i_255_m4_common::{admit_at, err_text, resident};
 use super::inc_i_255_m6_common::{block_with, seed_coin};
@@ -78,6 +80,12 @@ pub async fn fixture() -> Fx {
     *w.node.producer_set.write().await = ps;
     let third = KeyPair::generate();
     let coin = seed_coin(&w.node, third.public_key(), T_COIN_TAG, COIN).await;
+    w.node
+        .utxo_set
+        .write()
+        .await
+        .remove(&genesis_bond_outpoint(&p))
+        .expect("FIXTURE: drop P's genesis bond");
     let owned = w
         .node
         .utxo_set

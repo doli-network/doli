@@ -1723,9 +1723,16 @@ doli-node --network NETWORK --data-dir /path/to/data recover --yes
 
 # Check a STOPPED node's persisted producer set against a block replay (read-only)
 doli-node --network NETWORK --data-dir /path/to/data check-producer-set
+
+# List a STOPPED node's Exited producers that still own Bond UTXOs (read-only)
+doli-node --network NETWORK --data-dir /path/to/data exited-bond-census
 ```
 
-**`check-producer-set`** (no flags besides the global `--network`, `--data-dir`, `--log-level`).
+`--network` and `--data-dir` are global flags: they work before or after the subcommand
+(`doli-node check-producer-set --network testnet --data-dir /path/to/data` is the same command).
+`--log-level` and `--config` go before the subcommand.
+
+**`check-producer-set`** (no flags of its own).
 It replays heights `1..=best_height` of the block store through `apply_block(Replay)` on a
 headless node in a scratch directory under the temp dir (`TMPDIR`), then compares the rebuilt
 ProducerSet (canonical bytes and the ordered pending queue) with the persisted one.
@@ -1740,7 +1747,9 @@ ProducerSet (canonical bytes and the ordered pending queue) with the persisted o
   run removes: on start the command removes such directories whose `<pid>` is not a live process.
 - **Cost:** the replay takes about as long as `recover`. The scratch directory needs free space
   of about the size of `blocks/` plus `state_db/`.
-- **Devnet:** reads `<data-dir>/chainspec.json` when present, as `run` does.
+- **Chainspec:** the replay node uses the chainspec and the genesis producer set that `run` uses on a fresh start: the embedded one on mainnet
+  and testnet; on devnet `<data-dir>/chainspec.json` when present (read from the data directory,
+  not the scratch directory), else the built-in devnet parameters.
 - **Output:** one verdict line, then one `key=value` summary line:
 
 | Verdict | Summary line | Exit |
@@ -1753,6 +1762,23 @@ ProducerSet (canonical bytes and the ordered pending queue) with the persisted o
 side only. Any error (for example a missing `state_db`, or a replayed tip hash that is not the
 persisted best hash) exits 1 with the message on stderr. What to do with each verdict:
 [troubleshooting.md §1.14](./troubleshooting.md#114-producer-set-residue-check-check-producer-set-inc-i-261).
+
+**`exited-bond-census`** (no flags of its own). It reads the persisted producer set and, for each
+`Exited` producer, the Bond UTXOs owned by its bond owner (one owner-index lookup per producer, no
+full UTXO scan). It uses the same loader as `check-producer-set`: the same `LOCK` probe, a scratch
+directory under the temp dir for the RocksDB info log, and a read-only `state_db` open. It writes
+nothing in the data directory and does no replay.
+
+- **Output:** one JSON line per `Exited` producer that owns at least one Bond UTXO (sorted by key),
+  then one `key=value` summary line:
+
+```
+{"key":"<pubkey hex>","status":"Exited","bond_count":2,"total":300000000,"bonds":[{"outpoint":"<tx hash hex>:0","amount":100000000},{"outpoint":"<tx hash hex>:1","amount":200000000}]}
+height=<h> exited_with_bonds=<n> bond_utxos=<m> total=<sum of all listed amounts>
+```
+
+- **Exit:** 0 when the census ran (also with no record). 1 on any error; a `LOCK` held by another
+  process (a running node) is an error: no record is printed and the message names the lock.
 
 ---
 

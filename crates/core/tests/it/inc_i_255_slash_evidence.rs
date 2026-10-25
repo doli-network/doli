@@ -464,6 +464,7 @@ fn inc_i_255_slash_target_inactive_producer_refused() {
     let pk = *accused().public_key();
     let active = SlashTargetState {
         active: true,
+        oldest_bond_slot: Some(0),
         ..SlashTargetState::default()
     };
     for ctx in armed_target_ctxs() {

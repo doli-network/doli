@@ -427,6 +427,17 @@ rebuilt producer set with the persisted one (details: [cli.md §9.2](./cli.md#92
 
 Exit code 1 is an error (for example a missing `state_db`). The message is on stderr.
 
+`--network` and `--data-dir` are global flags, so they also work after the subcommand. The replay
+uses the same chainspec as a running node of that network (INC-I-262).
+
+To list `Exited` producers that still own Bond UTXOs on a stopped node, run the read-only census
+(output format: [cli.md §9.2](./cli.md#92-node-management)):
+```bash
+doli-node --network NETWORK --data-dir /path/to/data exited-bond-census
+```
+It prints one JSON line per such producer, then one summary line, and exits 0. Exit 1 is an
+error, for example a held lock (the node runs).
+
 ---
 
 ### 1.7. Disk full / ENOSPC

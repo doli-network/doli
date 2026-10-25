@@ -92,6 +92,7 @@ fn block_of(txs: Vec<Transaction>) -> Block {
 fn ctx(slash_gate: u64, accused_keys: impl IntoIterator<Item = PublicKey>) -> ValidationContext {
     let active = SlashTargetState {
         active: true,
+        oldest_bond_slot: Some(0),
         ..Default::default()
     };
     let mut c = ctx_at(HEIGHT, slash_gate, HEIGHT)
