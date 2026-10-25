@@ -248,7 +248,7 @@ fn inc_i_257_m1_req_unbond_004_unbonding_output_refused_below_gate() {
         let r = validate_transaction(&gated(5_000_000 + 60_480), &frozen);
         assert!(
             is_unbond(&r),
-            "auth234={auth}: frozen gate (mainnet value): {r:?}"
+            "auth234={auth}: frozen gate (u64::MAX): {r:?}"
         );
     }
 }

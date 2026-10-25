@@ -13,7 +13,7 @@
 //      neighbour gates and height untouched; pure, no store writes
 // PATHS: P-DEF defaults | P-ENV load in a re-exec child (fresh OnceLock) | P-CTX context builder
 // INPUT PARTITIONS:
-//   P-DEF: mainnet -> gate u64::MAX; testnet -> 330_849 (pinned 2026-10-25); devnet -> 0; period 60_480 / 72 / 60
+//   P-DEF: mainnet -> gate 806_859; testnet -> 330_849; devnet -> 0; period 60_480 / 72 / 60
 //   P-ENV: nothing set | gate env set (with a higher slashing env, so no order inversion) |
 //          period env set | both set
 //   P-CTX: heights 0, 1_000, u64::MAX - 1; builder with sentinels
@@ -36,8 +36,9 @@ const ROOT_ENV: &str = "DOLI_INC_I_181_PENDING_ROOT_ACTIVATION_HEIGHT";
 const CHILD_ENV: &str = "INC_I_257_M1_GATE_ENV_CHILD";
 const NETWORKS: [Network; 3] = [Network::Mainnet, Network::Testnet, Network::Devnet];
 const PERIODS: [u64; 3] = [60_480, 72, 60];
-/// Testnet pin of the four defense gates (user decision 2026-10-25); see
+/// Pins of the four defense gates (user decisions); see
 /// `network_params::tests_defense_pin`.
+const MAINNET_PIN: u64 = 806_859;
 const TESTNET_PIN: u64 = 330_849;
 
 /// Parent: re-exec this test alone with exactly `env` set and return true.
@@ -70,11 +71,11 @@ fn loaded() -> [&'static NetworkParams; 3] {
     NETWORKS.map(NetworkParams::load)
 }
 
-// REQ-UNBOND-015 — Decision: a failure means the unbonding lock ships armed on mainnet or testnet before a height is pinned, or devnet loses its armed default.
+// REQ-UNBOND-015 — Decision: a failure means the unbonding lock engages on mainnet or testnet at a height other than the pinned one, or devnet loses its armed default.
 #[test]
 fn inc_i_257_m1_req_unbond_015_gate_defaults_per_network() {
     for (network, expected) in [
-        (Network::Mainnet, u64::MAX),
+        (Network::Mainnet, MAINNET_PIN),
         (Network::Testnet, TESTNET_PIN),
         (Network::Devnet, 0),
     ] {
@@ -182,9 +183,8 @@ fn inc_i_257_m1_req_unbond_018_env_gate_honoured_on_devnet_only() {
     );
     let [mainnet, testnet, devnet] = loaded();
     assert_eq!(
-        mainnet.inc_i_257_unbonding_activation_height,
-        u64::MAX,
-        "mainnet must ignore the override"
+        mainnet.inc_i_257_unbonding_activation_height, MAINNET_PIN,
+        "mainnet must ignore the override and keep its pin"
     );
     assert_eq!(
         testnet.inc_i_257_unbonding_activation_height, TESTNET_PIN,
@@ -244,7 +244,7 @@ fn inc_i_257_m1_req_unbond_018_env_both_set_devnet_reads_both() {
         (40, 9),
         "devnet reads both"
     );
-    for (p, gate, period) in [(mainnet, u64::MAX, 60_480), (testnet, TESTNET_PIN, 72)] {
+    for (p, gate, period) in [(mainnet, MAINNET_PIN, 60_480), (testnet, TESTNET_PIN, 72)] {
         assert_eq!(
             (p.inc_i_257_unbonding_activation_height, p.unbonding_period),
             (gate, period)

@@ -6,7 +6,7 @@
 // OUTPUT CONTRACT: fn Node::apply_block(&mut self, Block, ValidationMode) -> Result<()> over a fixed 10-block chain
 //   O1 return per block (slash block: Light attempt refused, Replay apply Ok)
 //   O2 block hash per height; O3 state root at the tip; O4 UTXO supply at the tip
-// PATHS: child process, the slashing, unbonding and producer-auth gates env-set to u64::MAX (their mainnet value); fixed keys and slots
+// PATHS: child process, the slashing, unbonding and producer-auth gates env-set to u64::MAX (a frozen value); fixed keys and slots
 // MATRIX
 //   O1-O4 x the fixed chain -> equal to the constants recorded on the base tree
 // INPUT PARTITIONS:

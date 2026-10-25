@@ -11,7 +11,7 @@
 //   O2 return: whether wallet send may use the UTXO
 // PATHS: P-GATED best + 1 >= gate | P-BELOW best + 1 < gate | P-ERR foreign destination, dust, no fee UTXO below the gate
 // INPUT PARTITIONS:
-//   best height: gate - 1 (next block at the gate) | far above | gate - 2 (below) | mainnet frozen gate
+//   best height: gate - 1 (next block at the gate) | far above | gate - 2 (below) | mainnet below its gate
 //   fee UTXOs offered: none | one | two (below the gate only the first is needed)
 //   validity window: heights best + 1 and best + MARGIN valid, best + MARGIN + 1 refused
 //   send: (unbonding|normal|bond|vesting) x (spendable|locked)
@@ -212,7 +212,7 @@ fn inc_i_257_m1_req_unbond_009_below_gate_keeps_today_shape() {
     assert_eq!(
         tx.outputs[0].output_type,
         OutputType::Normal,
-        "frozen mainnet gate: today's shape"
+        "mainnet below its gate: today's shape"
     );
 }
 

@@ -37,7 +37,7 @@
 //   validate at h == AH: IP-LEN, IP-KEY, IP-MSG, IP-MAL, IP-MUT -> InvalidBlockSignature in all 3 modes
 //   signing_message: digest = blake3(domain || hash()); preimage is never UTF-8
 //   hash/bincode: golden header pi empty | pi 64 B -> same hash; signed vs pi-cleared -> same hash and signing_message
-//   defaults: IP-NET mainnet, testnet -> u64::MAX; devnet -> 0
+//   defaults: IP-NET mainnet -> 806_859; testnet -> 330_849; devnet -> 0
 
 use super::inc_i_236_forged_block_authn::{
     armed, assert_sig_rejected, forge_block_as, sign_into_pi, signed_block,
@@ -192,12 +192,13 @@ fn req_auth_sec_001_small_order_key_rejected() {
     );
 }
 
-// REQ-AUTH-001 — Decision: a failure means the rule ships armed on mainnet/testnet before the user pins a height, or unarmed on devnet.
+// REQ-AUTH-001 — Decision: a failure means the rule engages on mainnet or testnet at a height other than the pinned one, or unarmed on devnet.
 #[test]
 fn req_auth_001_per_network_activation_heights() {
     for (network, expected) in [
-        (Network::Mainnet, u64::MAX),
-        // Testnet pin of the four defense gates (user decision 2026-10-25).
+        // Pins of the four defense gates (user decisions); see
+        // `network_params::tests_defense_pin`.
+        (Network::Mainnet, 806_859),
         (Network::Testnet, 330_849),
         (Network::Devnet, 0),
     ] {

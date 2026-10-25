@@ -219,7 +219,7 @@ Why this proposal anyway: reordering misses the boundary-between-W-and-S case (t
 | F3 (b) | removed(h) undefined (input amount missing, sampler gap) | helper exit code | Resolve via outpoint; cross-check `[SLASH] burned`; still undefined -> FAIL, never PASS |
 | F4 (b) | T has no spendable coin for the probe fee | `getUtxos(T)` empty | Wait one epoch; then SKIP "third party unfunded" |
 | F5 (c) | Target ends `Exited`, slash status lost | `gs028-target-status-slashed` FAIL + `[STOR041]` log | P1: DC-5 with RED/GREEN; the whitepaper sentence waits |
-| F6 (c) | DC-5 changes a reachable mainnet/testnet path | three-question check, gate grep | Gates are `u64::MAX` and the only caller is gated; otherwise an activation height is required and the run stops |
+| F6 (c) | DC-5 changes a reachable mainnet/testnet path | three-question check, gate grep | The gates were unpinned at review time and the only caller is gated; otherwise an activation height is required and the run stops |
 | F7 (d) | Forge payout shape wrong -> `ERRTX-UNBOND...` instead of PAUTH001; runner matches `data.error_code` | `SUBMIT code=`; companion fixture | Unbonding to `bond_owner(V)`, lock >= best+period+20 at HEAD, Normal on the control; match message/`data.reason` only |
 | F8 (d) | Control slash refused (boundary before S) or precondition unmet | S = none; declared set | FAIL with values, conclusive by the W:0 spendable output; precondition unmet -> exit 2, re-run, never exit 1 |
 | F9 (e) | Old binary has no `producer_gset.bin` or another format | `seed_gset` wait, `gset_ready` | Check the old source first; raise `GS029_GENESIS_DELAY` (<= 400 s) for gossip; SKIP with diagnosis |

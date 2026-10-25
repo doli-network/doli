@@ -7,7 +7,7 @@
 //   O1 return, compared with NetworkParams::defaults(network).inc_i_257_unbonding_activation_height
 //   O2 receiver: none (&self); no store writes; defaults read no env
 // PATHS: P-MAIN mainnet | P-TEST testnet | P-DEV devnet
-// INPUT PARTITIONS: today MAX >= MAX (mainnet, testnet), 0 >= 0 (devnet); equality is the edge
+// INPUT PARTITIONS: 806_859 >= 806_859 (mainnet), 330_849 >= 330_849 (testnet), 0 >= 0 (devnet); equality is the edge
 // MATRIX: O1 x {P-MAIN, P-TEST, P-DEV} -> inc_i_262_m2_pin_order_slashing_gate_not_below_unbonding_gate
 
 use doli_core::{Network, NetworkParams};

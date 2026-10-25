@@ -280,10 +280,15 @@ impl NetworkParams {
                 // IMMUTABLE once crossed. INC-I-234, INC-I-233 and INC-I-181 share
                 // 612_000 by explicit user decision (2026-10-02), each in its own field.
                 inc_i_234_activation_height: 612_000,
-                inc_i_236_block_signature_activation_height: u64::MAX,
-                inc_i_255_slashing_activation_height: u64::MAX,
-                inc_i_257_unbonding_activation_height: u64::MAX,
-                inc_i_182_producer_auth_activation_height: u64::MAX,
+                // Defense pin (user decision): the four gates share ONE mainnet
+                // height, each in its own field. The tip was below the pin when it
+                // was decided, so no stored block crosses it and the gates engage
+                // forward-only. Pin order holds with equal heights (255 >= 257).
+                // IMMUTABLE once crossed (INC-I-054).
+                inc_i_236_block_signature_activation_height: 806_859,
+                inc_i_255_slashing_activation_height: 806_859,
+                inc_i_257_unbonding_activation_height: 806_859,
+                inc_i_182_producer_auth_activation_height: 806_859,
                 // INC-I-233 F4 coinbase credit. PINNED 612_000 on mainnet (user
                 // decision 2026-10-02). Block CONTENT changes => every producer must
                 // run the release before this height. IMMUTABLE once crossed.
@@ -557,7 +562,7 @@ impl NetworkParams {
                 // height, each in its own field. The six producers were stopped at
                 // tip 330_779 (16:20Z), so 330_849 is 70 blocks of lead and no stored
                 // block crosses it. Pin order holds with equal heights (255 >= 257).
-                // IMMUTABLE once crossed (INC-I-054). Mainnet stays u64::MAX.
+                // IMMUTABLE once crossed (INC-I-054). Mainnet has its own pin.
                 inc_i_236_block_signature_activation_height: 330_849,
                 inc_i_255_slashing_activation_height: 330_849,
                 inc_i_257_unbonding_activation_height: 330_849,

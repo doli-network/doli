@@ -15,12 +15,12 @@
 // INPUT PARTITIONS:
 //   P-BELOW: pi empty | valid 64-byte producer signature | 64 garbage bytes, AH in {h+1, u64::MAX} -> one verdict (Ok) per mode
 //   hash/bincode: signed copy vs unsigned copy -> same hash(); equal encodings once pi is cleared; signed is 64 bytes longer
-//   P-DEF: mainnet, testnet -> u64::MAX; devnet -> 0
-//   P-ENV: override set -> mainnet and testnet ignore it (u64::MAX); devnet reads it
+//   P-DEF: mainnet -> 806_859; testnet -> 330_849; devnet -> 0
+//   P-ENV: override set -> mainnet and testnet ignore it (keep their pin); devnet reads it
 // MATRIX:
 //   O1,O2(hash/bincode) x {signed, unsigned}          -> req_auth_014_signed_and_unsigned_copies_differ_only_in_pi
 //   O1(validate) x P-BELOW x 3 pi x 2 AH x 3 modes    -> req_auth_014_below_ah_verdict_ignores_pi_all_modes
-//   O1(defaults) x P-DEF                              -> req_auth_015_defaults_unpinned_on_mainnet_and_testnet
+//   O1(defaults) x P-DEF                              -> req_auth_015_defaults_pinned_per_network
 //   O1(load) x P-ENV (re-exec child, clean cache)     -> req_auth_015_env_override_honoured_on_devnet_only
 
 use super::inc_i_236_forged_block_authn::{forge_block_as, sign_into_pi, HEIGHT, MODES};
@@ -114,12 +114,13 @@ fn req_auth_014_below_ah_verdict_ignores_pi_all_modes() {
     }
 }
 
-// REQ-AUTH-015 — Decision: a failure means the rule ships armed on mainnet or testnet before a height is pinned, or devnet loses its armed default.
+// REQ-AUTH-015 — Decision: a failure means the rule engages on mainnet or testnet at a height other than the pinned one, or devnet loses its armed default.
 #[test]
-fn req_auth_015_defaults_unpinned_on_mainnet_and_testnet() {
+fn req_auth_015_defaults_pinned_per_network() {
     for (network, expected) in [
-        (Network::Mainnet, u64::MAX),
-        // Testnet pin of the four defense gates (user decision 2026-10-25).
+        // Pins of the four defense gates (user decisions); see
+        // `network_params::tests_defense_pin`.
+        (Network::Mainnet, 806_859),
         (Network::Testnet, 330_849),
         (Network::Devnet, 0),
     ] {
@@ -153,8 +154,8 @@ fn req_auth_015_env_override_honoured_on_devnet_only() {
     assert_eq!(std::env::var(AH_ENV).as_deref(), Ok("777"), "PRECONDITION");
     assert_eq!(
         NetworkParams::load(Network::Mainnet).inc_i_236_block_signature_activation_height,
-        u64::MAX,
-        "mainnet must ignore the override"
+        806_859,
+        "mainnet must ignore the override and keep its pin"
     );
     assert_eq!(
         NetworkParams::load(Network::Testnet).inc_i_236_block_signature_activation_height,

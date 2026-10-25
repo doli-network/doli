@@ -184,7 +184,7 @@ Notation: B = bond amount of the target (read from the chain), U = amount of the
 ### Architectural Constraints & Invariants
 
 - No consensus, validation or apply rule changes unless a scenario proves a defect with a RED/GREEN test; protocol and epoch-state versions stay unchanged (equal in all three trees, so a same-dir restart keeps epoch state).
-- Gate env overrides exist on devnet only; mainnet and testnet gates stay compiled (`u64::MAX`). The CLI change must keep that property.
+- Gate env overrides exist on devnet only; mainnet and testnet gates stay compiled (no env override). The CLI change must keep that property.
 - Unbonding gate <= slashing gate; effective slashing height = max of the slashing, block-signature and pending-root gates.
 - Producer mutations apply at the epoch boundary; a slash still lands on an exited producer while its unbonding output is locked.
 - Runner safety pattern of GS-026/GS-027 (own PIDs, own scratch dir) is preserved.

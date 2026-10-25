@@ -125,7 +125,7 @@ fn req_auth_019_verify_block_signature_at_boundary_is_inclusive() {
     }
 }
 
-// REQ-AUTH-019 — Decision: a failure means devnet (AH 0) imports unsigned blocks, or mainnet/testnet (AH u64::MAX) refuse their unsigned history.
+// REQ-AUTH-019 — Decision: a failure means devnet (AH 0) imports unsigned blocks, or a frozen gate (AH u64::MAX) refuses unsigned history.
 #[test]
 fn req_auth_019_verify_block_signature_at_extreme_activation_heights() {
     for (name, h) in &bad_headers() {

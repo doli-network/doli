@@ -301,7 +301,7 @@ The bond serves multiple security functions:
 
 **Important**: Slashing is reserved ONLY for double production (equivocation). This is the only offense that cannot happen by accident - it requires intentionally signing two different blocks for the same slot.
 
-**Activation gate**: `inc_i_255_slashing_activation_height`. Mainnet: `u64::MAX`. Testnet: `330849` (pinned 2026-10-25, the same height as the INC-I-236, INC-I-257 and INC-I-182 gates). Devnet: 0, with the devnet-only override `DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT`. The rules apply at `NetworkParams::effective_slashing_activation_height()`, the maximum of this gate, the INC-I-236 block-signature gate and the INC-I-181 pending-root gate. Thus slashing can never start before blocks are signed. Below the effective height no SlashProducer can be mined, because the fee floor refuses its fee of 0. Full rules: `specs/protocol.md` §3.10.
+**Activation gate**: `inc_i_255_slashing_activation_height`. Mainnet: `806859` (pinned with the INC-I-236, INC-I-257 and INC-I-182 gates). Testnet: `330849` (pinned 2026-10-25, the same height as the INC-I-236, INC-I-257 and INC-I-182 gates). Devnet: 0, with the devnet-only override `DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT`. The rules apply at `NetworkParams::effective_slashing_activation_height()`, the maximum of this gate, the INC-I-236 block-signature gate and the INC-I-181 pending-root gate. Thus slashing can never start before blocks are signed. Below the effective height no SlashProducer can be mined, because the fee floor refuses its fee of 0. Full rules: `specs/protocol.md` §3.10.
 
 **Slashing Evidence Requirements**:
 ```rust

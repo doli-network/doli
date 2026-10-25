@@ -15,7 +15,7 @@
 // INPUT PARTITIONS
 //   IP-SIG h4 in {forged (producer named, attacker pi), unsigned}; h1 unsigned below AH; h2 valid below AH; h3 valid at AH
 //   IP-SWAP force mode: archive h4 = same-hash pi-variant of the stored signed h4 | a different forged block
-//   IP-AH AH = 3 (armed at h3) | AH = u64::MAX (mainnet/testnet today)
+//   IP-AH AH = 3 (armed at h3) | AH = u64::MAX (a frozen gate)
 // MATRIX
 //   O1,O2 x {restore, backfill} x IP-SIG          -> req_auth_019_p14_archive_import_forged_not_imported
 //   O1,O2 x targeted x IP-SIG                     -> req_auth_019_p14_archive_backfill_heights_forged_not_written

@@ -42,7 +42,7 @@ mod tests_inc_i_233;
 #[cfg(test)]
 mod tests_inc_i_234;
 
-/// Testnet pin of the four defense gates (236/255/257/182) at 330_849; mainnet frozen.
+/// Pins of the four defense gates (236/255/257/182): testnet 330_849, mainnet 806_859.
 #[cfg(test)]
 mod tests_defense_pin;
 

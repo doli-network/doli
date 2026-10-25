@@ -11,7 +11,7 @@
 //   no mutable params, no receiver writes, no store writes (pure)
 // PATHS: P-DEF (defaults) | P-ENV (load in a re-exec child, fresh OnceLock) | P-FN (hand-set gate fields)
 // INPUT PARTITIONS:
-//   P-DEF: mainnet -> u64::MAX; testnet -> 330_849 (pinned 2026-10-25); devnet -> 0
+//   P-DEF: mainnet -> 806_859; testnet -> 330_849; devnet -> 0
 //   P-ENV: nothing set | slash env set | sig env raised (devnet) | root env raised (testnet, devnet) | all three set
 //   P-FN:  each operand the strict max | all equal | one operand u64::MAX | all zero
 //   ctx:   new() at heights 0, 1_000, u64::MAX - 1 | setter with a sentinel
@@ -31,8 +31,9 @@ const SIG_ENV: &str = "DOLI_INC_I_236_BLOCK_SIGNATURE_ACTIVATION_HEIGHT";
 const ROOT_ENV: &str = "DOLI_INC_I_181_PENDING_ROOT_ACTIVATION_HEIGHT";
 const CHILD_ENV: &str = "INC_I_255_GATE_ENV_CHILD";
 const NETWORKS: [Network; 3] = [Network::Mainnet, Network::Testnet, Network::Devnet];
-/// Testnet pin of the four defense gates (user decision 2026-10-25); see
+/// Pins of the four defense gates (user decisions); see
 /// `network_params::tests_defense_pin`.
+const MAINNET_PIN: u64 = 806_859;
 const TESTNET_PIN: u64 = 330_849;
 
 fn gates(p: &NetworkParams) -> [u64; 3] {
@@ -101,11 +102,11 @@ fn assert_loaded_ordering(what: &str) {
     }
 }
 
-// REQ-SLASH-001 — Decision: a failure means slashing ships armed on mainnet or testnet before a height is pinned, or devnet loses its armed default.
+// REQ-SLASH-001 — Decision: a failure means slashing engages on mainnet or testnet at a height other than the pinned one, or devnet loses its armed default.
 #[test]
 fn inc_i_255_defaults_per_network() {
     for (network, expected) in [
-        (Network::Mainnet, u64::MAX),
+        (Network::Mainnet, MAINNET_PIN),
         (Network::Testnet, TESTNET_PIN),
         (Network::Devnet, 0),
     ] {
@@ -126,7 +127,7 @@ fn inc_i_255_effective_on_defaults_is_max_of_three_gates() {
     }
     assert_eq!(
         NetworkParams::defaults(Network::Mainnet).effective_slashing_activation_height(),
-        u64::MAX
+        MAINNET_PIN
     );
     assert_eq!(
         NetworkParams::defaults(Network::Testnet).effective_slashing_activation_height(),
@@ -197,7 +198,7 @@ fn inc_i_255_env_unset_loads_defaults_and_ordering_holds() {
         return;
     }
     let [mainnet, testnet, devnet] = loaded();
-    assert_eq!(mainnet.inc_i_255_slashing_activation_height, u64::MAX);
+    assert_eq!(mainnet.inc_i_255_slashing_activation_height, MAINNET_PIN);
     assert_eq!(testnet.inc_i_255_slashing_activation_height, TESTNET_PIN);
     assert_eq!(devnet.inc_i_255_slashing_activation_height, 0);
     for network in NETWORKS {
@@ -226,9 +227,8 @@ fn inc_i_255_env_override_honoured_on_devnet_only() {
     );
     let [mainnet, testnet, devnet] = loaded();
     assert_eq!(
-        mainnet.inc_i_255_slashing_activation_height,
-        u64::MAX,
-        "mainnet must ignore the override"
+        mainnet.inc_i_255_slashing_activation_height, MAINNET_PIN,
+        "mainnet must ignore the override and keep its pin"
     );
     assert_eq!(
         testnet.inc_i_255_slashing_activation_height, TESTNET_PIN,
@@ -289,7 +289,7 @@ fn inc_i_255_env_raised_root_gate_lifts_effective() {
         TESTNET_PIN,
         "a root env of 900 stays below the testnet pin"
     );
-    assert_eq!(mainnet.effective_slashing_activation_height(), u64::MAX);
+    assert_eq!(mainnet.effective_slashing_activation_height(), MAINNET_PIN);
     assert_loaded_ordering("root env 900");
 }
 
@@ -309,7 +309,7 @@ fn inc_i_255_env_all_three_set_effective_is_max() {
         "PRECONDITION: devnet reads all three"
     );
     assert_eq!(devnet.effective_slashing_activation_height(), 700);
-    assert_eq!(mainnet.inc_i_255_slashing_activation_height, u64::MAX);
+    assert_eq!(mainnet.inc_i_255_slashing_activation_height, MAINNET_PIN);
     assert_eq!(testnet.inc_i_255_slashing_activation_height, TESTNET_PIN);
     assert_eq!(testnet.effective_slashing_activation_height(), TESTNET_PIN);
     assert_loaded_ordering("all three env set");
