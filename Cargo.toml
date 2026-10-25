@@ -30,6 +30,7 @@ updater = { path = "crates/updater" }
 bridge = { path = "crates/bridge" }
 wallet = { path = "crates/wallet" }
 channels = { path = "crates/channels" }
+doli-producer-tx = { path = "crates/producer-tx" }
 
 # Cryptography
 bech32 = "0.11"

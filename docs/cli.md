@@ -1160,7 +1160,9 @@ doli producer exit
 doli producer exit --force
 ```
 
-Without `--force`, the command shows the current penalty and time remaining before allowing exit.
+Without `--force`, the command builds the exit (it reads the wallet's UTXOs and the chain
+info), prints the summary below, and stops. Nothing is signed or submitted. If the exit
+cannot be built, the preview fails with the same `Cannot build the exit: ...` error.
 
 **What `exit` builds.** `exit` withdraws the producer's whole ProducerSet allowance in one
 RequestWithdrawal, built by the same builder as `request-withdrawal`, and appends the producer
@@ -1168,13 +1170,28 @@ signature (§4.1). The bond count comes from the ProducerSet, never from the UTX
 `bondCount`. When the wallet holds Bond UTXOs, their count must equal that allowance, or the
 command aborts with `Ledger mismatch`.
 
-**Exit with no live Bond UTXO (INC-I-182).** When the ProducerSet still lists bonds but the
-wallet holds no live Bond UTXO, `exit` still works: it builds the full exit with no Bond input.
-The wallet's spendable Normal outputs pay the fee and fund the payout. If their total does not
-exceed the fee, the command refuses to build (`insufficient spendable balance`). When the next
-block is at or above `inc_i_257_unbonding_activation_height`, the payout is one Unbonding output
-to the producer's own address, and the CLI prints its lock height and the unbonding period. Below
-that gate it is one Normal output to the same address. See `specs/protocol.md` §3.13.2.
+**Exit with no live Bond UTXO (INC-I-182, INC-I-262).** When the ProducerSet still lists bonds
+but the wallet holds no live Bond UTXO, `exit` still works: it builds the full exit with no Bond
+input. When the next block is at or above `inc_i_257_unbonding_activation_height`, the payout is
+one Unbonding output to the producer's own address, locked for the unbonding period, and a change
+output is not possible. So the exit spends exactly **one** coin: the smallest spendable Normal
+output whose amount is above the fee (a coin of exactly fee + 1 locks 1 unit), whatever order the
+node lists the coins in. That coin minus the fee is locked; every other coin stays spendable. If
+no coin is above the fee, the command refuses to build (`insufficient spendable balance`) and
+nothing is submitted. Below that gate it is one Normal output to the same address, funded as
+before. See `specs/protocol.md` §3.13.2.
+
+For this zero-Bond exit at or above the gate, the summary replaces `You receive: ...` (which would
+read 0) with the locked amount, the lock height and what stays spendable:
+
+```
+No Bond is withdrawn. This exit locks 2.99999999 DOLI from one coin.
+Unbonding: the payout is locked until height 1070 (unbonding period 60 blocks).
+Stays spendable: 40.00000000 DOLI
+```
+
+An exit with Bond inputs prints the same lines as before: `You receive: ...`, the penalty lines and,
+at or above the gate, the `Unbonding: the payout is locked until height ...` line.
 
 **WHITEPAPER Reference:** Section 6.4 (Bond Lifecycle)
 - Penalty burns are permanent (deflationary)

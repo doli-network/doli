@@ -83,7 +83,7 @@ doli (CLI binary)
   └── doli-vdf (Wesolowski VDF — compiled but NOT used in production)
 ```
 
-The dependency graph is a **clean DAG** — no circular dependencies. Key constraint: `wallet` does NOT depend on `doli-core` at runtime (intentional, keeps CLI lightweight, but creates maintenance risk).
+The dependency graph is a **clean DAG** — no circular dependencies. `wallet` depends on `doli-core` and `doli-producer-tx` (INC-I-262): producer txs are built and signed by the one shared builder crate.
 
 ### System Boundaries
 

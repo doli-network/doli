@@ -1187,7 +1187,9 @@ the same fields with or without the 64-byte tail. The mempool judges the rule at
 `best_height + 1` on admission and on revalidate. The node builder signs its own
 genesis-window Registration at and above the gate. The DOLI CLI signs register,
 add-bond, request-withdrawal and exit at every height, with the genesis hash from
-`getChainInfo`.
+`getChainInfo`. The desktop wallet (GUI register, add bonds, request withdrawal)
+does the same through the same builder crate (`doli-producer-tx`, INC-I-262); a
+malformed genesis hash or an unknown network aborts the build.
 
 Exit is outside this rule and unchanged: transaction validation refuses every
 Exit at every height, so it stays unmineable (§3.7). A producer leaves the set
@@ -1203,7 +1205,9 @@ At and above the producer-authorization gate the producer signature is the only
 authorization of this form, so only the producer's own key can force this full
 exit. The DOLI
 CLI `exit` builds it when the wallet owns no live Bond UTXO, from the wallet's
-spendable Normal outputs.
+spendable Normal outputs. At and above the unbonding gate it spends exactly one
+of them, the smallest whose amount is above the fee, so only that coin minus the
+fee is locked (INC-I-262); with no such coin it refuses to build.
 
 Post-states. After a full withdrawal the ProducerSet entry stays with status
 Exited, 0 bonds and 0 pending withdrawals; a later RequestWithdrawal that names

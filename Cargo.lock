@@ -1548,6 +1548,7 @@ dependencies = [
  "crypto",
  "dirs 5.0.1",
  "doli-core",
+ "doli-producer-tx",
  "flate2",
  "hex",
  "rand 0.8.6",
@@ -1601,6 +1602,7 @@ dependencies = [
  "crypto",
  "dirs 5.0.1",
  "doli-core",
+ "doli-producer-tx",
  "hex",
  "serde",
  "serde_json",
@@ -1627,6 +1629,7 @@ dependencies = [
  "clap",
  "crypto",
  "dirs 5.0.1",
+ "doli-cli",
  "doli-core",
  "fs2",
  "futures",
@@ -1651,6 +1654,16 @@ dependencies = [
  "tracing-subscriber",
  "updater",
  "vdf",
+ "wallet",
+]
+
+[[package]]
+name = "doli-producer-tx"
+version = "6.44.2"
+dependencies = [
+ "bincode",
+ "crypto",
+ "doli-core",
 ]
 
 [[package]]
@@ -7914,6 +7927,7 @@ dependencies = [
  "bip39",
  "crypto",
  "doli-core",
+ "doli-producer-tx",
  "hex",
  "reqwest 0.11.27",
  "serde",

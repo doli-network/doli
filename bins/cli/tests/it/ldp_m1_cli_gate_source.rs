@@ -11,14 +11,16 @@
 //   O2 return: devnet best+1 < env gate -> one Normal output, lock 0, tail appended by finalize;
 //      best+1 >= env gate -> one Unbonding output, lock best + env period + UNBONDING_LOCK_MARGIN;
 //      mainnet/testnet serialized bytes equal with and without the variables
-// OUTPUT CONTRACT: source of cmd_producer/withdrawal.rs, cmd_producer/exit.rs, unbonding_tx.rs
+// OUTPUT CONTRACT: source of cmd_producer/withdrawal.rs, cmd_producer/exit.rs, crates/producer-tx/src/unbonding_tx.rs,
+//   bins/cli/src/unbonding_tx.rs
 //   O3 both call sites call builder_params( and never NetworkParams::defaults(; builder_params is
-//      defined in unbonding_tx.rs, calls NetworkParams::load( and never load_env_for_network
+//      defined in the shared unbonding_tx.rs, calls NetworkParams::load( and never load_env_for_network;
+//      the CLI unbonding_tx.rs re-exports the shared module and defines no builder_params of its own
 // PATHS: P-BELOW best+1 < gate | P-EDGE best+1 == gate | P-ABOVE best+1 > gate | P-LOCKED mainnet, testnet
 // MATRIX
 //   O1, O2 x {P-BELOW (best 0, gate-2), P-EDGE (gate-1), P-ABOVE (gate+5)} -> ..._devnet_cli_params_follow_env_gate_and_period
 //   O1, O2 x P-LOCKED x {best 1_000, gate-1} -> ..._mainnet_testnet_withdrawal_bytes_ignore_env (+ devnet differs: env live)
-//   O3 -> ..._call_sites_load_builder_params (+ planted old shape flagged)
+//   O3 -> ..._call_sites_load_builder_params (+ planted old shape and planted shim-local builder_params flagged)
 // INPUT PARTITIONS:
 //   child env: four gates = 30, pending-root gate 0, DOLI_UNBONDING_PERIOD = 77 (devnet compiled: gates 0, period 60)
 //   spec: one Bond input, one fee UTXO 5_000, fee 1, destination = bond_owner(producer)
@@ -251,7 +253,9 @@ fn ldp_m1_req_ldp_002_mainnet_testnet_withdrawal_bytes_ignore_env() {
 
 const WITHDRAWAL_SRC: &str = include_str!("../../src/cmd_producer/withdrawal.rs");
 const EXIT_SRC: &str = include_str!("../../src/cmd_producer/exit.rs");
-const UNBONDING_SRC: &str = include_str!("../../src/unbonding_tx.rs");
+const CLI_UNBONDING_SRC: &str = include_str!("../../src/unbonding_tx.rs");
+const SHARED_UNBONDING_SRC: &str =
+    include_str!("../../../../crates/producer-tx/src/unbonding_tx.rs");
 
 fn code(src: &str) -> String {
     src.lines()
@@ -297,6 +301,24 @@ fn helper_violations(src: &str) -> Vec<&'static str> {
     .collect()
 }
 
+fn shim_violations(src: &str) -> Vec<&'static str> {
+    let c = code(src);
+    [
+        (
+            "re-exports doli_producer_tx::unbonding_tx",
+            c.contains("pub use doli_producer_tx::unbonding_tx::"),
+        ),
+        (
+            "defines no builder_params of its own",
+            !c.contains("fn builder_params("),
+        ),
+    ]
+    .into_iter()
+    .filter(|(_, ok)| !ok)
+    .map(|(what, _)| what)
+    .collect()
+}
+
 // REQ-LDP-001 — Decision: a failure names the CLI call site that still reads compiled params, or a helper that reads a data-dir .env, so a CLI and a node on one devnet can still disagree on the gate.
 #[test]
 fn ldp_m1_req_ldp_001_call_sites_load_builder_params() {
@@ -319,6 +341,25 @@ fn ldp_m1_req_ldp_001_call_sites_load_builder_params() {
         let bad = call_site_violations(src);
         assert!(bad.is_empty(), "{file} violates: {bad:?}");
     }
-    let bad = helper_violations(UNBONDING_SRC);
-    assert!(bad.is_empty(), "unbonding_tx.rs violates: {bad:?}");
+    let pure_shim = "pub use doli_producer_tx::unbonding_tx::*;";
+    assert!(
+        shim_violations(pure_shim).is_empty(),
+        "NON-VACUITY: a pure re-export shim passes the shim scan"
+    );
+    let local = format!("{pure_shim}\npub fn builder_params(n: Network) -> &'static NetworkParams {{ NetworkParams::load(n) }}");
+    assert_eq!(
+        shim_violations(&local),
+        vec!["defines no builder_params of its own"],
+        "NON-VACUITY: the scan flags a shim that keeps its own builder_params"
+    );
+    let bad = helper_violations(SHARED_UNBONDING_SRC);
+    assert!(
+        bad.is_empty(),
+        "crates/producer-tx/src/unbonding_tx.rs violates: {bad:?}"
+    );
+    let bad = shim_violations(CLI_UNBONDING_SRC);
+    assert!(
+        bad.is_empty(),
+        "bins/cli/src/unbonding_tx.rs violates: {bad:?}"
+    );
 }

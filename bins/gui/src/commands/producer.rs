@@ -3,7 +3,10 @@
 //! Handles producer registration, status, bond management, withdrawal,
 //! and exit operations.
 
-use crypto::{bls_sign_pop, signature, BlsSecretKey, Hash, PublicKey};
+use crypto::{bls_sign_pop, BlsSecretKey, Hash, PublicKey};
+use doli_producer_tx::producer_tx::{
+    build_signed_registration, chain_genesis_hash, RegistrationSpec,
+};
 use tauri::State;
 
 use crate::commands::{ProducerStatusResponse, SimulateResponse, TxResponse};
@@ -148,11 +151,11 @@ pub async fn register_producer(
     }
 
     // Build inputs
-    let mut inputs: Vec<doli_core::Input> = Vec::new();
+    let mut inputs: Vec<(Hash, u32)> = Vec::new();
     for utxo in &selected {
         let prev_tx_hash =
             Hash::from_hex(&utxo.tx_hash).ok_or_else(|| "Invalid UTXO tx_hash".to_string())?;
-        inputs.push(doli_core::Input::new(prev_tx_hash, utxo.output_index));
+        inputs.push((prev_tx_hash, utxo.output_index));
     }
 
     // Parse producer public key
@@ -161,12 +164,7 @@ pub async fn register_producer(
         PublicKey::try_from_slice(&bytes).map_err(|e| format!("Invalid public key: {}", e))?
     };
 
-    // Lock duration
-    let blocks_per_era: u64 = match chain_info.network.as_str() {
-        "devnet" => 576,
-        _ => 12_614_400,
-    };
-    let lock_until = chain_info.best_height + blocks_per_era + 1000;
+    let lock_until = bond_lock_until(&chain_info);
 
     // Compute hash-chain VDF proof
     let current_epoch = (chain_info.best_slot / network_params.blocks_per_reward_epoch) as u32;
@@ -192,44 +190,26 @@ pub async fn register_producer(
         bls_pubkey: bls_pk.as_bytes().to_vec(),
         bls_pop: bls_pop.as_bytes().to_vec(),
     };
-    let extra_data =
-        bincode::serialize(&reg_data).map_err(|e| format!("Serialization error: {}", e))?;
 
-    // Build bond outputs
-    let pubkey_hash_for_bond =
-        crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, producer_pubkey.as_bytes());
-    let outputs: Vec<doli_core::Output> = (0..bond_count)
-        .map(|_| doli_core::Output::bond(bond_unit, pubkey_hash_for_bond, lock_until, 0))
-        .collect();
-
-    let mut tx = doli_core::Transaction {
-        version: 1,
-        tx_type: doli_core::transaction::TxType::Registration,
+    let change_to =
+        Hash::from_hex(&pubkey_hash).ok_or_else(|| "Invalid change address".to_string())?;
+    let spec = RegistrationSpec {
         inputs,
-        outputs,
-        extra_data,
+        reg_data,
+        bond_unit,
+        lock_until,
+        change: total_input - required_amount - fee,
+        change_to,
     };
 
-    // Change output
-    let change = total_input - required_amount - fee;
-    if change > 0 {
-        let change_hash =
-            Hash::from_hex(&pubkey_hash).ok_or_else(|| "Invalid change address".to_string())?;
-        tx.outputs
-            .push(doli_core::Output::normal(change, change_hash));
-    }
-
-    // Sign each input
+    // Inputs and the producer-auth signature over the chain genesis.
+    let genesis = chain_genesis_hash(&chain_info.genesis_hash)?;
     let keypair = {
         let wallet_guard = state.wallet.read().await;
         let w = wallet_guard.as_ref().ok_or("No wallet loaded")?;
         w.primary_keypair().map_err(|e| e.to_string())?
     };
-    for i in 0..tx.inputs.len() {
-        let signing_hash = tx.signing_message_for_input(i);
-        tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
-        tx.inputs[i].public_key = Some(*keypair.public_key());
-    }
+    let tx = build_signed_registration(&spec, &keypair, &genesis)?;
 
     // Submit
     let tx_hex = hex::encode(tx.serialize());
@@ -254,35 +234,44 @@ pub async fn register_producer(
 /// Add bonds to an existing producer.
 #[tauri::command]
 pub async fn add_bonds(count: u32, state: State<'_, AppState>) -> Result<TxResponse, String> {
-    let (pubkey_hash, sender_hash) = {
+    let pubkey_hash = {
         let wallet_guard = state.wallet.read().await;
         let w = wallet_guard.as_ref().ok_or("No wallet loaded")?;
-        let pkh = w.primary_pubkey_hash().map_err(|e| e.to_string())?;
-        let bytes: [u8; 32] = hex::decode(&pkh)
-            .map_err(|e| e.to_string())?
-            .try_into()
-            .map_err(|_| "Invalid pubkey hash length".to_string())?;
-        (pkh, bytes)
+        w.primary_pubkey_hash().map_err(|e| e.to_string())?
     };
 
-    let utxos = {
+    let (utxos, chain_info, network_params) = {
         let rpc = state.rpc_client.read().await;
-        rpc.get_utxos(&pubkey_hash, true)
+        let utxos = rpc
+            .get_utxos(&pubkey_hash, true)
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        let ci = rpc.get_chain_info().await.map_err(|e| e.to_string())?;
+        let np = rpc.get_network_params().await.map_err(|e| e.to_string())?;
+        (utxos, ci, np)
     };
 
-    let fee = 1u64;
-    let mut builder = wallet::TxBuilder::build_add_bond(&utxos, count, sender_hash, fee)
-        .map_err(|e| e.to_string())?;
+    let bond_unit = network_params.bond_unit;
+    let fee = doli_core::consensus::BASE_FEE
+        + count as u64 * 4 * doli_core::consensus::FEE_PER_BYTE / doli_core::consensus::FEE_DIVISOR;
 
     let tx_hex = {
         let wallet_guard = state.wallet.read().await;
         let w = wallet_guard.as_ref().ok_or("No wallet loaded")?;
         let keypair = w.primary_keypair().map_err(|e| e.to_string())?;
-        builder
-            .sign_and_build(&keypair)
-            .map_err(|e| e.to_string())?
+        let signer = wallet::ProducerSigner {
+            keypair: &keypair,
+            genesis_hash: &chain_info.genesis_hash,
+        };
+        wallet::TxBuilder::build_add_bond(
+            &utxos,
+            count,
+            bond_unit,
+            bond_lock_until(&chain_info),
+            fee,
+            &signer,
+        )
+        .map_err(|e| e.to_string())?
     };
 
     let tx_hash = {
@@ -298,7 +287,7 @@ pub async fn add_bonds(count: u32, state: State<'_, AppState>) -> Result<TxRespo
         message: format!(
             "Added {} bonds ({} DOLI)",
             count,
-            wallet::units_to_coins(count as u64 * wallet::BOND_UNIT)
+            wallet::units_to_coins(count as u64 * bond_unit)
         ),
     })
 }
@@ -310,15 +299,11 @@ pub async fn request_withdrawal(
     dest: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<TxResponse, String> {
-    let sender_hash = {
+    let (pubkey_hash, public_key) = {
         let wallet_guard = state.wallet.read().await;
         let w = wallet_guard.as_ref().ok_or("No wallet loaded")?;
         let pkh = w.primary_pubkey_hash().map_err(|e| e.to_string())?;
-        let bytes: [u8; 32] = hex::decode(&pkh)
-            .map_err(|e| e.to_string())?
-            .try_into()
-            .map_err(|_| "Invalid pubkey hash length".to_string())?;
-        bytes
+        (pkh, w.primary_public_key().to_string())
     };
 
     let dest_hash = match dest {
@@ -332,17 +317,47 @@ pub async fn request_withdrawal(
         None => None,
     };
 
-    let mut builder =
-        wallet::TxBuilder::build_request_withdrawal(bond_count, sender_hash, dest_hash)
+    let (chain_info, sim, utxos) = {
+        let rpc = state.rpc_client.read().await;
+        let ci = rpc.get_chain_info().await.map_err(|e| e.to_string())?;
+        let sim = rpc
+            .simulate_withdrawal(&public_key, bond_count)
+            .await
             .map_err(|e| e.to_string())?;
+        let utxos = rpc
+            .get_utxos(&pubkey_hash, false)
+            .await
+            .map_err(|e| e.to_string())?;
+        (ci, sim, utxos)
+    };
+
+    // Exactly `bond_count` Bond inputs, oldest first as the node lists them.
+    let bonds: Vec<wallet::Utxo> = utxos
+        .iter()
+        .filter(|u| u.output_type == "bond")
+        .take(bond_count as usize)
+        .cloned()
+        .collect();
 
     let tx_hex = {
         let wallet_guard = state.wallet.read().await;
         let w = wallet_guard.as_ref().ok_or("No wallet loaded")?;
         let keypair = w.primary_keypair().map_err(|e| e.to_string())?;
-        builder
-            .sign_and_build(&keypair)
-            .map_err(|e| e.to_string())?
+        let signer = wallet::ProducerSigner {
+            keypair: &keypair,
+            genesis_hash: &chain_info.genesis_hash,
+        };
+        let req = wallet::WithdrawalRequest {
+            network: &chain_info.network,
+            best_height: chain_info.best_height,
+            bond_count,
+            bond_utxos: &bonds,
+            total_net: sim.net_amount,
+            fee_utxos: &utxos,
+            fee: 1,
+            destination: dest_hash,
+        };
+        wallet::TxBuilder::build_request_withdrawal(&req, &signer).map_err(|e| e.to_string())?
     };
 
     let tx_hash = {
@@ -428,4 +443,13 @@ pub async fn exit_producer(_force: bool, state: State<'_, AppState>) -> Result<T
         tx_type: "ProducerExit".to_string(),
         message: "Producer exit requested".to_string(),
     })
+}
+
+/// Bond lock height: the tip plus one era plus a margin.
+fn bond_lock_until(chain_info: &wallet::ChainInfo) -> u64 {
+    let blocks_per_era: u64 = match chain_info.network.as_str() {
+        "devnet" => 576,
+        _ => 12_614_400,
+    };
+    chain_info.best_height + blocks_per_era + 1000
 }

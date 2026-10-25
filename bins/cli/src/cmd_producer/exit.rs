@@ -7,7 +7,7 @@ use doli_core::Network;
 
 use super::common::{compute_fifo_breakdown, display_fifo_breakdown};
 use crate::common::address_prefix;
-use crate::rpc_client::{format_balance, RpcClient};
+use crate::rpc_client::RpcClient;
 use crate::wallet::Wallet;
 use doli_cli::producer_ledger::{
     max_withdrawable, producer_set_allowance, select_bond_inputs_by_count,
@@ -15,8 +15,7 @@ use doli_cli::producer_ledger::{
 };
 use doli_cli::producer_tx::{chain_genesis_hash, finalize_producer_tx};
 use doli_cli::unbonding_tx::{
-    build_withdrawal_tx, builder_params, unbonding_gate_open, unbonding_lock_until, FeeUtxo,
-    WithdrawalSpec,
+    build_withdrawal_tx, builder_params, exit_summary_lines, FeeUtxo, WithdrawalSpec,
 };
 
 pub(super) async fn handle_exit(wallet: &Wallet, rpc: &RpcClient, force: bool) -> Result<()> {
@@ -98,28 +97,6 @@ pub(super) async fn handle_exit(wallet: &Wallet, rpc: &RpcClient, force: bool) -
     let breakdown = compute_fifo_breakdown(&details, withdraw_count);
     display_fifo_breakdown(&breakdown);
     println!();
-    println!("You receive: {}", format_balance(breakdown.total_net));
-    if breakdown.total_penalty > 0 {
-        println!(
-            "Penalty burned: {}",
-            format_balance(breakdown.total_penalty)
-        );
-        let pct = (breakdown.total_penalty * 100) / (breakdown.total_net + breakdown.total_penalty);
-        if pct >= 50 {
-            println!(
-                "WARNING: High penalty — {}% of bond value will be burned.",
-                pct
-            );
-        }
-    } else {
-        println!("No penalty — all bonds fully vested.");
-    }
-    println!();
-
-    if !force {
-        println!("Use --force to proceed with exit.");
-        return Ok(());
-    }
 
     // Parse producer public key
     let pubkey_bytes = hex::decode(&pk)?;
@@ -184,12 +161,14 @@ pub(super) async fn handle_exit(wallet: &Wallet, rpc: &RpcClient, force: bool) -
     };
     let mut tx = build_withdrawal_tx(net_params, best_height, &spec)
         .map_err(|e| anyhow::anyhow!("Cannot build the exit: {}", e))?;
-    if unbonding_gate_open(net_params, best_height) {
-        println!(
-            "Unbonding: the payout is locked until height {} (unbonding period {} blocks).",
-            unbonding_lock_until(net_params, best_height),
-            net_params.unbonding_period
-        );
+    for line in exit_summary_lines(net_params, best_height, &spec, &tx, breakdown.total_penalty) {
+        println!("{}", line);
+    }
+    println!();
+
+    if !force {
+        println!("Use --force to proceed with exit.");
+        return Ok(());
     }
 
     // Inputs (BIP-143) then the producer-auth signature over the chain genesis.

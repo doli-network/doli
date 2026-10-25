@@ -54,6 +54,7 @@ nix develop --command bash -c "cargo clippy -p doli-gui -- -D warnings"  # Clean
 **Verification of `sign_and_build()` (lines 244-313)**:
 - [x] No `todo!()` macros remain -- PASS
 - [x] Signs using `crypto::hash::hash()` + `crypto::signature::sign()` -- correct signing flow
+  - Superseded (INC-I-262): one whole-tx signature on every input fails node verification; `sign_and_build` now signs input i over core `signing_message_for_input(i)`.
 - [x] Sets signature on all inputs -- PASS
 - [x] Produces hex-encoded output suitable for RPC `sendTransaction` -- PASS
 

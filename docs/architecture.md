@@ -1433,31 +1433,32 @@ The DOLI GUI is a cross-platform desktop wallet built with **Tauri 2.x** (Rust b
 
 | Crate | Purpose | Dependencies |
 |-------|---------|-------------|
-| `crates/wallet/` | Shared wallet + RPC client library (used by CLI and GUI) | `crypto`, `bip39`, `reqwest`, `serde` |
-| `bins/gui/` | Tauri desktop application | `wallet`, `tauri`, Svelte 5 frontend |
+| `crates/producer-tx/` (`doli-producer-tx`) | Pure builders and signing of producer txs (Registration, AddBond, RequestWithdrawal/exit) and the exit summary; one implementation for CLI, wallet and GUI | `crypto`, `doli-core`, `bincode` |
+| `crates/wallet/` | Shared wallet + RPC client library (used by the GUI) | `crypto`, `doli-core`, `doli-producer-tx`, `bip39`, `reqwest`, `serde` |
+| `bins/gui/` | Tauri desktop application | `wallet`, `doli-producer-tx`, `doli-core`, `tauri`, Svelte 5 frontend |
 
-**Key design decision**: `crates/wallet/` does NOT depend on `doli-core` or `vdf`. This eliminates the GMP (rug) dependency for the GUI, enabling clean Windows builds without MSYS2. Transaction bytes are constructed directly in the wallet crate using the canonical serialization format.
+**Key design decision (INC-I-262)**: producer transactions are built and signed in one place, `doli-producer-tx`. The CLI re-exports it (`doli_cli::producer_tx`, `doli_cli::unbonding_tx`); the wallet's `TxBuilder::build_add_bond` / `build_request_withdrawal` and the GUI's `register_producer` call it, so every tool emits the same signed bytes (per-input signatures plus the producer-auth tail). The wallet therefore depends on `doli-core`; `vdf` is the hash-chain VDF and has no GMP dependency, so the GUI still builds without MSYS2. Transfer-style transactions are still encoded by the wallet's own `TxBuilder`.
 
 ### 11.3. Dependency Graph (Extended)
 
 ```
 crypto (foundation)
    │
-   ├──► vdf (GMP-dependent)
-   │       │
-   │       └──► doli-core [features = ["vdf"]]
-   │               │
-   │               ├──► storage, network, mempool, rpc
-   │               │       │
-   │               │       └──► bins/node
-   │               │
-   │               └──► bins/cli (uses wallet crate + doli-core for registration VDF)
-   │
-   └──► crates/wallet (NO vdf, NO doli-core)
+   └──► vdf (hash-chain, no GMP)
            │
-           ├──► bins/cli (wallet + RPC operations)
-           │
-           └──► bins/gui (Tauri desktop app, NO GMP needed)
+           └──► doli-core
+                   │
+                   ├──► storage, network, mempool, rpc
+                   │       │
+                   │       └──► bins/node
+                   │
+                   └──► crates/producer-tx (producer-tx builders + signing)
+                           │
+                           ├──► bins/cli (re-exports producer_tx / unbonding_tx)
+                           │
+                           └──► crates/wallet
+                                   │
+                                   └──► bins/gui (Tauri desktop app, NO GMP needed)
 ```
 
 ### 11.4. Security Model

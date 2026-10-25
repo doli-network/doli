@@ -53,6 +53,8 @@ libc = "0.2"
 tempfile.workspace = true
 futures.workspace = true
 libp2p.workspace = true
+wallet = { workspace = true }
+doli-cli = { path = "../cli" }
 
 [package.metadata.deb]
 name = "doli"

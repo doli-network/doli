@@ -6,9 +6,9 @@
 // covers: exit unbonding_tx producer_tx producer_ledger withdrawal common rpc_client lib
 //
 // OUTPUT CONTRACT: fn doli_cli::unbonding_tx::build_withdrawal_tx(&NetworkParams, best_height: u64, &WithdrawalSpec) -> Result<Transaction, String>
-//   O1 return, pure. At/above the C1 gate with NO Bond inputs: inputs = the offered fee UTXOs, in order, until
-//      their total exceeds `fee`; ONE output: Unbonding, owner bond_owner(producer),
-//      amount total_net + fee_input_total - fee, lock unbonding_lock_until(params, best); withdrawal data
+//   O1 return, pure. At/above the C1 gate with NO Bond inputs: one input, the smallest offered coin above
+//      `fee` (INC-I-262); ONE output: Unbonding, owner bond_owner(producer),
+//      amount total_net + that coin - fee, lock unbonding_lock_until(params, best); withdrawal data
 //      (producer, bond_count, own address). Err containing "insufficient spendable balance" when the
 //      offered total does not exceed `fee`. With Bond inputs, and below the gate: unchanged.
 // OUTPUT CONTRACT: fn doli_cli::producer_tx::finalize_producer_tx(&mut Transaction, &KeyPair, &Hash)
@@ -20,7 +20,7 @@
 // PATHS: P-ZERO no Bond inputs, C1 armed | P-FULL every Bond input, C1 armed | P-BELOW C1 not armed
 //        | P-ERR offered fee UTXOs do not exceed the fee
 // MATRIX
-//   O1, O2 x P-ZERO x {one UTXO, first UTXO == fee} -> ..._zero_bond_exit_built_and_valid_above_both_gates
+//   O1, O2 x P-ZERO x {one UTXO, first UTXO == fee (skipped)} -> ..._zero_bond_exit_built_and_valid_above_both_gates
 //   O1 x P-ERR x {none, one == fee} -> ..._zero_bond_exit_insufficient_fee_utxos_refused (+ consensus refuses a 0 payout)
 //   O1, O2 x P-FULL -> ..._full_exit_with_bonds_unbonding_form_valid
 //   O1, O2 x P-BELOW x {bonds, zero bonds} -> ..._below_c1_gate_normal_form_still_valid
@@ -192,15 +192,15 @@ fn inc_i_182_m2_req_pauth_004_zero_bond_exit_built_and_valid_above_both_gates() 
 
     let offered = vec![utxo(0xF1, 1, FEE), utxo(0xF2, 0, 7_000)];
     let tx = build_withdrawal_tx(&p, BEST, &spec(Vec::new(), 0, offered))
-        .expect("first UTXO equal to the fee: keep selecting");
+        .expect("first UTXO equal to the fee: the next coin above the fee is chosen");
     assert_eq!(
-        outpoints(&tx).len(),
-        2,
-        "selection continues past a UTXO equal to the fee"
+        outpoints(&tx),
+        vec![(Hash::from_bytes([0xF2; 32]), 0)],
+        "a UTXO equal to the fee is never spent; only the coin above the fee"
     );
     let paid: u64 = tx.outputs.iter().map(|o| o.amount).sum();
-    assert_eq!(paid + FEE, FEE + 7_000, "outputs + fee == inputs");
-    assert_authorized_and_valid(&finalized(tx), "zero-Bond exit, two fee UTXOs");
+    assert_eq!(paid + FEE, 7_000, "outputs + fee == the one input");
+    assert_authorized_and_valid(&finalized(tx), "zero-Bond exit, coin above the fee");
 }
 
 // REQ-PAUTH-004 — Decision: a failure means the CLI emits a zero-value payout (refused by every node) or signs without enough funds instead of telling the operator.

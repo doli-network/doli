@@ -20,6 +20,8 @@ crypto = { workspace = true }
 
 # Core types (registration tx, VDF, consensus constants)
 doli-core = { workspace = true }
+# Shared producer-tx builders (same code as the CLI)
+doli-producer-tx = { workspace = true }
 vdf = { workspace = true }
 bincode = { workspace = true }
 
