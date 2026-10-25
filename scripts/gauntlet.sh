@@ -22,6 +22,17 @@
 #     which is non-destructive (launchd owns the lifecycle) and exercises real
 #     rejoin/recovery. NO genesis reset, NO pkill, NO data wipe — ever.
 #   Set GAUNTLET_NO_PERTURB=1 for a purely-observational run (no restart).
+#   * --chaos (opt-in, GAUNTLET_CHAOS_CONFIRM=1, local testnet only) injects on
+#     GAUNTLET_RESTART_NODE: A = node-down + rejoin; B = data wipe (data/ moved
+#     to data.bak.<ts>) + cold snap rejoin. B always ends with a
+#     full-history restore (a snap-rejoined node has no blocks below its
+#     snapshot): stop the target, then the donor GAUNTLET_CHAOS_DONOR
+#     (default n1; a live producer node, never the seed or the target, checked
+#     before any injection and again before the copy); keep only the target's own
+#     signed_slots.db + maintainer_state.bin; rsync -a --delete the donor's
+#     blocks/ + state_db/; start the donor, then the target; both must rejoin
+#     and the target's block 1 hash must equal the seed's (else CHAOS-RECOVERY
+#     fails with the reason). data.bak.* and the seed are never touched.
 #   * GS-009 (fleet rolling-restart) is an ADDITIONAL opt-in perturbation,
 #     gated like chaos: run `--gs009` WITH GAUNTLET_GS009_CONFIRM=1. It
 #     wave-restarts ALL producers (n1..n12, NEVER the seed) to replay
@@ -163,7 +174,9 @@
 # Usage:  bash scripts/gauntlet.sh [--quick] [--chaos] [--gs009] [--gs010] [--gs014] [--gs016] [--gs019] [--gs022]
 # Env:    WORKFLOW_RUN_ID, GAUNTLET_WINDOW (s, default 45), GAUNTLET_RESTART_NODE
 #         (default n5), GAUNTLET_RSS_CEIL_MB (default 800), GAUNTLET_MIN_NODES
-#         (default 3), GAUNTLET_NO_PERTURB (1=skip restart).
+#         (default 3), GAUNTLET_NO_PERTURB (1=skip restart). Chaos only:
+#         GAUNTLET_CHAOS_CONFIRM=1, GAUNTLET_CHAOS_DONOR (default n1),
+#         GAUNTLET_CHAOS_DOWN_SECS, GAUNTLET_CHAOS_RECOVER_TIMEOUT.
 # Exit:   0 all scenarios passed · 1 a scenario failed · 3 preflight failed.
 # ============================================================================
 set -uo pipefail
@@ -201,10 +214,13 @@ GS022_LIB="$ROOT/scripts/gauntlet-gs022.sh"
 # shellcheck source=/dev/null
 [ -f "$GS022_LIB" ] && . "$GS022_LIB"
 LOG_DIR="$HOME/testnet/logs"
+TESTNET_HOME="$HOME/testnet"
+TESTNET_SH="$ROOT/scripts/testnet.sh"
 LABEL_PREFIX="network.doli.testnet"
 
 WINDOW="${GAUNTLET_WINDOW:-45}"
 RESTART_NODE="${GAUNTLET_RESTART_NODE:-n5}"
+CHAOS_DONOR="${GAUNTLET_CHAOS_DONOR:-n1}"
 RSS_CEIL_MB="${GAUNTLET_RSS_CEIL_MB:-800}"
 MIN_NODES="${GAUNTLET_MIN_NODES:-3}"
 NO_PERTURB="${GAUNTLET_NO_PERTURB:-0}"
@@ -234,6 +250,7 @@ for a in "$@"; do
   esac
 done
 CHAOS_RECOVERED=1   # stays 1 unless a chaos injector fails to recover the node
+CHAOS_REASON=""     # "; <reason>" appended per chaos failure, printed in CHAOS-RECOVERY
 
 # Assertion thresholds (scale: local testnet N≈6). Each either derives from the
 # live network or is exercised at this small N (system-impact §SCALE-SENSITIVITY).
@@ -371,6 +388,8 @@ chaos_guard(){
   case "$RESTART_NODE" in n[0-9]|n[0-9][0-9]) ;; *) die "chaos target must be a producer node (nN), got '$RESTART_NODE'";; esac
   local others; others=$(echo "$LIVE" | tr ' ' '\n' | grep -vx "$RESTART_NODE" | grep -c .)
   [ "${others:-0}" -lt 3 ] && die "chaos needs >=3 OTHER live nodes as a recovery source, found $others"
+  local why; why="$(chaos_donor_check "$CHAOS_DONOR")" \
+    || die "chaos donor refused: $why. Set GAUNTLET_CHAOS_DONOR to a live producer node other than $RESTART_NODE"
   if [ "${GAUNTLET_CHAOS_CONFIRM:-0}" != "1" ]; then
     die "--chaos performs DESTRUCTIVE injection (stops + WIPES $RESTART_NODE data, backed up).
      Re-run with GAUNTLET_CHAOS_CONFIRM=1 to proceed. Local testnet only; never mainnet."
@@ -381,28 +400,103 @@ chaos_guard(){
 chaos_node_down(){
   local secs="${GAUNTLET_CHAOS_DOWN_SECS:-25}" rp; rp="$(port_of "$RESTART_NODE")"
   say "  ${C_Y}[chaos A] node-down${C_0}: stopping $RESTART_NODE for ${secs}s (isolation/stall)"
-  "$ROOT/scripts/testnet.sh" stop "$RESTART_NODE" >/dev/null 2>&1
+  "$TESTNET_SH" stop "$RESTART_NODE" >/dev/null 2>&1
   sleep "$secs"
   say "  [chaos A] restarting $RESTART_NODE"
-  "$ROOT/scripts/testnet.sh" start "$RESTART_NODE" >/dev/null 2>&1
+  "$TESTNET_SH" start "$RESTART_NODE" >/dev/null 2>&1
   local r; r="$(wait_rejoin "$rp" "$RESTART_NODE" 120)"; echo "$r" > "$REJOIN_FILE"
-  if [ "$r" -ge 0 ]; then say "  [chaos A] rejoined in ${r}s"; else say "  ${C_R}[chaos A] did NOT rejoin in 120s${C_0}"; CHAOS_RECOVERED=0; fi
+  if [ "$r" -ge 0 ]; then say "  [chaos A] rejoined in ${r}s"; else chaos_fail "[chaos A] did NOT rejoin in 120s"; fi
 }
 
 # injector B — data-wipe + cold snap/rebuild (reproduces snap-sync / rollback-rebuild)
 chaos_data_wipe(){
-  local rp dd ts bak; rp="$(port_of "$RESTART_NODE")"; dd="$HOME/testnet/$RESTART_NODE/data"
-  ts="$(date +%Y%m%d-%H%M%S)"; bak="$HOME/testnet/$RESTART_NODE/data.bak.$ts"
+  local rp dd ts bak; rp="$(port_of "$RESTART_NODE")"; dd="$TESTNET_HOME/$RESTART_NODE/data"
+  ts="$(date +%Y%m%d-%H%M%S)"; bak="$TESTNET_HOME/$RESTART_NODE/data.bak.$ts"
   say "  ${C_Y}[chaos B] data-wipe${C_0}: stopping $RESTART_NODE"
-  "$ROOT/scripts/testnet.sh" stop "$RESTART_NODE" >/dev/null 2>&1
+  "$TESTNET_SH" stop "$RESTART_NODE" >/dev/null 2>&1
   sleep 3
   # safety: identity (node_key, producer key) lives OUTSIDE data/ — never touched.
   if [ -d "$dd" ]; then mv "$dd" "$bak" && say "  [chaos B] backed up data -> $bak (reversible)"; fi
   say "  [chaos B] cold-restarting $RESTART_NODE (must snap/rebuild from peers)"
-  "$ROOT/scripts/testnet.sh" start "$RESTART_NODE" >/dev/null 2>&1
+  "$TESTNET_SH" start "$RESTART_NODE" >/dev/null 2>&1
   local to="${GAUNTLET_CHAOS_RECOVER_TIMEOUT:-240}" r; r="$(wait_rejoin "$rp" "$RESTART_NODE" "$to")"
   echo "$r" > "$WORK/chaos_recover.txt"
-  if [ "$r" -ge 0 ]; then say "  [chaos B] recovered (snap/rebuild) in ${r}s"; else say "  ${C_R}[chaos B] did NOT recover in ${to}s${C_0}"; CHAOS_RECOVERED=0; fi
+  if [ "$r" -ge 0 ]; then say "  [chaos B] recovered (snap/rebuild) in ${r}s"; else chaos_fail "[chaos B] did NOT recover in ${to}s"; fi
+  chaos_full_history_restore
+}
+
+# ── chaos full-history restore (ends every wipe injection) ──────────────────
+# chaos_fail <reason> — mark the chaos run unrecovered and keep the reason.
+chaos_fail(){ CHAOS_RECOVERED=0; CHAOS_REASON="${CHAOS_REASON}; $*"; say "  ${C_R}$*${C_0}"; }
+
+# chaos_donor_check <name> — 0 for a live producer node that is not the target; else echo why, 1.
+chaos_donor_check(){
+  case "$1" in
+    seed) echo "'$1' is the seed"; return 1 ;;
+    "$RESTART_NODE") echo "'$1' is the chaos target"; return 1 ;;
+    n[0-9]|n[0-9][0-9]) ;;
+    *) echo "'$1' is not a producer node (nN)"; return 1 ;;
+  esac
+  case " $LIVE " in *" $1 "*) return 0 ;; esac
+  echo "'$1' is not a live node"; return 1
+}
+
+# wait_stopped <name> <timeout-s> — 0 once no process runs on the node's data dir
+# for 2 polls in a row (read-only pgrep), 1 on timeout.
+wait_stopped(){
+  local t0 n=0; t0=$(date +%s)
+  while [ $(( $(date +%s) - t0 )) -le "$2" ]; do
+    if pgrep -f "data-dir $TESTNET_HOME/$1/data( |\$)" >/dev/null 2>&1; then n=0
+    else n=$(( n + 1 )); [ "$n" -ge 2 ] && return 0; fi
+    sleep 1
+  done
+  return 1
+}
+
+# block1_hash <port> — the node's block-1 hash, empty if unknown.
+block1_hash(){ curl -sf -m 3 -X POST "http://127.0.0.1:$1" -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getBlockByHeight","params":[1]}' 2>/dev/null | python3 -c "import sys,json
+try: print(json.load(sys.stdin)['result']['hash'] or '')
+except Exception: print('')" 2>/dev/null; }
+
+chaos_fh_record(){
+  printf 'donor=%s restored=%s block1_equal=%s rejoin_s=%s\n' "$CHAOS_DONOR" "$RESTART_NODE" "$1" "$2" > "$WORK/chaos_full_history.txt"
+  say "  [chaos B] full-history record: $(cat "$WORK/chaos_full_history.txt")"
+}
+
+# chaos_full_history_restore — 0 iff both nodes rejoined and block 1 = the seed's.
+chaos_full_history_restore(){
+  local tgt="$RESTART_NODE" donor="$CHAOS_DONOR" to="${GAUNTLET_CHAOS_RECOVER_TIMEOUT:-240}"
+  local td="$TESTNET_HOME/$RESTART_NODE/data" dd="$TESTNET_HOME/$CHAOS_DONOR/data" why hs hd ht rd rt rs=-1 eq=0
+  say "  ${C_Y}[chaos B] full-history restore${C_0}: $tgt from donor $donor"
+  case "$tgt" in n[0-9]|n[0-9][0-9]) ;; *) chaos_fail "[chaos B] restore refused: target '$tgt' is not nN"; chaos_fh_record 0 -1; return 1 ;; esac
+  why="$(chaos_donor_check "$donor")" || { chaos_fail "[chaos B] restore refused: donor $why"; chaos_fh_record 0 -1; return 1; }
+  if [ ! -d "$dd/blocks" ] || [ ! -d "$dd/state_db" ]; then
+    chaos_fail "[chaos B] restore refused: donor $donor has no blocks/ or state_db/"; chaos_fh_record 0 -1; return 1
+  fi
+  hs="$(block1_hash "$(port_of seed)")"; hd="$(block1_hash "$(port_of "$donor")")"
+  if [ -z "$hs" ] || [ "$hd" != "$hs" ]; then
+    chaos_fail "[chaos B] restore refused: donor $donor is not full-history (block 1 '$hd', seed '$hs')"; chaos_fh_record 0 -1; return 1
+  fi
+  "$TESTNET_SH" stop "$tgt" >/dev/null 2>&1; "$TESTNET_SH" stop "$donor" >/dev/null 2>&1
+  if ! wait_stopped "$tgt" 60 || ! wait_stopped "$donor" 60; then
+    chaos_fail "[chaos B] restore skipped: $tgt or $donor did not stop in 60s"
+    "$TESTNET_SH" start "$donor" >/dev/null 2>&1; "$TESTNET_SH" start "$tgt" >/dev/null 2>&1
+    chaos_fh_record 0 -1; return 1
+  fi
+  mkdir -p "$td"
+  find "$td" -mindepth 1 -maxdepth 1 ! -name signed_slots.db ! -name maintainer_state.bin -exec rm -rf {} +
+  local cp_ok=1
+  { rsync -a --delete "$dd/blocks/" "$td/blocks/" && rsync -a --delete "$dd/state_db/" "$td/state_db/"; } \
+    || { cp_ok=0; chaos_fail "[chaos B] rsync from donor $donor failed"; }
+  "$TESTNET_SH" start "$donor" >/dev/null 2>&1; "$TESTNET_SH" start "$tgt" >/dev/null 2>&1
+  rd="$(wait_rejoin "$(port_of "$donor")" "$donor" "$to")"; rt="$(wait_rejoin "$(port_of "$tgt")" "$tgt" "$to")"
+  if [ "${rd:--1}" -ge 0 ] && [ "${rt:--1}" -ge 0 ]; then rs=$(( rd + rt ))
+  else chaos_fail "[chaos B] after restore: rejoin $donor=${rd}s $tgt=${rt}s (timeout ${to}s)"; fi
+  ht="$(block1_hash "$(port_of "$tgt")")"
+  if [ -n "$ht" ] && [ "$ht" = "$hs" ]; then eq=1; else chaos_fail "[chaos B] restored $tgt block 1 '$ht' != seed '$hs'"; fi
+  chaos_fh_record "$eq" "$rs"
+  [ "$cp_ok" = 1 ] && [ "$eq" = 1 ] && [ "$rs" -ge 0 ]
 }
 
 # ── readiness: the net must be PRODUCING before we judge liveness ────────────
@@ -864,9 +958,11 @@ EOF
 # chaos injector failed to recover the node → hard fail regardless of assertions
 if [ "$CHAOS" = "1" ] && [ "$CHAOS_RECOVERED" != "1" ]; then
   say "  ${C_R}FAIL  [inj] CHAOS-RECOVERY               target ${RESTART_NODE} did not recover after injection${C_0}"
+  say "       ${C_R}${CHAOS_REASON#; }${C_0}"
+  cr="$(printf '%s' "target ${RESTART_NODE} did not recover after down/wipe injection${CHAOS_REASON}" | python3 -c "import sys,json;print(json.dumps(sys.stdin.read()))")"
   [ "$FJ_FIRST" = 1 ] || FAILURES_JSON="$FAILURES_JSON,"
   FJ_FIRST=0
-  FAILURES_JSON="$FAILURES_JSON{\"scenario\":\"CHAOS-RECOVERY\",\"reasons\":\"target ${RESTART_NODE} did not rejoin tip after down/wipe injection\"}"
+  FAILURES_JSON="$FAILURES_JSON{\"scenario\":\"CHAOS-RECOVERY\",\"reasons\":$cr}"
   s_ok=0; TOTAL=$(( TOTAL + 1 ))   # count as an extra failed check
 fi
 FAILURES_JSON="$FAILURES_JSON]"
