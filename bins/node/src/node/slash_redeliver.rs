@@ -1,6 +1,7 @@
 //! Periodic re-offer of the slashes in the `slash_reported` ledger, under the
-//! same id, until the accused is Slashed or slash-queued or the slash is
-//! refused for good.
+//! same id, until the slash is refused for good. A Slashed or slash-queued
+//! accused is skipped, never forgotten, so a rollback or reorg that removes
+//! the slash gets the same tx re-offered on a later tick.
 
 use std::collections::HashSet;
 
@@ -87,7 +88,6 @@ impl Node {
         };
         for (accused, tx) in batch {
             if settled.contains(&accused) {
-                self.slash_reported.lock().unwrap().forget(&accused);
                 continue;
             }
             match self.admit_own_slash(&accused, &tx).await {

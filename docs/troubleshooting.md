@@ -565,7 +565,7 @@ ps aux | grep doli-node
 | WARN | `[SLASH] burned <amount> bond units owned by <owner> at h=<h>` | Apply burned the accused's Bond UTXOs. `<amount>` is the summed bond amount in base units. |
 | INFO | `[PRODUCER] Exit initiated: pk_hash=<hash> reason=slashed` | The flush set the producer to Slashed. |
 | WARN | `Deferred slash failed: <error>` | The flush could not slash the producer, for example because it is already Slashed (`[STOR041] producer not slashable in status ...`). |
-| WARN | `[APPLY_UNDO] restored producer set after failed apply at h=<h>` | A block that can change the producer set (a slash block, for example) failed mid-apply, and the node put the set back as it was before the block. No action unless it repeats. ERROR `[APPLY_UNDO] producer snapshot decode failed` means the restore did not run: restart the node. |
+| WARN | `[APPLY_UNDO] restored producer set after failed apply at h=<h>` | A block that can change the producer set (a slash block, for example) failed mid-apply, and the node put the set back as it was before the block. No action unless it repeats. ERROR `[APPLY_UNDO] producer snapshot decode failed` means the restore did not run: restart the node. WARN `[APPLY_UNDO] restored maintainer set after failed apply` is the same for a block with a maintainer rotation (memory and `maintainer_state.bin`). ERROR `[APPLY_UNDO] maintainer restore failed to persist` means the trust root may still hold the failed block's rotation: compare `getMaintainerSet` with a known-good node. |
 | — | `[ECON_WITHDRAWAL_SLASHED] RequestWithdrawal at height=<h> for slashed or slash-queued producer=<hash>` | Block validation refused a withdrawal by a slashed producer. |
 
 ```bash

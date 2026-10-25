@@ -1156,6 +1156,12 @@ after the loop starts, it restores the in-memory set from that snapshot
 (`ProducerSet::from_snapshot_bytes`, which also rebuilds the unbonding index)
 and logs WARN `[APPLY_UNDO]`. No `Err` comes after the batch commit, so disk
 and memory both stay at the parent block. Chain state is not touched.
+A block that carries AddMaintainer or RemoveMaintainer also gets a maintainer
+snapshot before the loop (the same value is the INC-I-174 undo record). On
+`Err` the wrapper puts that snapshot back in memory and in
+`maintainer_state.bin` (WARN `[APPLY_UNDO] restored maintainer set`), with the
+same install step the rewind uses. It writes nothing when the root did not
+move. The two restores run independently.
 Rollback, reorg, snapshot install and chain restore rebuild the set through
 the same `from_snapshot_bytes`.
 
@@ -1320,7 +1326,7 @@ Epoch-boundary flush (state_update.rs → slash_producer): status Slashed
 |-------|------|----------|
 | Detection | `crates/network/src/sync/equivocation.rs` | One proof per (producer, slot). At most 64 pending proofs. |
 | Submission | `bins/node/src/node/slash_submit.rs`, `slash_reported.rs` | One canonical slash per accused, written to the re-offer ledger before admission (bounded at 1,024, not persisted). Skipped when a slash is resident or the accused has a ledger entry. Broadcast only after admission. |
-| Re-offer | `bins/node/src/node/slash_redeliver.rs` | Periodic tick, at most 8 ledger entries per tick, at and above the gate. Skips an accused with a resident slash; drops an entry whose accused is Slashed or slash-queued or whose slash is refused for good; re-admits the same tx and broadcasts it once. |
+| Re-offer | `bins/node/src/node/slash_redeliver.rs` | Periodic tick, at most 8 ledger entries per tick, at and above the gate. Skips an accused with a resident slash, and skips (keeps) an accused that is Slashed or slash-queued, so a rollback or reorg that removes the slash gets the same tx re-offered; drops an entry whose slash is refused for good; re-admits the same tx and broadcasts it once. |
 | Evidence | `crates/core/src/validation/slash_evidence.rs` | Shared check for every path. `slash_fee_exempt` is consulted only at the two fee floors (`validation/utxo.rs`, the mempool normal lane). |
 | Mempool | `crates/mempool/src/slash_admission.rs` | Judged at `best_height + 1`. Accused-state rules, one resident slash per accused; a fee-exempt slash is never evicted or expired. Revalidation evicts a slash that fails `validate_slash_target`. A busy producer-set lock refuses the slash with the transient `Busy` at and above the gate; the state rules are skipped only when the live producer set is absent or below the gate. |
 | Builder | `bins/node/src/node/production/assembly.rs` | `validate_slash_target` before the UTXO check. `SlashBlockBudget`: at most `MAX_SLASH_TXS_PER_BLOCK` (8) and one per accused. |

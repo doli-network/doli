@@ -17,6 +17,9 @@ use inc_i_156_m1_harness::block_sig;
 #[path = "../inc_i_156_m1_harness/mod.rs"]
 mod inc_i_156_m1_harness;
 
+mod b3_m1_maintainer_fx;
+mod b3_m1_maintainer_residue;
+mod b3_m1_slash_reorg;
 mod bls_rotation_convergence;
 mod inc_i_178_m0_attestation_lock;
 mod inc_i_178_m0_block_identity;

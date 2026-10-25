@@ -158,11 +158,6 @@ impl Node {
             std::collections::HashSet::new();
         let dirty_exit_keys: std::collections::HashSet<Hash> = std::collections::HashSet::new();
 
-        // INC-I-174 (REQ-174-001): snapshot the maintainer trust root BEFORE the
-        // transaction loop and only for a block carrying a rotation, so a block with TWO
-        // rotations records the state before the FIRST. See `maintainer_rewind/mod.rs`.
-        let undo_maintainer_snapshot = self.capture_maintainer_undo(&block).await;
-
         // Undo log: track UTXO changes for this block
         let mut undo_spent_utxos: Vec<(storage::Outpoint, storage::UtxoEntry)> = Vec::new();
         let mut undo_created_utxos: Vec<storage::Outpoint> = Vec::new();
@@ -340,7 +335,8 @@ impl Node {
         // the stale record at a re-applied height; this one is not, so a record from a
         // branch a later reorg abandoned SURVIVES. The fossil is neutralized on the READ
         // side — see `plan_maintainer_rewind`, "The BLOCK decides, never the record alone".
-        if let Some(ref snapshot) = undo_maintainer_snapshot {
+        // The record is the pre-block snapshot `producer_undo::capture` took (REQ-174-001).
+        if let Some(ref snapshot) = producer_undo.maintainer {
             batch.put_maintainer_undo(height, snapshot);
         }
 

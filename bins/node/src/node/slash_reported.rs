@@ -1,5 +1,5 @@
 //! Ledger of the slashes this node created, one per accused, kept for re-offer
-//! until the accused is Slashed or slash-queued or the slash is refused for good.
+//! until the slash is refused for good or the bound evicts it.
 
 use std::collections::{HashMap, VecDeque};
 

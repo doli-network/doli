@@ -68,6 +68,7 @@
 /// The mutating half — `commit_maintainer_rewind` and its announcement path. Split out
 /// for the 500-line module budget; see the file header there.
 mod commit;
+pub(in crate::node) use commit::install_maintainer_snapshot;
 
 /// The record-binding half — the pure predicate deciding whether a `cf_undo` record still
 /// describes the block that NOW occupies its height (AUDIT-P1-001). Staleness/drift
