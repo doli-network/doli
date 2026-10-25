@@ -253,7 +253,7 @@ Active at and above `inc_i_255_slashing_activation_height` (the effective slashi
 
 | Code | Description | Context Variables |
 |------|-------------|-------------------|
-| `ERRTX071` | `producer is slashed or slash-queued`: the Registration key, or the producer an AddBond names, is Slashed or has a queued Slash. Operator action: no retry can succeed. A Slashed key is refused for life. A slash-queued key becomes Slashed at the next epoch boundary, unless a reorg removes the slash. This key cannot register or add bonds; use a new key. | `producer` (hex) |
+| `ERRTX071` | `producer is slashed or slash-queued`: the Registration key, or the producer an AddBond names, is Slashed or has a queued Slash, or a SlashProducer for the same key is in the same block or resident in the mempool. Operator action: no retry can succeed. A Slashed key is refused for life. A slash-queued key becomes Slashed at the next epoch boundary, unless a reorg removes the slash. This key cannot register or add bonds; use a new key. | `producer` (hex) |
 
 ## MPTX -- Mempool Transaction Validation
 

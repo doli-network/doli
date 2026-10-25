@@ -464,11 +464,7 @@ impl Mempool {
         let slash_ctx =
             crate::slash_admission::admission_ctx(&tx, &ctx, &self.producer_holdings, utxo_set)?;
         validate_transaction(&tx, &ctx)?;
-        crate::slash_admission::resident_refusal(
-            &tx,
-            slash_ctx.as_ref(),
-            self.entries.values().map(|e| &e.tx),
-        )?;
+        crate::slash_admission::resident_refusal(&tx, &ctx, self.entries.values().map(|e| &e.tx))?;
 
         // Validate input spending conditions: pubkey + signature for Normal/Bond,
         // covenant evaluation for conditioned outputs. Reject early to prevent

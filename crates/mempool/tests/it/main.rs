@@ -9,6 +9,7 @@
 //! integration tests are modules of THIS binary.
 //! `.claude/hooks/test-binary-gate.sh` enforces the layout.
 
+mod b3_m25_slash_admission_same_block;
 mod b3_m2_slash_scan_bound;
 mod b3_m2_slashed_registration_admission;
 mod inc_i_180_admission_parity;

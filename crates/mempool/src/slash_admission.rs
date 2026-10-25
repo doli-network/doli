@@ -185,8 +185,9 @@ fn gated_accused(tx: &Transaction, mined_at: Option<&ValidationContext>) -> Opti
     tx.slash_data().map(|d| d.producer_pubkey)
 }
 
-/// Resident RequestWithdrawals naming the gated accused of slash `tx`, and
-/// resident txs spending a Bond UTXO in `utxo_set` owned by that accused.
+/// Resident RequestWithdrawals and Registrations / AddBonds naming the gated
+/// accused of slash `tx`, and resident txs spending a Bond UTXO in `utxo_set`
+/// owned by that accused.
 pub(crate) fn withdrawals_for_slash<'a>(
     tx: &Transaction,
     mined_at: Option<&ValidationContext>,
@@ -200,7 +201,8 @@ pub(crate) fn withdrawals_for_slash<'a>(
     resident
         .into_iter()
         .filter(|(_, r)| {
-            bond_withdrawal_producer(r) == Some(accused) || spends_owned_bond(r, &owners, utxo_set)
+            bond_withdrawal_producer(r).or_else(|| slash_registrant(r)) == Some(accused)
+                || spends_owned_bond(r, &owners, utxo_set)
         })
         .map(|(hash, _)| *hash)
         .collect()
@@ -239,26 +241,34 @@ pub(crate) fn bond_spend_refusal(
     Ok(())
 }
 
-/// At/above the slash gate judged at `mined_at` (from `admission_ctx`),
-/// refuse a slash whose accused already has one resident.
+/// At/above the slash gate judged at the height after `ctx` (the tip), refuse
+/// a slash whose accused already has one resident, and a Registration /
+/// AddBond naming the accused of a resident slash (`[ERRTX071]`).
 pub(crate) fn resident_refusal<'a>(
     tx: &Transaction,
-    mined_at: Option<&ValidationContext>,
+    ctx: &ValidationContext,
     resident: impl IntoIterator<Item = &'a Transaction>,
 ) -> Result<(), ValidationError> {
-    let Some(accused) = gated_accused(tx, mined_at) else {
+    if ctx.current_height.saturating_add(1) < ctx.inc_i_255_slashing_activation_height {
+        return Ok(());
+    }
+    let accused = tx.slash_data().map(|d| d.producer_pubkey);
+    let Some(key) = accused.or_else(|| slash_registrant(tx)) else {
         return Ok(());
     };
     let taken = resident
         .into_iter()
         .filter_map(Transaction::slash_data)
-        .any(|d| d.producer_pubkey == accused);
-    if taken {
-        return Err(ValidationError::InvalidSlash(
+        .any(|d| d.producer_pubkey == key);
+    match (taken, accused) {
+        (false, _) => Ok(()),
+        (true, Some(_)) => Err(ValidationError::InvalidSlash(
             "slash target already has a resident slash".to_string(),
-        ));
+        )),
+        (true, None) => Err(ValidationError::SlashedRegistrant {
+            producer: key.to_hex(),
+        }),
     }
-    Ok(())
 }
 
 /// Resident slashes that fail `validate_slash_target`, and resident

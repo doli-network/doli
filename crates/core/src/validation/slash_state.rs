@@ -10,6 +10,7 @@ use crate::consensus::MAX_SLASH_TXS_PER_BLOCK;
 use crate::transaction::{Output, OutputType, Transaction, TxType};
 
 use super::slash_evidence::{decode_slash_data, slash_rule_active, validate_slash};
+use super::slash_registration::slash_registrant;
 use super::slash_window::validate_slash_window;
 use super::{UtxoProvider, ValidationContext, ValidationError};
 
@@ -172,7 +173,8 @@ pub fn slashes_first<'a>(txs: &'a [Transaction], ctx: &ValidationContext) -> Vec
 
 /// Block-level slash rules: at most `MAX_SLASH_TXS_PER_BLOCK` slashes and one
 /// per accused, counted before any evidence check; no RequestWithdrawal naming
-/// an accused; then each target's state.
+/// an accused, no Registration / AddBond for one (`[ERRTX071]`); then each
+/// target's state.
 pub(super) fn validate_block_slashes(
     txs: &[Transaction],
     ctx: &ValidationContext,
@@ -209,6 +211,15 @@ pub(super) fn validate_block_slashes(
                 "block holds a slash and a bond withdrawal for one producer".to_string(),
             ));
         }
+        if let Some(key) = txs
+            .iter()
+            .filter_map(slash_registrant)
+            .find(|k| accused.contains(k))
+        {
+            return Err(ValidationError::SlashedRegistrant {
+                producer: key.to_hex(),
+            });
+        }
     }
     for tx in txs {
         validate_slash_target(tx, ctx)?;
@@ -225,14 +236,14 @@ pub struct SlashBlockBudget {
 }
 
 impl SlashBlockBudget {
-    /// True when the slash rule is inactive; for a RequestWithdrawal, when it
-    /// names no picked accused; for a slash, when the block has room for a
-    /// not-yet-picked accused; true for any other type.
+    /// True when the slash rule is inactive; for a RequestWithdrawal,
+    /// Registration or AddBond, when it names no picked accused; for a slash,
+    /// when the block has room for a not-yet-picked accused; true otherwise.
     pub fn fits(&self, tx: &Transaction, ctx: &ValidationContext) -> bool {
         if !slash_rule_active(ctx) {
             return true;
         }
-        if let Some(producer) = bond_withdrawal_producer(tx) {
+        if let Some(producer) = bond_withdrawal_producer(tx).or_else(|| slash_registrant(tx)) {
             return !self.accused.contains(&producer);
         }
         if tx.tx_type != TxType::SlashProducer {
