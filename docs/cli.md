@@ -806,7 +806,7 @@ life; nodes refuse its Registration with `[ERRTX071]` from the slashing activati
 **Producer signature (INC-I-182).** After the inputs and outputs are final, the CLI signs the
 transaction with the producer key and appends that signature to `extra_data`, with the chain
 genesis hash from `getChainInfo`. It does this at every height. Nodes require it from
-`inc_i_182_producer_auth_activation_height` (devnet `0`; testnet `330849`, pinned 2026-10-25; mainnet `806859`)
+`inc_i_182_producer_auth_activation_height` (devnet `0`; testnet `330849`; mainnet `806859`)
 and refuse an unsigned or foreign-signed transaction with `[ERRTX-PAUTH001]`. `add-bond`,
 `request-withdrawal` and `exit` append the same signature. See `specs/protocol.md` §3.13.2.
 
@@ -1030,7 +1030,7 @@ earlier, before the operator's funds are touched.
 
 Withdraw bonds using FIFO order (oldest first). The withdrawal transaction consumes Bond UTXOs and creates one output with the net amount (after penalty). Penalty is burned via UTXO accounting (inputs - outputs = burn). Below `inc_i_257_unbonding_activation_height` the payout is a Normal output, spendable as soon as the transaction is **mined** (the bond removal itself is epoch-deferred).
 
-**Unbonding lock (INC-I-257).** When the next block is at or above the gate (devnet `0`; testnet `330849`, pinned 2026-10-25; mainnet `806859`), the CLI builds the gated shape: one Unbonding output to the producer's own address, locked until `best_height + unbonding_period + 10` (the 10-block margin covers the wait for inclusion). The fee comes from the withdrawn amount, so no other wallet UTXO is spent or locked. `--destination` must then be the producer's own address, or the command refuses to build. The CLI prints the lock height before it submits. `doli send` spends an Unbonding output only once it is spendable. See `specs/protocol.md` §3.13.1.
+**Unbonding lock (INC-I-257).** When the next block is at or above the gate (devnet `0`; testnet `330849`; mainnet `806859`), the CLI builds the gated shape: one Unbonding output to the producer's own address, locked until `best_height + unbonding_period + 10` (the 10-block margin covers the wait for inclusion). The fee comes from the withdrawn amount, so no other wallet UTXO is spent or locked. `--destination` must then be the producer's own address, or the command refuses to build. The CLI prints the lock height before it submits. `doli send` spends an Unbonding output only once it is spendable. See `specs/protocol.md` §3.13.1.
 
 ```bash
 doli producer request-withdrawal --count <COUNT> [OPTIONS]
