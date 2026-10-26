@@ -71,6 +71,90 @@ All commands support these options:
 
 ---
 
+## Agent Safety Rules
+
+`doli --help` prints these rules after the command list. `doli -h` prints the
+short help only. `doli <command> --help` prints a `DANGER:` note for each command
+that can lose DOLI, expose keys, or delete data. The text below is the same text
+as `bins/cli/src/help_text.rs`; `bins/cli/src/help_text_tests.rs` checks each
+number against the code.
+
+```text
+FACTS
+  Units     1 DOLI = 100,000,000 base units (8 decimals).
+            CLI amounts and --fee are in DOLI. RPC results are in base units.
+  Network   The default is MAINNET. Always pass -n mainnet|testnet|devnet.
+  RPC       Default http://127.0.0.1:8500 (testnet :18500, devnet :28500).
+            Use your own synced node. The CLI trusts what the node returns.
+  Wallet    -w <path>, else $DOLI_WALLET_FILE, else <data-dir>/wallet.json.
+            wallet.json holds PLAIN-TEXT private keys.
+  Bond      1 bond = 10 DOLI on mainnet. Maximum 3,000 bonds per producer.
+  Time      1 slot = 10 s. 1 epoch = 360 blocks = 1 hour.
+  Rewards   Each block adds 1 DOLI to a reward pool. At the end of each epoch
+            the pool goes, by bond weight, to producers that attested in at
+            least 54 of the 60 minutes. Fewer minutes = 0 for that epoch.
+  Delays    Register, add-bond, withdrawal, delegation and rotate-bls apply at
+            the next epoch boundary. Rewards are spendable after 6 blocks.
+
+NEVER DO THESE - EACH ONE CAN LOSE DOLI
+  1. Do not withdraw bonds without checking the penalty first.
+     A bond younger than 1 year loses 75%. 1-2 years: 50%. 2-3 years: 25%.
+     3 years or more: 0%. The penalty is burned. request-withdrawal does not
+     ask for confirmation. From mainnet height 806,859 the payout is also
+     locked for 60,480 blocks (about 7 days).
+     Do this: doli producer simulate-withdrawal --count N
+     To stop operating a node, delegate the bond. Do not withdraw it.
+  2. Do not run one producer key on two nodes at the same time.
+     From mainnet height 806,859, this burns 100% of the bonds and bars the
+     key for life.
+     Do this: stop the old node and confirm it is stopped before you start
+     the new one.
+  3. Do not pass --fee to send or channel. It is in DOLI: --fee 1 pays
+     1 DOLI. The fee above the minimum is destroyed.
+     Do this: leave out --fee. The CLI pays the minimum (1 base unit).
+  4. Do not put a public key where an address is expected. Some commands
+     accept 64-hex text as an address hash. Coins sent to a public key are
+     lost forever.
+     Do this: use the doli1... address that "doli info" shows.
+  5. Do not use "doli spend" without a change output. All value that you do
+     not list as an output is destroyed as fee.
+     Do this: --output for the recipient AND --output for your own change.
+  6. Do not lock coins with a bare timelock(...) or hashlock(...). Anyone can
+     spend them when the condition becomes true.
+     Do this: vesting(<your address>, <height>).
+  7. Do not wipe or snap a data directory that holds wallet files.
+     wipe and snap keep only wallet.json and wallet.seed.txt by exact name.
+     They delete all other files, for example producer.json or backups.
+     "wipe" ignores -n: use "doli wipe --network <net>".
+     Do this: keep wallets outside the data directory (-w <path>).
+  8. Do not trust the 24 words as your only backup. Keys made by
+     "doli address", "add-bls", "import-bls", and BLS keys of wallets made
+     before version 3, cannot come back from the words.
+     Do this: back up wallet.json after each of these commands.
+  9. Do not run new, init, export, import-bls or bridge-swap where the output
+     is logged. They print or write secrets.
+ 10. Do not run "doli upgrade" without sudo on a host that runs the node as a
+     service.
+
+MOVE A PRODUCER TO A NEW MACHINE
+  1. Stop the node on the old machine. Confirm that it is stopped.
+  2. Copy wallet.json to the new machine. Start the node with it. Done.
+  If you have only the 24 words:
+     doli restore
+     (start the node and let it sync)
+     doli producer rotate-bls --yes
+  rotate-bls costs 3 base units. If the keys already match, it stops with
+  "the wallet BLS key is already the key on chain" and costs nothing.
+  Without this step the node runs but can earn 0 rewards.
+
+EXIT CODES
+  Most commands exit 0 when you cancel their prompt.
+  "producer exit" without --force is a dry run and exits 0.
+  Read the output. Do not rely only on the exit code.
+```
+
+---
+
 ## 1. Wallet Management
 
 ### 1.1. Create New Wallet
@@ -593,6 +677,11 @@ This transaction WILL be rejected by mainnet nodes. Use --network devnet or --ne
 
 Spend a covenant-conditioned UTXO by providing the witness data that satisfies the condition. Supports single-output (positional arguments) or multi-output (`--output` flag) modes.
 
+**The single-output mode makes NO change output (INC-I-264).** `doli spend <UTXO> <TO> <AMOUNT>`
+builds one output of `<AMOUNT>`. The rest of the input is destroyed as fee. The fee is
+always the input minus the outputs; `--fee` does not change it. Use `--output` for the
+recipient AND `--output` for your own change, and do not pass `--yes`.
+
 ```bash
 doli spend <UTXO> [<TO> <AMOUNT>] [OPTIONS]
 
@@ -760,7 +849,7 @@ Register as a block producer with bonds.
 doli producer register [OPTIONS]
 
 Options:
-  -b, --bonds <BONDS>    Number of bonds to stake (1-10,000) [default: 1]
+  -b, --bonds <BONDS>    Number of bonds to stake (1-3000) [default: 1]
   -y, --yes              Accept the bond lock and vesting penalty without a prompt
 ```
 
@@ -968,7 +1057,7 @@ Increase stake by adding more bonds. Activation is epoch-deferred.
 doli producer add-bond --count <COUNT>
 
 Options:
-  -c, --count <COUNT>    Number of bonds to add (1-10,000)
+  -c, --count <COUNT>    Number of bonds to add (1-3000 bonds in total per producer)
   -y, --yes              Accept the bond lock and vesting penalty without a prompt
 ```
 
@@ -1037,8 +1126,14 @@ doli producer request-withdrawal --count <COUNT> [OPTIONS]
 
 Options:
   -c, --count <COUNT>              Number of bonds to withdraw
-  -d, --destination <DESTINATION>  Destination address (default: wallet address)
+  -d, --destination <DESTINATION>  Destination doli1... address (default: this wallet).
+                                   Never a public key
 ```
+
+**No confirmation prompt.** `request-withdrawal` prints the penalty and submits in the same
+run. The penalty is burned. Run `doli producer simulate-withdrawal --count N` first.
+`--destination` reads 64-hex text as an address hash: a public key there loses the payout
+(INC-I-267). Use a `doli1...` address.
 
 **Example:**
 ```bash
@@ -1198,9 +1293,13 @@ at or above the gate, the `Unbonding: the payout is locked until height ...` lin
 
 ---
 
-### 4.9. Submit Slashing Evidence
+### 4.9. Check Slashing Evidence
 
-Report double production (equivocation) for slashing.
+Check two blocks for double production (equivocation). **This command submits
+nothing.** It checks the two blocks and prints advice; nodes detect and submit the
+evidence themselves. From the slashing activation height (mainnet 806,859), a
+slashed producer has all bonds burned and the key is barred for life: it cannot
+register or add bonds again.
 
 ```bash
 doli producer slash --block1 <HASH> --block2 <HASH>
@@ -1393,16 +1492,16 @@ The `doli rewards` command group has 5 subcommands:
 
 ```bash
 doli rewards list              # List claimable epochs
-doli rewards claim <EPOCH>     # Claim for a specific epoch
+doli rewards claim <EPOCH>     # No-op (rewards are paid each epoch)
   -r, --recipient <ADDRESS>    # Recipient address (default: wallet)
-doli rewards claim-all         # Claim all available
+doli rewards claim-all         # No-op (rewards are paid each epoch)
   -r, --recipient <ADDRESS>    # Recipient address (default: wallet)
-doli rewards history           # Show claim history
+doli rewards history           # No-op (use 'doli history')
   -l, --limit <N>              # Max entries (default: 20)
 doli rewards info              # Current epoch info
 ```
 
-**Note:** Currently, `list`, `claim`, `claim-all`, and `history` print informational messages redirecting to `doli balance`, because epoch rewards are distributed automatically and no manual claiming is needed. Only `rewards info` queries live epoch data.
+**Note:** Currently, `list`, `claim`, `claim-all`, and `history` print informational messages redirecting to `doli balance`, because rewards are paid automatically once per epoch from the reward pool and no manual claiming is needed. Only `rewards info` queries live epoch data.
 
 ### 5.2. Show Epoch Info
 
@@ -1640,7 +1739,8 @@ doli producer status
 # 2. Preview withdrawal penalty (dry run)
 doli producer simulate-withdrawal --count 2
 
-# 3. Withdraw bonds (instant payout, FIFO penalty)
+# 3. Withdraw bonds (no prompt; FIFO; the penalty is burned;
+#    from mainnet height 806,859 the payout is locked for 60,480 blocks)
 doli producer request-withdrawal --count 2
 
 # 4. Or exit completely
@@ -1655,7 +1755,7 @@ If you observe double production (same producer, same slot, different blocks):
 # 1. Identify the conflicting blocks (both should be for same slot)
 # You'll need the block hashes from your node logs or explorer
 
-# 2. Submit slashing evidence
+# 2. Check the evidence (the command submits nothing)
 doli producer slash \
   --block1 a1b2c3d4... \
   --block2 e5f6a7b8...

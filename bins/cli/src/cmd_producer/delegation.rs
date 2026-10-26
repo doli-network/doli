@@ -200,7 +200,7 @@ pub(super) async fn handle_revoke_delegation(wallet: &Wallet, rpc: &RpcClient) -
     );
     println!("  Delegatee: {}", delegate_addr);
     println!();
-    println!("Note: Unbonding delay applies after revocation.");
+    println!("Note: The revocation applies at the next epoch boundary.");
     println!();
 
     // Build RevokeDelegation transaction (no inputs, no outputs).
