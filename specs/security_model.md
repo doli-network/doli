@@ -295,25 +295,54 @@ The bond serves multiple security functions:
 
 | Violation | Penalty | Proof Required |
 |-----------|---------|----------------|
-| Double production | 100% bond burned | Two valid BlockHeaders for same slot |
+| Double production | 100% of the accused's Bond UTXOs burned (at and above the slashing gate), plus its Unbonding outputs still locked (at and above the unbonding gate) | Two validly signed BlockHeaders for the same slot |
 | Invalid block | None (slot lost) | N/A - Block rejected by network |
 | Inactivity | None | N/A - Natural consequence (missed rewards) |
 
 **Important**: Slashing is reserved ONLY for double production (equivocation). This is the only offense that cannot happen by accident - it requires intentionally signing two different blocks for the same slot.
 
+**Activation gate**: `inc_i_255_slashing_activation_height`. Mainnet: `806859` (pinned with the INC-I-236, INC-I-257 and INC-I-182 gates). Testnet: `330849` (the same height as the INC-I-236, INC-I-257 and INC-I-182 gates). Devnet: 0, with the devnet-only override `DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT`. The rules apply at `NetworkParams::effective_slashing_activation_height()`, the maximum of this gate, the INC-I-236 block-signature gate and the INC-I-181 pending-root gate. Thus slashing can never start before blocks are signed. Below the effective height no SlashProducer can be mined, because the fee floor refuses its fee of 0. Full rules: `specs/protocol.md` §3.10.
+
 **Slashing Evidence Requirements**:
 ```rust
 SlashingEvidence::DoubleProduction {
-    block_header_1: BlockHeader,  // Full header with VDF proof
-    block_header_2: BlockHeader,  // Full header with VDF proof
+    block_header_1: BlockHeader,  // Full header with the producer signature
+    block_header_2: BlockHeader,  // Full header with the producer signature
 }
 ```
 
-Validators verify:
-1. Both headers have the same producer public key
+**Authorship proof**: the block signature, under INV-AUTH-003. A header is authentic only if it carries a valid strict Ed25519 signature by `header.producer` over the domain-separated header hash (`signing_message()`). The VDF does not prove authorship. It only proves sequential work over public inputs, so anyone can compute it for any producer.
+
+At and above the effective height, validators verify:
+1. Both headers have the same producer public key, and it is the accused key
 2. Both headers have the same slot number
 3. Both headers have different hashes
-4. Both headers have valid VDF outputs (proving actual computation)
+4. Each header has a valid producer signature (INV-AUTH-003)
+5. Each header carries the genesis hash of this chain, so evidence from another chain fails
+6. The encoded evidence is at most 64 KiB, is canonical (no trailing bytes) and lists the headers in ascending hash order
+7. The accused is a registered producer, not Slashed, has no queued Slash, and is Active or Unbonding or still holds locked collateral (an Unbonding output owned by its bond owner with judged height < `lock_until`)
+8. The evidence is not expired: its age is less than `unbonding_period`
+9. The evidence does not predate the accused's current registration: the tenure is at least 1, the age is at most the blocks since the effective height, and, with no locked collateral, the offence slot is at or after the slot of the accused's oldest Bond UTXO
+
+Rules 7, 8 and 9 run in this order, after rules 1 to 6.
+
+**Evidence window (AUDIT-P2-539, AUDIT-P2-547)**: the age is counted in slots, from the offence slot (the slot of the two headers) to the judged slot, which is the parent slot + 1 (saturating; an offence slot at or after the judged slot has age 0). Mempool admission and revalidation use the tip slot that the caller passes, the builder uses the parent slot (not the slot of the block it builds), and block validation uses the parent slot, so all four paths give one verdict. `unbonding_period` is a block count. A block takes at least one slot, so the slot window expires no later than the block window. The tenure is `judged height − max(registered_at, effective height)` (saturating); a tenure of 0 refuses. The gate bound refuses an age above `judged height − effective height`: block slots strictly increase with height, so the offence is then at or after the slot of the activation block. The registration floor is `oldest_bond_slot`, the smallest stamped slot of the Bond UTXOs owned by the accused's bond owner; apply stamps every Bond UTXO with the slot of its block on both UTXO backends, so for the registration bonds it is the slot of the registration block. With no locked collateral, an offence slot below it, or no Bond UTXO at all, refuses. `slash_targets` reads the floor in the same bounded owner lookup as `locked_collateral`, so no new field is stored and the state root does not change. Punishment is forward-only, and an offence in the registration block's own slot is slashable. Refusal texts: `slash evidence expired: offence older than the unbonding period` and `slash evidence predates the accused's current registration` (`specs/protocol.md` §3.10.4).
+
+**Gate-bound caveat**: the gate bound is sound, not complete. When the slots missed since the activation block are more than the offence's distance after it, an offence after the activation block is refused. Example: activation block at slot 1000, dense blocks to slot 1010, offence at slot 1010, then 20 blocks over 40 slots: age 41 > 31 blocks since activation, so the slash is refused. The effect is a missed punishment, never a wrongful burn, and the bound stops binding once the age limit (`unbonding_period`) is below the blocks since activation. The registration floor has no such caveat: it compares slots with slots. No slash is valid in the activation block itself, because the tenure there is 0: the floor block is then the judged block, and its slot can be above the parent slot + 1. The floor block's header is not read: a snap-synced node may not hold it, and the verdict must not depend on the node. The Bond UTXO slots are consensus state on every node.
+
+**Pin order (INC-I-262)**: `effective_slashing_activation_height()` must be at or above `inc_i_257_unbonding_activation_height` on every network. Below the unbonding gate a RequestWithdrawal pays at once, so no locked collateral exists and the waiver of the registration floor protects nothing. A unit test over the mainnet, testnet and devnet defaults locks this order (`inc_i_262_m2_pin_order`).
+
+**Terminal Slashed (AUDIT-P2-546)**: a slash moves the accused to `Slashed` from any status (Active, Unbonding or Exited). A `Slashed` key can never register again: from the effective height, a Registration or AddBond naming a Slashed or slash-queued key is refused with `[ERRTX071]` on mempool admission, revalidation, the builder, apply and replay (`specs/protocol.md` §3.10.4). A second slash for one offence is refused (`slash target is already slashed`, or `slash target already has a pending slash` while the first one is queued). Evidence against an old registration cannot slash a new one once the old Bond UTXOs are gone and the old collateral has unlocked: the floor is then the slot of the new registration's Bond UTXOs. While the old collateral is still locked the floor is waived, so a proof from the old registration stays slashable until it expires.
+
+**Reporter field**: `SlashData.reporter_signature` must be the all-zero signature at and above the gate. It is outside consensus: no node verifies or records a reporter, and no reporter gets a reward. A third party therefore cannot make a second transaction id for the same evidence.
+
+**Detector admission**: at and above the gate the detector stores and pairs only headers that pass the per-header evidence checks (rules 4 and 5 and the VDF, `evidence_header_admissible`), and it makes a proof only from a pair whose canonical SlashData fits 64 KiB. It keeps the smaller-encoded header per (producer, slot). Thus a decoy header from the accused (foreign genesis, bad VDF, or oversize) cannot block the valid pair. The detector has no "reported" latch; the handler's re-offer ledger is the only one. Cost: before a proof, at most one VDF verification per distinct header; after it, at most 4 more per (producer, slot). There is no count cap before a proof, because the accused could spend it with decoys. Full rules: `specs/protocol.md` §3.10.6.
+
+**Detector window**: the detector reads time from the node's wall-clock slot, never from the incoming block. It keeps headers for slots from wall slot − 360 to wall slot + `MAX_FUTURE_SLOTS` (1). A header past that end skips the detector only; the block is not dropped. At the first block judged at or above the effective height, the detector drops every stored header once, so headers stored under the admit-all rule below the gate are learned again under the gate rules. Residual: a node more than 360 slots behind wall time does not detect double production in those old blocks. The clear runs once; a deep reorg back below the gate does not run it again.
+
+**Flood bounds**: at most `MAX_SLASH_TXS_PER_BLOCK` (8) slashes per block and one per accused. The mempool keeps one resident slash per accused. A slash that fails these rules is refused where a node first sees it, and that node does not relay it.
+
+**Slash delivery**: at and above the effective height a slash admitted fee-exempt is never evicted for room and never expires by mempool age. Revalidation still evicts it when `validate_slash_target` refuses it, for example when its evidence window closes. When the producer-set lock is busy, admission refuses the slash with the transient `Busy`; the same transaction is admissible once the lock is free. The node that created a slash keeps it in a bounded ledger (1,024 accused, not persisted) and re-offers the same transaction from a periodic tick until admission refuses it for good. While the accused is Slashed or slash-queued the tick skips the entry but keeps it, so a rollback or reorg that removes the slash before the boundary gets the same transaction re-offered. Residual: a node does not re-offer a slash that a peer created. Full rules: `specs/protocol.md` §3.10.4.
 
 **Why 100% Burn?**
 - Invalid blocks are NOT slashed - the natural penalty (losing the slot and its reward) is sufficient
@@ -324,7 +353,15 @@ Validators verify:
 - Prevents incentivizing false accusations
 - Eliminates collusion between accusers and validators
 - Removes gaming opportunities from slashing mechanism
-- Deflationary: reduces total supply
+- Deflationary: at and above the effective height, a mined slash reduces total supply by exactly the burned amount. Below it nothing is burned.
+
+**Exclusion point**: apply burns the bonds in the slash block. The producer-set change (status Slashed, delegations removed) applies at the next epoch boundary, or at the next block in epoch 0. From the slash block on, a RequestWithdrawal by the accused is refused. A block that holds the slash cannot also hold a RequestWithdrawal that names the accused, a Registration of the accused's key or an AddBond that names the accused (`[ERRTX071]`). It also cannot hold any transaction, of any type, that spends a Bond UTXO owned by the accused, whether that UTXO is in the pre-block set or was created earlier in the same block. These rules hold in either order and in Full, Light and Replay. The bond-spend rule keys on the spent UTXO, not on the transaction type, because below the unbonding gate any type can spend a Bond UTXO once its `lock_until` has passed, and a Bond output with a finite `lock_until` is still accepted at creation (AUDIT-P1-003). The builder keeps the slash and drops the withdrawal, Registration, AddBond or spend. The mempool evicts or refuses it. A spend mined in an earlier block than the slash is not reversed: the burn takes only the bonds that are still live. After the flush, the producer has no attester weight. A rollback or reorg of the slash block restores the bonds and the producer set.
+
+**Failed-apply atomicity**: a block that fails to apply leaves the ProducerSet, its pending updates and the producer part of the state root exactly as on a node that never saw the block. When `apply_block` returns an error after its transaction loop starts, the node restores the in-memory set from the snapshot it took before the loop (`bins/node/src/node/apply_block/producer_undo.rs`). No apply error comes after the block batch commits, so disk is not changed either. A failed block that ran AddMaintainer or RemoveMaintainer also gets its pre-block maintainer set put back, in memory and in `maintainer_state.bin`. This holds on every path that calls `apply_block`. It is node-local, not a consensus rule.
+
+**Cross-block withdrawal escape (AUDIT-P2-540, INC-I-257)**: below `inc_i_257_unbonding_activation_height` a RequestWithdrawal pays a Normal output that is spendable in the next block. A producer that has signed two blocks for one slot can withdraw its bonds before the slash is mined. The withdrawn value leaves the slashable set at once, the later slash finds no live Bond to burn, and the producer keeps the funds. An accused that the withdrawal has already moved to `Exited` stays `Exited`. At and above the gate the payout is one Unbonding output owned by the producer's own address and locked for at least `unbonding_period` blocks (mainnet 60,480, testnet 72, devnet 60). No transaction type can spend it before `lock_until`, and at and above the gate only RequestWithdrawal can spend a Bond (`specs/protocol.md` §3.13.1). The value therefore stays at a known owner for the whole period. A slash mined at height H burns every UTXO of the accused's bond owner that is slash-burnable at H (`is_slash_burnable`): each Bond, and each Unbonding output with H < `lock_until`. Burnable is the exact opposite of spendable for Unbonding, so the burn never races a legal spend. Supply drops by the burned amount, and rollback restores the burned entries with their type and `lock_until`. An accused that the withdrawal has moved to `Exited` stays slashable while it holds locked collateral; it stays `Exited` after the burn. Once every Unbonding output has unlocked (H >= `lock_until`), a slash of an exited accused is refused at admission, never selected by the builder, and makes a block invalid. Mempool (judged at tip + 1), builder (at the height built) and block validation (at the block height, against the parent UTXO set) read the same population function, `mempool::slash_admission::slash_targets`. It does at most one owner lookup per accused and at most `MAX_SLASH_TXS_PER_BLOCK` per call; an accused past that budget counts as holding no collateral. The mempool skips the owner lookup for an accused already Slashed or slash-queued; the verdict is the same. The gate is `806859` on mainnet, `330849` on testnet and `0` on devnet.
+
+**Bond-output rule (AUDIT-P1-003, INC-I-257)**: at and above `inc_i_257_unbonding_activation_height`, a Bond output may appear only in a Registration or an AddBond. Each one must be owned by `bond_owner(producer)` (the key named in the registration or add-bond data) and must be worth exactly one network bond unit (`Network::bond_unit()`, the unit the producer set counts). Any other transaction type with a Bond output is refused, and so is a foreign-owner or non-unit Bond. Thus every Bond that adds selection weight is one the slash of that producer can find. `lock_until` is not constrained by this rule. Genesis bonds are written straight to the UTXO set and do not pass through transaction validation. Below the gate the rule does not apply.
 
 #### 4.2.1 Delegator Slashing — Tezos LPoS Equivalence (INC-I-078)
 
@@ -336,9 +373,13 @@ consensus-forced UTXO destruction for delegated bonds would be the
 first and only exception to this invariant.
 
 When `slash_producer` runs, `cleanup_all_delegations` (in
-`crates/storage/src/producer/set_lifecycle.rs:165-178`) returns every
+`crates/storage/src/producer/set_lifecycle.rs`) returns every
 delegator's principal to them — they lose only the *weight*
-contribution they had assigned to the slashed producer.
+contribution they had assigned to the slashed producer. The burn
+(`bins/node/src/node/apply_block/slash_burn.rs`) selects the accused's
+slash-burnable UTXOs (Bonds, and Unbonding outputs still locked) by
+owner. It burns the bonds the accused owns, also those it delegated to
+another producer. It never burns a delegator's own bonds.
 
 This is functionally equivalent to **Tezos LPoS slashing** ("the
 delegate alone is slashed for the validator's misbehavior" — Tezos
@@ -422,6 +463,10 @@ already count the verdict they *would* reach in
 `doli_vesting_would_reject_total{code}`, which is evidence for choosing that
 height but is not itself a defense. Pinning it changes consensus rules and is a
 separate decision session.
+
+**Signer binding (INC-I-182)**: from `inc_i_182_producer_auth_activation_height`, a
+RequestWithdrawal also needs the named producer's own signature, so no third party
+can force a producer's full exit (`specs/protocol.md` §3.13.2).
 
 ---
 
@@ -515,31 +560,34 @@ The equivocation detector tracks block production to detect double-signing (the 
 │  EQUIVOCATION DETECTOR                                          │
 ├─────────────────────────────────────────────────────────────────┤
 │  Storage: HashMap<(PublicKey, Slot), BlockHeader>               │
-│  LRU Cache: MAX_TRACKED_SLOTS = 1000                            │
+│  Cap: MAX_TRACKED_ENTRIES = 10,000, window 360 slots            │
+│  Pending proofs: at most 64; one proof per (producer, slot)     │
 │  Data Stored: Full BlockHeader (not just hash)                  │
-│  Purpose: Enable VDF verification in slashing evidence          │
+│  Purpose: Carry the producer signatures into slashing evidence  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 **Why Full Headers?**
-- Block headers contain VDF output and proof
-- Validators must verify the producer actually computed valid VDFs for both blocks
-- Prevents fabricated evidence attacks (can't invent fake block hashes)
+- Each header carries the producer block signature (INC-I-236)
+- Validators verify both signatures against the accused key, so nobody can forge evidence
 - Evidence is cryptographically verifiable by any node
 
 **Detection Flow**:
-1. Block received → check if `(producer, slot)` exists in tracker
-2. If exists with different hash → **EQUIVOCATION DETECTED**
+1. Block received → at and above the gate, drop the header from the detector unless it passes the per-header evidence checks (§4.2 "Detector admission")
+2. If `(producer, slot)` holds a different admitted header and the pair fits 64 KiB → **EQUIVOCATION DETECTED**; the smaller header stays stored
 3. Create `EquivocationProof` with both full `BlockHeader`s
-4. Log the proof. No `SlashProducer` transaction is created, pooled, or broadcast:
-   a SlashProducer tx fails `InsufficientFee` at every height, and its evidence is
-   forgeable because headers are unsigned (INC-I-173 C1, INC-I-237)
+4. Below the effective slashing height (§4.2): log the proof only. No `SlashProducer`
+   transaction is created, pooled or broadcast.
+5. At and above it: the handler (`bins/node/src/node/slash_submit.rs`) builds the one
+   canonical slash and submits it through mempool admission. It relays the slash only
+   after admission, and only when the accused has no resident slash and was not
+   reported before (reported set bounded at 1,024 keys).
 
 **Slashing Evidence Structure**:
 ```rust
 SlashingEvidence::DoubleProduction {
-    block_header_1: BlockHeader,  // Full header with VDF
-    block_header_2: BlockHeader,  // Full header with VDF
+    block_header_1: BlockHeader,  // Full header, signed by the producer
+    block_header_2: BlockHeader,  // Full header, signed by the producer
 }
 ```
 

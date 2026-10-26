@@ -8,7 +8,6 @@ use crypto::Hash;
 use doli_core::Block;
 
 use super::super::bodies::BodyDownloader;
-use super::super::headers::HeaderDownloader;
 use super::{SyncManager, SyncState};
 
 impl SyncManager {
@@ -310,10 +309,7 @@ impl SyncManager {
             self.network.last_block_applied = Instant::now();
             self.network.last_sync_activity = Instant::now();
             self.last_block_received_via_gossip = Some(Instant::now());
-            self.pipeline.header_downloader = super::super::headers::HeaderDownloader::new(
-                self.config.max_headers_per_request,
-                self.config.request_timeout,
-            );
+            self.pipeline.header_downloader = self.config.header_downloader();
             self.pipeline.body_downloader = super::super::bodies::BodyDownloader::new(
                 self.config.max_bodies_per_request,
                 self.config.max_concurrent_body_requests,
@@ -378,10 +374,7 @@ impl SyncManager {
         self.network.last_sync_activity = Instant::now();
 
         // Reset downloaders
-        self.pipeline.header_downloader = HeaderDownloader::new(
-            self.config.max_headers_per_request,
-            self.config.request_timeout,
-        );
+        self.pipeline.header_downloader = self.config.header_downloader();
         self.pipeline.body_downloader = BodyDownloader::new(
             self.config.max_bodies_per_request,
             self.config.max_concurrent_body_requests,
@@ -737,10 +730,7 @@ impl SyncManager {
         self.pipeline.pending_blocks.clear();
         self.pipeline.headers_needing_bodies.clear();
         self.pipeline.pending_requests.clear();
-        self.pipeline.header_downloader = HeaderDownloader::new(
-            self.config.max_headers_per_request,
-            self.config.request_timeout,
-        );
+        self.pipeline.header_downloader = self.config.header_downloader();
         self.pipeline.body_downloader = BodyDownloader::new(
             self.config.max_bodies_per_request,
             self.config.max_concurrent_body_requests,

@@ -89,7 +89,8 @@ impl Node {
     }
 
     /// Derive an attester's authority from the LOCAL ProducerSet (Seam A, [F1]).
-    /// `None` = not a producer-set member (reject; never trust the wire's
+    /// `None` = not a producer-set member, or a Slashed one from the slashing
+    /// activation height (reject; never trust the wire's
     /// self-declared weight). `Some(w)` = member with locally-derived selection
     /// weight, which may be 0 for a fully-delegated active producer (INV-ATTEST-001,
     /// so attendance admission uses `.is_some()`, not `w > 0`).
@@ -99,15 +100,11 @@ impl Node {
         attester: &PublicKey,
         height: u64,
     ) -> Option<u64> {
-        producers.get_by_pubkey(attester).map(|p| {
-            p.selection_weight_at(
-                height,
-                self.config
-                    .network
-                    .params()
-                    .security_audit_activation_height,
-            )
-        })
+        let params = self.config.network.params();
+        producers
+            .get_by_pubkey(attester)
+            .filter(|p| height < params.effective_slashing_activation_height() || !p.is_slashed())
+            .map(|p| p.selection_weight_at(height, params.security_audit_activation_height))
     }
 
     /// Admit one Ed25519-verified attestation: membership, then attendance, then the

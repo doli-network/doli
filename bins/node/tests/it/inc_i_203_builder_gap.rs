@@ -176,6 +176,7 @@ async fn admit_add_bond_n(node: &Node, kp: &KeyPair, tag: u8, requested: u32) ->
         Transaction::new_add_bond(vec![inp], pk, requested, unit * requested as u64, u64::MAX);
     let signing_hash = tx.signing_message_for_input(0);
     tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, kp.private_key());
+    let tx = super::inc_i_255_m2_common::producer_auth(tx, kp);
     let hash = tx.hash();
     {
         let utxo = node.utxo_set.read().await;
@@ -447,6 +448,7 @@ async fn unavailable_holdings_fails_open_and_packs() {
         Transaction::new_add_bond(vec![inp], spk, REQUESTED, unit * REQUESTED as u64, u64::MAX);
     let signing_hash = tx.signing_message_for_input(0);
     tx.inputs[0].signature = crypto::signature::sign_hash(&signing_hash, stranger.private_key());
+    let tx = super::inc_i_255_m2_common::producer_auth(tx, &stranger);
     let stranger_hash = tx.hash();
     let admitted = {
         let utxo = sc.node.utxo_set.read().await;

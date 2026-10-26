@@ -167,10 +167,7 @@ pub struct ValidationContext {
     pub encrypted_content_v2_activation_height: u64,
     /// Unified activation height for all consensus-breaking security audit fixes.
     pub security_audit_activation_height: u64,
-    /// INC-I-088 Phase 0: originally gated 7 non-AMM DeFi tx types.
-    /// All 7 types are now tombstoned (lending B.1, NFT-frac B.2).
-    /// Field retained for structural compatibility with NetworkParams.
-    /// Default `u64::MAX` on all networks.
+    /// INC-I-088 Phase 0 gate; its 7 types are tombstoned. Default `u64::MAX`.
     pub defi_activation_height: u64,
     /// AMM Foundations M1: height at which the 4 AMM tx types
     /// (CreatePool, AddLiquidity, RemoveLiquidity, Swap) become valid for
@@ -241,11 +238,7 @@ pub struct ValidationContext {
     /// `validate_transaction_with_utxos` is `Transaction::is_zero_flow()` —
     /// 0 inputs AND 0 outputs AND an authorization-curated type. Below it, the
     /// legacy 3-type `matches!` is preserved character-identical so a mixed
-    /// fleet cannot fork (INV-COMPAT-001).
-    ///
-    /// The gate is evaluated from THIS context's `current_height` (the BLOCK's
-    /// height), inside the shared validator and nowhere else, so builder/apply
-    /// parity holds by construction (constraint C4 / INV-PROD-003).
+    /// fleet cannot fork (INV-COMPAT-001). Evaluated from `current_height` only.
     ///
     /// Sourced from `NetworkParams::inc_i_173_activation_height`. Default
     /// `u64::MAX` (fail-closed): a construction site that forgets
@@ -256,6 +249,16 @@ pub struct ValidationContext {
     pub bls_key_rotation_activation_height: u64,
     /// INC-I-234 gate, from `NetworkParams::inc_i_234_activation_height`. Default `u64::MAX` (fail-closed).
     pub inc_i_234_activation_height: u64,
+    /// INC-I-236 block-signature gate. Default `u64::MAX` (fail-closed).
+    pub inc_i_236_block_signature_activation_height: u64,
+    pub inc_i_255_slashing_activation_height: u64,
+    /// INC-I-257 gate (default `u64::MAX`, fail-closed), lock length, mempool next-height flag.
+    pub inc_i_257_unbonding_activation_height: u64,
+    pub unbonding_period: u64,
+    pub inc_i_257_rules_at_next_height: bool,
+    /// INC-I-182 producer-auth gate. Default `u64::MAX` (off).
+    pub inc_i_182_producer_auth_activation_height: u64,
+    pub slash_targets: std::collections::HashMap<PublicKey, super::SlashTargetState>,
 }
 
 impl ValidationContext {
@@ -299,6 +302,13 @@ impl ValidationContext {
             inc_i_173_activation_height: u64::MAX,
             bls_key_rotation_activation_height: u64::MAX,
             inc_i_234_activation_height: u64::MAX,
+            inc_i_236_block_signature_activation_height: u64::MAX,
+            inc_i_255_slashing_activation_height: u64::MAX,
+            inc_i_257_unbonding_activation_height: u64::MAX,
+            unbonding_period: 0,
+            inc_i_257_rules_at_next_height: false,
+            inc_i_182_producer_auth_activation_height: u64::MAX,
+            slash_targets: std::collections::HashMap::new(),
         }
     }
 
@@ -383,6 +393,13 @@ impl ValidationContext {
     #[must_use]
     pub fn with_inc_i_234_activation_height(mut self, height: u64) -> Self {
         self.inc_i_234_activation_height = height;
+        self
+    }
+
+    /// Set the INC-I-236 block-signature activation height (see field doc).
+    #[must_use]
+    pub fn with_inc_i_236_block_signature_activation_height(mut self, height: u64) -> Self {
+        self.inc_i_236_block_signature_activation_height = height;
         self
     }
 

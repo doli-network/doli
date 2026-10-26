@@ -2,6 +2,8 @@ use super::*;
 use crate::node::attestation::{commit, width};
 
 mod gossip_txs;
+mod slash_facts;
+mod slash_withdrawal;
 mod withdrawal_economics;
 
 impl Node {
@@ -126,6 +128,31 @@ impl Node {
                 .bls_key_rotation_activation_height,
         )
         .with_inc_i_234_activation_height(self.config.network.params().inc_i_234_activation_height)
+        .with_inc_i_236_block_signature_activation_height(
+            self.config
+                .network
+                .params()
+                .inc_i_236_block_signature_activation_height,
+        )
+        .with_inc_i_255_slashing_activation_height(
+            self.config
+                .network
+                .params()
+                .effective_slashing_activation_height(),
+        )
+        .with_inc_i_257_unbonding(
+            self.config
+                .network
+                .params()
+                .inc_i_257_unbonding_activation_height,
+            self.config.network.params().unbonding_period,
+        )
+        .with_inc_i_182_producer_auth(
+            self.config
+                .network
+                .params()
+                .inc_i_182_producer_auth_activation_height,
+        )
         .with_epoch_producer_list(if self.epoch_state.active_list.is_empty() {
             self.epoch_state.producer_list.clone()
         } else {
@@ -202,6 +229,9 @@ impl Node {
             .map(|p| p.public_key)
             .collect();
         let pending_keys = producers.pending_registration_keys();
+        let slash_targets = self
+            .slash_facts(Some(&producers), height, &block.transactions)
+            .await;
         drop(producers);
 
         // Bond weights from epoch-locked snapshot (single source of truth).
@@ -350,6 +380,32 @@ impl Node {
                 .bls_key_rotation_activation_height,
         )
         .with_inc_i_234_activation_height(self.config.network.params().inc_i_234_activation_height)
+        .with_inc_i_236_block_signature_activation_height(
+            self.config
+                .network
+                .params()
+                .inc_i_236_block_signature_activation_height,
+        )
+        .with_inc_i_255_slashing_activation_height(
+            self.config
+                .network
+                .params()
+                .effective_slashing_activation_height(),
+        )
+        .with_inc_i_257_unbonding(
+            self.config
+                .network
+                .params()
+                .inc_i_257_unbonding_activation_height,
+            self.config.network.params().unbonding_period,
+        )
+        .with_inc_i_182_producer_auth(
+            self.config
+                .network
+                .params()
+                .inc_i_182_producer_auth_activation_height,
+        )
+        .with_slash_targets(slash_targets)
         .with_inc_i_026_scheduler_activation_height(
             self.config
                 .network
@@ -819,7 +875,7 @@ impl Node {
             // The pool UTXO set is deterministic — comparing inputs against it
             // is safe even during sync/reorg. Previously gated behind Full-only,
             // which let syncing nodes accept EpochReward TXs with stale inputs.
-            // Replay mode skips: historical blocks (e.g., E362) have mismatched
+            // Replay mode skips both arms: historical blocks (e.g., E362) have mismatched
             // inputs that are part of the chain's consensus history.
             if mode != ValidationMode::Replay
                 && height >= doli_core::consensus::EPOCH_REWARD_EXPLICIT_INPUTS_HEIGHT
@@ -852,7 +908,7 @@ impl Node {
                         format_epoch_inputs_mismatch(height, &expected_inputs, &actual_inputs)
                     );
                 }
-            } else if !epoch_tx.inputs.is_empty() {
+            } else if mode != ValidationMode::Replay && !epoch_tx.inputs.is_empty() {
                 anyhow::bail!(
                     "[ECON_EPOCH_PRE_INPUTS] EpochReward at height={} (pre-activation) must not have inputs",
                     height

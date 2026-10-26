@@ -33,6 +33,9 @@
 //! INV-4: Monotonic Gini OR equilibrium (variance < 0.005 over last 100 epochs)
 //! INV-5: No restake from nothing — 0-reward producers add 0 bonds
 
+#[path = "support/block_sig.rs"]
+mod block_sig;
+
 use crypto::{signature, Hash, KeyPair};
 use doli_core::consensus::reward_epoch;
 use doli_core::consensus::ConsensusParams;
@@ -173,7 +176,7 @@ fn make_header(
     producer: &KeyPair,
     params: &ConsensusParams,
 ) -> BlockHeader {
-    BlockHeader {
+    let mut header = BlockHeader {
         version: 2,
         prev_hash,
         merkle_root: doli_core::block::compute_merkle_root(txs),
@@ -189,7 +192,9 @@ fn make_header(
         missed_producers: Vec::new(),
         data_root: Hash::ZERO,
         fork_id: Hash::ZERO,
-    }
+    };
+    block_sig::sign_header(&mut header, producer);
+    header
 }
 
 fn build_coinbase_block(

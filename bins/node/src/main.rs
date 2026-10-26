@@ -17,7 +17,9 @@ use doli_core::{network_params, Network};
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
+mod chainspec_select;
 mod cli;
+mod cli_release;
 mod commands;
 mod config;
 mod devnet;
@@ -127,7 +129,7 @@ async fn main() -> Result<()> {
                         chainspec: Some(ref path),
                         ..
                     }) => Some(expand_tilde_path(path)),
-                    Some(Commands::Run { .. }) => {
+                    Some(Commands::Run { .. }) | Some(Commands::CheckProducerSet) => {
                         let default = data_dir.join("chainspec.json");
                         if default.exists() {
                             Some(default)
@@ -254,6 +256,15 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Recover { yes }) => {
             operations::recover_chain_state(network, &data_dir, yes)?;
+        }
+        Some(Commands::CheckProducerSet) => {
+            let code = operations::check_producer_set(network, &data_dir).await?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        Some(Commands::ExitedBondCensus) => {
+            operations::exited_bond_census(&data_dir)?;
         }
         Some(Commands::Restore {
             from,

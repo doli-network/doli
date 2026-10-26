@@ -89,11 +89,13 @@ pub enum SlashingEvidence {
     /// 1. Both headers have the same producer
     /// 2. Both headers have the same slot
     /// 3. Both headers have different hashes
-    /// 4. Both headers have valid VDFs (proving the producer actually created them)
+    /// 4. Both headers have valid VDFs (sequential work over public inputs only)
+    /// 5. From the INC-I-236 AH: both headers carry the producer's signature
+    ///    (the authorship proof) and this chain's genesis hash
     DoubleProduction {
-        /// First block header (complete, for VDF verification)
+        /// First block header (complete, including the producer signature)
         block_header_1: crate::BlockHeader,
-        /// Second block header (complete, for VDF verification)
+        /// Second block header (complete, including the producer signature)
         block_header_2: crate::BlockHeader,
     },
     /// Phase 2.1 Oracle: producer submitted two `PriceAttestation`

@@ -60,6 +60,16 @@
 
 use tracing::error;
 
+use super::NetworkParams;
+
+impl NetworkParams {
+    pub fn effective_slashing_activation_height(&self) -> u64 {
+        self.inc_i_255_slashing_activation_height
+            .max(self.inc_i_236_block_signature_activation_height)
+            .max(self.inc_i_181_pending_root_activation_height)
+    }
+}
+
 /// Which `.env` variable the operator ACTUALLY set to produce an inversion.
 ///
 /// Audit **AUDIT-P2-102**: the refusal used to blame

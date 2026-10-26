@@ -420,6 +420,7 @@ async fn req_bls_002_legacy_preimage_above_ah_rejects() {
         "anti-vacuity: the two preimages must actually differ for this body"
     );
     legacy.header.presence_root = legacy_root;
+    crate::block_sig::resign(&mut legacy.header);
 
     let verdict = f.validate_full(&legacy).await;
     expect_reject(

@@ -33,6 +33,8 @@
 //! Gini coefficient validated per-epoch (O2 derivative):
 //! O2' x P-EPOCH x I-UNIFORM -> gini(bond_counts) < 0.02
 
+#[path = "support/block_sig.rs"]
+mod block_sig;
 use crypto::{Hash, KeyPair};
 use doli_core::consensus::reward_epoch;
 use doli_core::consensus::ConsensusParams;
@@ -171,7 +173,7 @@ fn build_coinbase_block(
     let merkle_root = doli_core::block::compute_merkle_root(std::slice::from_ref(&coinbase));
     let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
 
-    let header = BlockHeader {
+    let mut header = BlockHeader {
         version: 2,
         prev_hash,
         merkle_root,
@@ -188,6 +190,7 @@ fn build_coinbase_block(
         data_root: Hash::ZERO,
         fork_id: Hash::ZERO,
     };
+    crate::block_sig::sign_header(&mut header, producer);
 
     Block::new(header, vec![coinbase])
 }
@@ -243,7 +246,7 @@ async fn build_epoch_boundary_block(
     let merkle_root = doli_core::block::compute_merkle_root(&txs);
     let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
 
-    let header = BlockHeader {
+    let mut header = BlockHeader {
         version: 2,
         prev_hash,
         merkle_root,
@@ -260,6 +263,7 @@ async fn build_epoch_boundary_block(
         data_root: Hash::ZERO,
         fork_id: Hash::ZERO,
     };
+    crate::block_sig::sign_header(&mut header, producer);
 
     (Block::new(header, txs), distributed)
 }

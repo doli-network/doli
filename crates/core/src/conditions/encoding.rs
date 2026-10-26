@@ -303,7 +303,9 @@ impl Condition {
                 if rest.len() < 2 {
                     return Err(ConditionError::BufferTooShort);
                 }
+                // A guard never names Unbonding: byte 16 stays an unknown tag.
                 let expected_type = crate::transaction::OutputType::from_u8(rest[0])
+                    .filter(|t| *t != crate::transaction::OutputType::Unbonding)
                     .ok_or_else(|| ConditionError::UnknownTag { tag: rest[0] })?;
                 let output_index = rest[1];
                 Ok((

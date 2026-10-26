@@ -161,20 +161,27 @@ impl Node {
             return Ok(());
         }
 
-        // Check for equivocation (double signing) - even for forks.
-        // This is critical for slashing misbehaving producers.
-        let equivocation_proof = { self.equivocation_detector.write().await.check_block(&block) };
-        if let Some(proof) = equivocation_proof {
-            self.handle_equivocation(proof).await;
-        }
-
-        // Classify the block against our current chain state
         let (best_hash, best_height, genesis_hash) = {
             let state = self.chain_state.read().await;
             (state.best_hash, state.best_height, state.genesis_hash)
         };
+        let net = self.config.network.params();
+        // INC-I-236: no pre-classification height, so gate on the prospective tip.
+        if !self.gossip_block_authenticated(&block, best_height) {
+            return Ok(());
+        }
+        // Equivocation check (even for forks)
+        let proof = {
+            let mut detector = self.equivocation_detector.write().await;
+            // Earlier proofs were handled through check_block_with's return.
+            detector.take_pending_proofs();
+            self.detector_check(&mut detector, &block, best_height)
+        };
+        if let Some(proof) = proof {
+            self.handle_equivocation(proof).await;
+        }
         let our_fork_id = self.current_fork_id();
-        let fork_id_activation = self.config.network.params().fork_id_activation_height;
+        let fork_id_activation = net.fork_id_activation_height;
 
         let class = classify_gossip_block(
             &block,
@@ -540,6 +547,7 @@ impl Node {
         // Get current state
         let current_height = self.chain_state.read().await.best_height;
         let target_height = current_height - rollback_count as u64;
+        self.verify_fork_signed(&new_blocks, target_height + 1)?;
 
         // No-op reorg: rollback_count=0 means we're already at the common ancestor.
         // Skip the rollback path entirely — there's nothing to undo, and calling
@@ -727,7 +735,7 @@ impl Node {
                     // so the in-memory ProducerSet is already correct).
                     if let Some(snapshot_bytes) = producer_snapshot_for_restore {
                         if let Ok(restored_producers) =
-                            bincode::deserialize::<storage::ProducerSet>(&snapshot_bytes)
+                            storage::ProducerSet::from_snapshot_bytes(&snapshot_bytes)
                         {
                             {
                                 let mut producers = self.producer_set.write().await;
@@ -907,6 +915,7 @@ impl Node {
                                 }
                             }
                             utxo.add_transaction(tx, height, is_reward_tx, block.header.slot)?;
+                            self.slash_burn_in_utxo_set(tx, height, &mut utxo)?;
                         }
                         if genesis_blocks > 0 && height == genesis_blocks + 1 {
                             Self::consume_genesis_bond_utxos(

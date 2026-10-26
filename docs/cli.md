@@ -798,6 +798,18 @@ so a registration that has mined but not yet crossed the epoch boundary is invis
 A second registration inside that window is rejected by block validation and poisons the next
 block your producer builds (INC-I-147).
 
+**Slashed-key guard.** The same `getProducers` answer also refuses a key with status `slashed`
+or with a pending `slash` update, before anything is submitted. A Slashed key is refused for
+life; nodes refuse its Registration with `[ERRTX071]` from the slashing activation height. An
+`exited` key that was never slashed may still re-register.
+
+**Producer signature (INC-I-182).** After the inputs and outputs are final, the CLI signs the
+transaction with the producer key and appends that signature to `extra_data`, with the chain
+genesis hash from `getChainInfo`. It does this at every height. Nodes require it from
+`inc_i_182_producer_auth_activation_height` (devnet `0`; testnet `330849`; mainnet `806859`)
+and refuse an unsigned or foreign-signed transaction with `[ERRTX-PAUTH001]`. `add-bond`,
+`request-withdrawal` and `exit` append the same signature. See `specs/protocol.md` §3.13.2.
+
 **Retention verification.** `sendTransaction` returning OK only means the node accepted the
 transaction — it can be evicted moments later. After submitting, the CLI re-queries the same node
 with `getTransaction` (a short bounded poll) and only then prints the success line and the
@@ -971,6 +983,10 @@ the notice; a non-interactive stdin without `--yes` exits non-zero and creates n
 doli producer add-bond --count 3
 ```
 
+**Slashed-key guard.** The CLI refuses `add-bond` when `getProducers` reports the key with
+status `slashed` or with a pending `slash` update, before anything is submitted. Nodes refuse
+such an AddBond with `[ERRTX071]` from the slashing activation height.
+
 **Cap headroom check (INC-I-203).** A producer may hold at most
 `MAX_BONDS_PER_PRODUCER` (3,000) bonds. The CLI reads the producer's
 `producerSetBondCount` and its pending epoch-deferred `add_bond` updates from
@@ -1003,13 +1019,18 @@ AddBond with `[ADDBOND_CAP_EXCEEDED]` (see `docs/troubleshooting.md` §2.5) — 
 an older CLI is still blocked at the node; this check only moves the refusal
 earlier, before the operator's funds are touched.
 
+**Producer signature (INC-I-182).** The CLI appends the producer signature, as for
+`producer register` (§4.1).
+
 **WHITEPAPER Reference:** Section 6.3 (Bond Stacking) - More bonds = more block production slots in deterministic rotation.
 
 ---
 
 ### 4.6. Withdraw Bonds
 
-Withdraw bonds instantly using FIFO order (oldest first). The withdrawal transaction consumes Bond UTXOs and creates a Normal output with the net amount (after penalty). Penalty is burned via UTXO accounting (inputs - outputs = burn). There is no unbonding delay: the payout output is spendable as soon as the transaction is **mined** (the bond removal itself is epoch-deferred).
+Withdraw bonds using FIFO order (oldest first). The withdrawal transaction consumes Bond UTXOs and creates one output with the net amount (after penalty). Penalty is burned via UTXO accounting (inputs - outputs = burn). Below `inc_i_257_unbonding_activation_height` the payout is a Normal output, spendable as soon as the transaction is **mined** (the bond removal itself is epoch-deferred).
+
+**Unbonding lock (INC-I-257).** When the next block is at or above the gate (devnet `0`; testnet `330849`; mainnet `806859`), the CLI builds the gated shape: one Unbonding output to the producer's own address, locked until `best_height + unbonding_period + 10` (the 10-block margin covers the wait for inclusion). The fee comes from the withdrawn amount, so no other wallet UTXO is spent or locked. `--destination` must then be the producer's own address, or the command refuses to build. The CLI prints the lock height before it submits. `doli send` spends an Unbonding output only once it is spendable. See `specs/protocol.md` §3.13.1.
 
 ```bash
 doli producer request-withdrawal --count <COUNT> [OPTIONS]
@@ -1033,7 +1054,11 @@ doli producer request-withdrawal --count 2 --destination doli1abc...
 withdrawals), **aborts** if that disagrees with the wallet's Bond-UTXO count (a
 ledger mismatch — retry after the next epoch boundary flushes pending bond
 changes), prints both numbers before submitting, and selects Bond inputs by
-**count**, not by value. `doli producer exit` applies the same guard for a full drain.
+**count**, not by value. `doli producer exit` applies the same guard for a full drain,
+except when the wallet holds no live Bond UTXO (§4.8).
+
+**Producer signature (INC-I-182).** The CLI appends the producer signature, as for
+`producer register` (§4.1).
 
 **INC-I-171:** the payout printed below is computed with
 `doli_core::validation::vesting::penalized_bond_net` — the SAME core function the consensus
@@ -1080,6 +1105,7 @@ Bonds removed at next epoch boundary (~7 minutes, Epoch 11).
 ```
 
 Once mined, the last line becomes `Payout output created — funds are spendable (N confirmation(s)).`
+For a gated withdrawal it reads `The payout becomes spendable at height H, after this transaction is mined.`
 If the node accepted the transaction and then dropped it, the command exits non-zero with
 `Withdrawal request was NOT retained by the node.` and makes no claim about funds.
 
@@ -1134,7 +1160,38 @@ doli producer exit
 doli producer exit --force
 ```
 
-Without `--force`, the command shows the current penalty and time remaining before allowing exit.
+Without `--force`, the command builds the exit (it reads the wallet's UTXOs and the chain
+info), prints the summary below, and stops. Nothing is signed or submitted. If the exit
+cannot be built, the preview fails with the same `Cannot build the exit: ...` error.
+
+**What `exit` builds.** `exit` withdraws the producer's whole ProducerSet allowance in one
+RequestWithdrawal, built by the same builder as `request-withdrawal`, and appends the producer
+signature (§4.1). The bond count comes from the ProducerSet, never from the UTXO-derived
+`bondCount`. When the wallet holds Bond UTXOs, their count must equal that allowance, or the
+command aborts with `Ledger mismatch`.
+
+**Exit with no live Bond UTXO (INC-I-182, INC-I-262).** When the ProducerSet still lists bonds
+but the wallet holds no live Bond UTXO, `exit` still works: it builds the full exit with no Bond
+input. When the next block is at or above `inc_i_257_unbonding_activation_height`, the payout is
+one Unbonding output to the producer's own address, locked for the unbonding period, and a change
+output is not possible. So the exit spends exactly **one** coin: the smallest spendable Normal
+output whose amount is above the fee (a coin of exactly fee + 1 locks 1 unit), whatever order the
+node lists the coins in. That coin minus the fee is locked; every other coin stays spendable. If
+no coin is above the fee, the command refuses to build (`insufficient spendable balance`) and
+nothing is submitted. Below that gate it is one Normal output to the same address, funded as
+before. See `specs/protocol.md` §3.13.2.
+
+For this zero-Bond exit at or above the gate, the summary replaces `You receive: ...` (which would
+read 0) with the locked amount, the lock height and what stays spendable:
+
+```
+No Bond is withdrawn. This exit locks 2.99999999 DOLI from one coin.
+Unbonding: the payout is locked until height 1070 (unbonding period 60 blocks).
+Stays spendable: 40.00000000 DOLI
+```
+
+An exit with Bond inputs prints the same lines as before: `You receive: ...`, the penalty lines and,
+at or above the gate, the `Unbonding: the payout is locked until height ...` line.
 
 **WHITEPAPER Reference:** Section 6.4 (Bond Lifecycle)
 - Penalty burns are permanent (deflationary)
@@ -1663,7 +1720,65 @@ doli-node recover [--yes]
 #   reindex rebuilds height_index → recover replays blocks → start node
 doli-node --network NETWORK --data-dir /path/to/data reindex
 doli-node --network NETWORK --data-dir /path/to/data recover --yes
+
+# Check a STOPPED node's persisted producer set against a block replay (read-only)
+doli-node --network NETWORK --data-dir /path/to/data check-producer-set
+
+# List a STOPPED node's Exited producers that still own Bond UTXOs (read-only)
+doli-node --network NETWORK --data-dir /path/to/data exited-bond-census
 ```
+
+`--network` and `--data-dir` are global flags: they work before or after the subcommand
+(`doli-node check-producer-set --network testnet --data-dir /path/to/data` is the same command).
+`--log-level` and `--config` go before the subcommand.
+
+**`check-producer-set`** (no flags of its own).
+It replays heights `1..=best_height` of the block store through `apply_block(Replay)` on a
+headless node in a scratch directory under the temp dir (`TMPDIR`), then compares the rebuilt
+ProducerSet (canonical bytes and the ordered pending queue) with the persisted one.
+
+- **Read-only:** it opens `state_db` and `blocks` with RocksDB read-only opens (no copy). They take
+  no lock and write no file in the data directory; any RocksDB info log goes to the scratch directory.
+  It probes each `LOCK` file with a non-blocking fcntl write lock that it releases at once, and it
+  never creates or writes that file.
+- **Scratch cleanup:** the scratch copy (`doli-check-producer-set-<pid>-<nanos>` under the temp dir)
+  is removed on every normal and error exit and on SIGINT/SIGTERM (exit 1). An abort that cannot
+  run cleanup (`kill -9`, a panic in a release build, power loss) leaves a directory that the next
+  run removes: on start the command removes such directories whose `<pid>` is not a live process.
+- **Cost:** the replay takes about as long as `recover`. The scratch directory needs free space
+  of about the size of `blocks/` plus `state_db/`.
+- **Chainspec:** the replay node uses the chainspec and the genesis producer set that `run` uses on a fresh start: the embedded one on mainnet
+  and testnet; on devnet `<data-dir>/chainspec.json` when present (read from the data directory,
+  not the scratch directory), else the built-in devnet parameters.
+- **Output:** one verdict line, then one `key=value` summary line:
+
+| Verdict | Summary line | Exit |
+|---------|--------------|------|
+| `EQUAL` | `height=<h> producers=<n> pending=<k>` | 0 |
+| `DIFFERS` | `height=<h> producers=<p>/<r> status_mismatches=<n> pending=<p>/<r>` (`p` persisted, `r` rebuilt) | 2 |
+| `NOT-CHECKABLE` | `reason=snap_sync_height` \| `reason=holed_block_store` \| `reason=lock_held` | 3 |
+
+`status_mismatches` counts producers whose status differs, including a producer present on one
+side only. Any error (for example a missing `state_db`, or a replayed tip hash that is not the
+persisted best hash) exits 1 with the message on stderr. What to do with each verdict:
+[troubleshooting.md §1.14](./troubleshooting.md#114-producer-set-residue-check-check-producer-set-inc-i-261).
+
+**`exited-bond-census`** (no flags of its own). It reads the persisted producer set and, for each
+`Exited` producer, the Bond UTXOs owned by its bond owner (one owner-index lookup per producer, no
+full UTXO scan). It uses the same loader as `check-producer-set`: the same `LOCK` probe, a scratch
+directory under the temp dir for the RocksDB info log, and a read-only `state_db` open. It writes
+nothing in the data directory and does no replay.
+
+- **Output:** one JSON line per `Exited` producer that owns at least one Bond UTXO (sorted by key),
+  then one `key=value` summary line:
+
+```
+{"key":"<pubkey hex>","status":"Exited","bond_count":2,"total":300000000,"bonds":[{"outpoint":"<tx hash hex>:0","amount":100000000},{"outpoint":"<tx hash hex>:1","amount":200000000}]}
+height=<h> exited_with_bonds=<n> bond_utxos=<m> total=<sum of all listed amounts>
+```
+
+- **Exit:** 0 when the census ran (also with no record). 1 on any error; a `LOCK` held by another
+  process (a running node) is an error: no record is printed and the message names the lock.
 
 ---
 

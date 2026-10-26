@@ -63,6 +63,8 @@ fn decide_at(topic: RelayTopic, data: &[u8], genesis_time: u64, now_unix: u64) -
         genesis_time,
         slot_duration: v::SLOT_DURATION,
         best_slot: WALL,
+        best_height: 0,
+        block_signature_activation_height: u64::MAX,
     };
     relay_decision(topic, data, &ctx)
 }
@@ -147,6 +149,8 @@ fn req_grv_009_relay_decision_is_a_sync_fn() {
         genesis_time: v::GENESIS_TIME,
         slot_duration: v::SLOT_DURATION,
         best_slot: WALL,
+        best_height: 0,
+        block_signature_activation_height: u64::MAX,
     };
     assert_eq!(name(&f(RelayTopic::Blocks, &[], &ctx)), "Reject");
 }

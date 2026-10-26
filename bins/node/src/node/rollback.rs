@@ -182,7 +182,7 @@ impl Node {
                     local_height
                 );
             } else if let Ok(restored_producers) =
-                bincode::deserialize::<storage::ProducerSet>(&undo.producer_snapshot)
+                storage::ProducerSet::from_snapshot_bytes(&undo.producer_snapshot)
             {
                 {
                     let mut producers = self.producer_set.write().await;
@@ -309,6 +309,7 @@ impl Node {
                             }
                         }
                         utxo.add_transaction(tx, height, is_reward_tx, block.header.slot)?;
+                        self.slash_burn_in_utxo_set(tx, height, &mut utxo)?;
                     }
                     if genesis_blocks > 0 && height == genesis_blocks + 1 {
                         Self::consume_genesis_bond_utxos(

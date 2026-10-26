@@ -190,9 +190,11 @@ pub(crate) fn targeted_repair(
     archive_dir: &Path,
     genesis: &Hash,
     report: &IntegrityReport,
+    activation_height: u64,
 ) -> Result<TargetedBackfillReport, String> {
     let n = report.missing.len().min(INTEGRITY_REPAIR_MAX_HEIGHTS);
-    backfill_heights_from_archive(archive_dir, store, genesis, &report.missing[..n])
+    let heights = &report.missing[..n];
+    backfill_heights_from_archive(archive_dir, store, genesis, heights, activation_height)
 }
 
 /// One periodic scan + optional targeted repair. Blocking (RocksDB + file reads): call from spawn_blocking.
@@ -201,6 +203,7 @@ pub(crate) fn scan_and_repair(
     scan_tip: u64,
     archive_dir: Option<&Path>,
     backoff: &mut RepairBackoff,
+    activation_height: u64,
 ) -> CycleOutcome {
     backoff.scans += 1;
     let scan_no = backoff.scans;
@@ -244,7 +247,7 @@ pub(crate) fn scan_and_repair(
         report.missing_summary(),
         dir
     );
-    let repair = targeted_repair(store, dir, &genesis, &report);
+    let repair = targeted_repair(store, dir, &genesis, &report, activation_height);
     match &repair {
         Ok(r) if r.imported > 0 => {
             tracing::info!(

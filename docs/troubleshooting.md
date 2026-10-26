@@ -406,6 +406,40 @@ before you trust that archive.
 
 ---
 
+### 1.14. Producer-Set Residue Check (`check-producer-set`, INC-I-261)
+
+**When:** after an upgrade, to find producer-set residue that an older binary persisted (for
+example a pending update that a failed block apply left in the queue). Run it on a **stopped**
+node:
+```bash
+doli-node --network NETWORK --data-dir /path/to/data check-producer-set
+```
+The command is read-only. It replays the block store into a scratch directory and compares the
+rebuilt producer set with the persisted one (details: [cli.md §9.2](./cli.md#92-node-management)).
+
+| Verdict | Exit | Meaning | What to do |
+|---------|------|---------|------------|
+| `EQUAL` | 0 | The persisted producer set and pending queue match the replay. | Nothing. |
+| `DIFFERS` | 2 | The persisted set carries residue that the chain does not produce. | Keep the node stopped, back up the data directory, then rebuild it from a canonical source with the resync fix in [§1.10](#110-state_corrupt--interrupted-rebuild-from-genesis-inc-i-156) or [disaster-recovery.md](./disaster-recovery.md). |
+| `NOT-CHECKABLE` `reason=snap_sync_height` | 3 | The node joined by snap sync, so it has no blocks below its snap floor. | No verdict is possible. Use the §1.10 resync if you need certainty. |
+| `NOT-CHECKABLE` `reason=holed_block_store` | 3 | A height from 1 to the tip is missing from the block store. | Fill the hole first ([§1.9](#19-missing-historical-blocks-snap-sync-gaps)), then run the check again. |
+| `NOT-CHECKABLE` `reason=lock_held` | 3 | Another process holds `state_db` or `blocks` open (the node runs). | Stop the node, then run the check again. |
+
+Exit code 1 is an error (for example a missing `state_db`). The message is on stderr.
+
+`--network` and `--data-dir` are global flags, so they also work after the subcommand. The replay
+uses the same chainspec as a running node of that network (INC-I-262).
+
+To list `Exited` producers that still own Bond UTXOs on a stopped node, run the read-only census
+(output format: [cli.md §9.2](./cli.md#92-node-management)):
+```bash
+doli-node --network NETWORK --data-dir /path/to/data exited-bond-census
+```
+It prints one JSON line per such producer, then one summary line, and exits 0. Exit 1 is an
+error, for example a held lock (the node runs).
+
+---
+
 ### 1.7. Disk full / ENOSPC
 
 **Symptom:** The node stops or returns a clean error mentioning `ENOSPC` /
@@ -546,6 +580,30 @@ doli balance
 **Check for duplicate processes:**
 ```bash
 ps aux | grep doli-node
+```
+
+**Slashing log lines (INC-I-255).** Slashing is active only at and above
+`effective_slashing_activation_height()`. On mainnet that height is `806859` and
+on testnet `330849`; below it only the two `EQUIVOCATION` lines can appear.
+
+| Level | Log text | Meaning |
+|-------|----------|---------|
+| WARN | `EQUIVOCATION DETECTED: Producer <hash> created two blocks for slot <slot>: <hash1> and <hash2>` | The detector saw two headers for one (producer, slot). Logged once per pair. |
+| WARN | `EQUIVOCATION: producer <hash> made two headers for slot <slot>: <hash1> and <hash2>` | The handler got the proof. Below the gate it does nothing else. |
+| INFO | `slash <tx> for <producer> admitted` | The handler's slash entered the local mempool. The node broadcasts it when a broadcast slot is free (else DEBUG `slash <tx> admitted; no broadcast slot`). |
+| DEBUG | `slash <tx> for <producer> not admitted: <reason>` / `slash for <producer> already resident; not resubmitted` / `slash for <producer> already in the ledger` | The handler did not submit a new slash. A `Busy`, `Full` or `AlreadyExists` refusal keeps the ledger entry for the periodic re-offer. |
+| INFO | `slash <tx> for <producer> re-offered` | The periodic tick re-admitted a ledger slash under its original id (DEBUG `slash <tx> re-admitted; no broadcast slot` when no slot is free). |
+| DEBUG | `slash for <producer> kept for re-offer: <reason>` / `slash for <producer> dropped from the ledger: <reason>` | The periodic re-offer was refused; a transient refusal keeps the entry, any other refusal drops it. |
+| — | `invalid slash: <reason>` | Error text inside a refusal from admission, the builder or block validation. |
+| WARN | `Queued SLASH for producer <hash> at height <h> (deferred to epoch boundary)` | A block with a slash applied. The producer-set change waits for the flush. |
+| WARN | `[SLASH] burned <amount> bond units owned by <owner> at h=<h>` | Apply burned the accused's Bond UTXOs. `<amount>` is the summed bond amount in base units. |
+| INFO | `[PRODUCER] Exit initiated: pk_hash=<hash> reason=slashed` | The flush set the producer to Slashed. |
+| WARN | `Deferred slash failed: <error>` | The flush could not slash the producer, for example because it is already Slashed (`[STOR041] producer not slashable in status ...`). |
+| WARN | `[APPLY_UNDO] restored producer set after failed apply at h=<h>` | A block that can change the producer set (a slash block, for example) failed mid-apply, and the node put the set back as it was before the block. No action unless it repeats. ERROR `[APPLY_UNDO] producer snapshot decode failed` means the restore did not run: restart the node. WARN `[APPLY_UNDO] restored maintainer set after failed apply` is the same for a block with a maintainer rotation (memory and `maintainer_state.bin`). ERROR `[APPLY_UNDO] maintainer restore failed to persist` means the trust root may still hold the failed block's rotation: compare `getMaintainerSet` with a known-good node. |
+| — | `[ECON_WITHDRAWAL_SLASHED] RequestWithdrawal at height=<h> for slashed or slash-queued producer=<hash>` | Block validation refused a withdrawal by a slashed producer. |
+
+```bash
+grep -E 'EQUIVOCATION|Queued SLASH|\[SLASH\]|reason=slashed|Deferred slash failed|invalid slash|ECON_WITHDRAWAL_SLASHED|\[APPLY_UNDO\]' <data_dir>/*.log | tail -20
 ```
 
 ---

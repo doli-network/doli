@@ -41,7 +41,7 @@ fn block(params: &ConsensusParams, h: u64, slot: u32, prev: Hash, by: &KeyPair) 
         h,
         0,
     );
-    let header = BlockHeader {
+    let mut header = BlockHeader {
         version: 2,
         prev_hash: prev,
         merkle_root: doli_core::block::compute_merkle_root(std::slice::from_ref(&cb)),
@@ -58,6 +58,7 @@ fn block(params: &ConsensusParams, h: u64, slot: u32, prev: Hash, by: &KeyPair) 
         data_root: Hash::ZERO,
         fork_id: Hash::ZERO,
     };
+    crate::node::test_block_sig::sign_header(&mut header, by);
     Block::new(header, vec![cb])
 }
 

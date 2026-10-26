@@ -11,6 +11,8 @@
 //! the legacy top-level files stay where they are until they are migrated.
 //! `.claude/hooks/test-binary-gate.sh` enforces the layout.
 
+mod b3_m25_same_block_slash_state;
+mod b3_m2_slashed_registration;
 mod inc_i_171_m1_node_level_bound_tripwire;
 mod inc_i_171_m2_activation_height;
 mod inc_i_171_m2_payout_bound;
@@ -18,6 +20,12 @@ mod inc_i_171_m2_penalty_golden;
 mod inc_i_178_m2_message;
 mod inc_i_178_m4_commitment;
 mod inc_i_180_activation_height;
+mod inc_i_182_m1_auth_matrix;
+mod inc_i_182_m1_block_modes;
+mod inc_i_182_m1_core_fx;
+mod inc_i_182_m1_gate;
+mod inc_i_182_m1_wire_tail;
+mod inc_i_182_m25_replay_forms;
 mod inc_i_204_m5_activation_height;
 mod inc_i_204_m5_finality_comparator;
 mod inc_i_208_activation_height;
@@ -28,5 +36,25 @@ mod inc_i_217_m5_rotate_stateless;
 mod inc_i_234_boundary;
 mod inc_i_234_m1_activation_height;
 mod inc_i_234_m2_output_authority;
+mod inc_i_236_block_sig_contract;
+mod inc_i_236_forged_block_authn;
+mod inc_i_236_m2_binding;
+mod inc_i_236_run_a_pre_height;
+mod inc_i_236_slash_evidence_authn;
 mod inc_i_248_quorum;
 mod inc_i_248_rel_m1_quorum;
+mod inc_i_255_gate;
+mod inc_i_255_m2_block_rules;
+mod inc_i_255_m5_evidence;
+mod inc_i_255_slash_evidence;
+mod inc_i_255_slash_fee;
+mod inc_i_256_m2_window;
+mod inc_i_257_m1_gate;
+mod inc_i_257_m1_output_rules;
+mod inc_i_257_m1_output_type_golden;
+mod inc_i_257_m1_spend_lock;
+mod inc_i_257_m25_guard_decode;
+mod inc_i_257_m2_bond_rules;
+mod inc_i_257_m2_slash_reach;
+mod inc_i_262_m2_pin_order;
+mod inc_i_262_m2_slot_floor;

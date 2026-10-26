@@ -60,6 +60,7 @@ pub mod hash;
 pub mod keys;
 pub mod merkle;
 pub mod signature;
+pub mod signature_strict;
 
 pub use bls::{
     bls_aggregate, bls_sign, bls_sign_pop, bls_verify, bls_verify_aggregate, bls_verify_pop,

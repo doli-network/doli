@@ -452,6 +452,10 @@ pub const INACTIVITY_THRESHOLD: u32 = MAX_FAILURES;
 /// 7 days = 60,480 slots
 pub const EXCLUSION_SLOTS: Slot = 60_480;
 
+/// Maximum SlashProducer transactions per block. Each costs two evidence
+/// VDFs and two signature verifications.
+pub const MAX_SLASH_TXS_PER_BLOCK: usize = 8;
+
 /// Reward maturity (confirmations required)
 pub const REWARD_MATURITY: BlockHeight = 6;
 

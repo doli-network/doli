@@ -276,6 +276,7 @@ async fn req_bls_003_m4_the_validator_expects_the_commitment_for_an_empty_aggreg
     // The same body re-committed under the post-AH rule validates.
     let mut post_block = legacy_block.clone();
     post_block.header.presence_root = presence_commitment(&bf, &post_block.aggregate_bls_signature);
+    crate::block_sig::resign(&mut post_block.header);
     let verdict = node
         .validate_block_for_apply(&post_block, height, ValidationMode::Light)
         .await;

@@ -68,6 +68,7 @@
 /// The mutating half — `commit_maintainer_rewind` and its announcement path. Split out
 /// for the 500-line module budget; see the file header there.
 mod commit;
+pub(in crate::node) use commit::install_maintainer_snapshot;
 
 /// The record-binding half — the pure predicate deciding whether a `cf_undo` record still
 /// describes the block that NOW occupies its height (AUDIT-P1-001). Staleness/drift
@@ -150,7 +151,7 @@ mod reason {
 ///
 /// The predicate is PURELY "does this block carry `AddMaintainer` / `RemoveMaintainer`".
 /// It deliberately does NOT include the `at_epoch_boundary` term that
-/// `needs_producer_snapshot` ORs in (`apply_block/mod.rs`): producer mutations are
+/// `needs_producer_snapshot` ORs in (`apply_block/producer_undo.rs`): producer mutations are
 /// epoch-DEFERRED so a boundary block can change the producer set without carrying a
 /// producer transaction, while maintainer changes are applied immediately at the exact
 /// block that carries them (`apply_block/governance.rs`). Reusing the producer predicate

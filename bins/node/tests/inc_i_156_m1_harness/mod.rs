@@ -25,6 +25,8 @@
 
 #![allow(dead_code)] // each consumer uses a subset
 
+#[path = "../support/block_sig.rs"]
+pub mod block_sig;
 use std::sync::Once;
 
 use crypto::{Hash, KeyPair};
@@ -90,7 +92,7 @@ pub fn build_block_with_txs(
 ) -> Block {
     let timestamp = params.genesis_time + (block_slot as u64 * params.slot_duration);
     let merkle_root = doli_core::block::compute_merkle_root(&txs);
-    let header = BlockHeader {
+    let mut header = BlockHeader {
         version: 2,
         prev_hash,
         merkle_root,
@@ -107,6 +109,7 @@ pub fn build_block_with_txs(
         data_root: Hash::ZERO,
         fork_id: Hash::ZERO,
     };
+    block_sig::sign_header(&mut header, producer);
     Block::new(header, txs)
 }
 

@@ -33,6 +33,8 @@
 //!   caused CPU exhaustion on mainnet, atomicity bug corrupted UTXO state on bail.
 //!   P0+P1 provide sufficient inflation protection without the per-block scan.
 
+#[path = "support/block_sig.rs"]
+mod block_sig;
 use crypto::{Hash, KeyPair};
 use doli_core::consensus::ConsensusParams;
 use doli_core::transaction::{Input, Output, OutputType, Transaction, TxType};
@@ -70,7 +72,7 @@ fn build_block(
     let merkle_root = doli_core::block::compute_merkle_root(std::slice::from_ref(&coinbase));
     let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
 
-    let header = BlockHeader {
+    let mut header = BlockHeader {
         version: 2,
         prev_hash,
         merkle_root,
@@ -87,6 +89,7 @@ fn build_block(
         data_root: crypto::Hash::ZERO,
         fork_id: crypto::Hash::ZERO,
     };
+    crate::block_sig::sign_header(&mut header, producer);
 
     Block::new(header, vec![coinbase])
 }
@@ -117,7 +120,7 @@ fn build_block_with_bad_spend(
     let merkle_root = doli_core::block::compute_merkle_root(&txs);
     let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
 
-    let header = BlockHeader {
+    let mut header = BlockHeader {
         version: 2,
         prev_hash,
         merkle_root,
@@ -134,6 +137,7 @@ fn build_block_with_bad_spend(
         data_root: crypto::Hash::ZERO,
         fork_id: crypto::Hash::ZERO,
     };
+    crate::block_sig::sign_header(&mut header, producer);
 
     Block::new(header, txs)
 }
@@ -264,7 +268,7 @@ async fn epoch_inputs_mismatch_fails_in_light_mode() {
     let merkle_root = doli_core::block::compute_merkle_root(&txs);
     let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
 
-    let header = BlockHeader {
+    let mut header = BlockHeader {
         version: 2,
         prev_hash,
         merkle_root,
@@ -281,6 +285,7 @@ async fn epoch_inputs_mismatch_fails_in_light_mode() {
         data_root: crypto::Hash::ZERO,
         fork_id: crypto::Hash::ZERO,
     };
+    crate::block_sig::sign_header(&mut header, &producers[0]);
 
     let bad_epoch_block = Block::new(header, txs);
 
@@ -455,7 +460,7 @@ async fn fee_paying_user_tx_accepted() {
     let merkle_root = doli_core::block::compute_merkle_root(&txs);
     let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
 
-    let header = BlockHeader {
+    let mut header = BlockHeader {
         version: 2,
         prev_hash,
         merkle_root,
@@ -472,6 +477,7 @@ async fn fee_paying_user_tx_accepted() {
         data_root: crypto::Hash::ZERO,
         fork_id: crypto::Hash::ZERO,
     };
+    crate::block_sig::sign_header(&mut header, &producers[0]);
 
     let block_with_fee = Block::new(header, txs);
 

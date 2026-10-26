@@ -2405,8 +2405,8 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
 - `EquivocationDetector` — tracks (producer, slot) → first header; LRU eviction; holds pending_proofs and sliding window state
 - `EquivocationProof` — double-signing evidence: `producer (PublicKey)`, `block_header_1`, `block_header_2`, `slot (u32)`
 - `EquivocationProof::to_slash_transaction(reporter_keypair)` — creates SlashProducer tx from proof
-- `EquivocationDetector::check_block(block)` — main entry point; returns Option<EquivocationProof>
-- `EquivocationDetector::take_pending_proofs()` / `has_pending_proofs()` — proof drain
+- `EquivocationDetector::check_block(block)` — main entry point; returns Option<EquivocationProof> for the first conflicting header per (producer, slot) only; pending proofs bounded at 64
+- `EquivocationDetector::take_pending_proofs()` / `has_pending_proofs()` — proof drain (gossip block intake drains before each check)
 - `EquivocationDetector::cleanup_before_slot(min_slot)` / `tracked_count()` / `clear()` — maintenance
 - `MAX_TRACKED_ENTRIES` = 10,000 — LRU cap on seen (producer, slot) pairs
 - `SLIDING_WINDOW_SLOTS` = 360 — slots retained in the sliding window (1 epoch)
@@ -3049,10 +3049,12 @@ NOTE: UpdateService, PendingUpdate, and spawn_update_service() are NOT in this c
 - Wallet — BIP-39 key management; see CLI Wallet section for method list
 - WalletAddress — address entry with Ed25519 and optional BLS keys
 - RpcClient — simplified async JSON-RPC client; 14 public methods: get_balance(), get_utxos(), send_transaction(), get_chain_info(), get_history(), get_producers(), get_network_params(), get_epoch_info(), get_rewards_list(), get_bond_details(), simulate_withdrawal(), test_connection(), url(), new()
-- TxBuilder — transaction construction and signing; methods: new(), add_input(), add_output(), set_extra_data(), build_for_signing(), sign_and_build(), input_count(), output_count(), tx_type()
+- TxBuilder — transaction construction and signing; methods: new(), add_input(), add_output(), set_extra_data(), build_for_signing(), sign_and_build(), input_count(), output_count(), tx_type(); `sign_and_build` signs input i over core `signing_message_for_input(i)`, the message the node verifies
 - TxType — 15 wallet-level transaction types: Transfer, Registration, ProducerExit, Coinbase, NftMint, NftTransfer, RewardClaim, AddBond, RequestWithdrawal, ClaimWithdrawal (tombstone), SlashingEvidence, TokenIssuance, BridgeLock, DelegateBond, RevokeDelegation
 - TxInput / TxOutput — input and output structs for builder
-- build_transfer() / build_add_bond() / build_request_withdrawal() / build_reward_claim() — convenience static builders
+- build_transfer() / build_reward_claim() — convenience static builders (return a builder)
+- build_add_bond(utxos, count, bond_unit, lock_until, fee, &ProducerSigner) / build_request_withdrawal(&WithdrawalRequest, &ProducerSigner) — signed hex through the shared `doli-producer-tx` builders (INC-I-262); fewer `bond_utxos` than `bond_count` is an error
+- ProducerSigner { keypair, genesis_hash } / WithdrawalRequest — inputs of the producer-tx entry points; the genesis hex is parsed by `chain_genesis_hash`, a malformed value or unknown network is an error
 - calculate_registration_cost() — (bond_cost, registration_fee, total); validates 1 ≤ bond_count ≤ MAX_BONDS_PER_PRODUCER
 - vesting_penalty_pct() — 75/50/25/0 by vesting quarter (boundaries at VESTING_QUARTER_SLOTS multiples)
 - calculate_withdrawal_net() — net return after vesting penalty

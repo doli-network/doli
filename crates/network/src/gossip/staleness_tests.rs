@@ -57,6 +57,8 @@ fn ctx() -> StalenessCtx {
         genesis_time: GEN,
         slot_duration: DUR,
         best_slot: WALL,
+        best_height: 0,
+        block_signature_activation_height: u64::MAX,
     }
 }
 

@@ -384,6 +384,7 @@ async fn req_bls_014_m6_at_ah_minus_one_both_shapes_behave_exactly_as_today() {
         // preimage, so re-stamp the legacy root or the block dies on step 1 instead of
         // reaching the width guard.
         block.header.presence_root = crypto::hash::hash(&block.attestation_bitfield);
+        crate::block_sig::resign(&mut block.header);
 
         let today = validate_attestation_bitfield_vec(&block.attestation_bitfield, w);
         assert!(

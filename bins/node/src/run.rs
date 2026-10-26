@@ -224,91 +224,15 @@ pub(crate) async fn run_node(
     }
 
     // Load chainspec ALWAYS (consensus-critical overrides must apply on every start)
-    // Previously this was inside the first-init branch, causing slot_duration divergence on restarts
-    use doli_core::chainspec::ChainSpec;
-
-    // SECURITY: For mainnet, ALWAYS use the embedded chainspec. The genesis_timestamp,
-    // slot_duration, and other consensus parameters are compiled into the binary and
-    // cannot be overridden by disk files or CLI flags. This prevents:
-    // - Stale chainspec.json from a previous binary causing slot schedule divergence
-    // - Malicious modification of chainspec.json to hijack genesis time
-    // - Accidental deployment with mismatched parameters
-    //
-    // For testnet/devnet, disk files and CLI flags are allowed for flexibility.
-    let chainspec: Option<ChainSpec> = if matches!(network, Network::Mainnet) {
-        const EMBEDDED_MAINNET_CHAINSPEC: &str = include_str!("../../../chainspec.mainnet.json");
-        match serde_json::from_str::<ChainSpec>(EMBEDDED_MAINNET_CHAINSPEC) {
-            Ok(spec) => {
-                info!(
-                    "Mainnet chainspec: embedded (genesis={}, slot={}s) — disk/CLI overrides disabled",
-                    spec.genesis.timestamp, spec.consensus.slot_duration
-                );
-                if chainspec_path.is_some() {
-                    warn!("SECURITY: --chainspec flag ignored for mainnet — embedded chainspec is authoritative");
-                }
-                let disk_path = data_dir.join("chainspec.json");
-                if disk_path.exists() {
-                    warn!(
-                        "SECURITY: Ignoring {:?} — mainnet uses embedded chainspec only",
-                        disk_path
-                    );
-                }
-                Some(spec)
-            }
-            Err(e) => {
-                error!("BUG: embedded mainnet chainspec is invalid: {}", e);
-                std::process::exit(1);
-            }
-        }
-    } else if matches!(network, Network::Testnet) {
-        const EMBEDDED_TESTNET_CHAINSPEC: &str = include_str!("../../../chainspec.testnet.json");
-        match serde_json::from_str::<ChainSpec>(EMBEDDED_TESTNET_CHAINSPEC) {
-            Ok(spec) => {
-                info!(
-                    "Testnet chainspec: embedded (genesis={}, slot={}s) — disk/CLI overrides disabled",
-                    spec.genesis.timestamp, spec.consensus.slot_duration
-                );
-                if chainspec_path.is_some() {
-                    warn!("SECURITY: --chainspec flag ignored for testnet — embedded chainspec is authoritative");
-                }
-                Some(spec)
-            }
-            Err(e) => {
-                error!("BUG: embedded testnet chainspec is invalid: {}", e);
-                std::process::exit(1);
-            }
-        }
-    } else if let Some(ref path) = chainspec_path {
-        info!("Loading chainspec from {:?}", path);
-        match ChainSpec::load(path) {
-            Ok(spec) => {
-                info!("Loaded chainspec: {} ({})", spec.name, spec.id);
-                Some(spec)
-            }
-            Err(e) => {
-                error!("Failed to load chainspec: {}", e);
-                std::process::exit(1);
-            }
-        }
-    } else {
-        // Devnet: try disk, then none
-        let default_path = data_dir.join("chainspec.json");
-        if default_path.exists() {
-            match ChainSpec::load(&default_path) {
-                Ok(spec) => {
-                    info!(
-                        "Loaded chainspec from {:?}: {} ({})",
-                        default_path, spec.name, spec.id
-                    );
-                    Some(spec)
-                }
-                Err(e) => {
-                    warn!("Could not load default chainspec: {}", e);
-                    None
-                }
-            }
-        } else {
-            None
+    let chainspec = match crate::chainspec_select::network_chainspec(
+        network,
+        chainspec_path.as_deref(),
+        &data_dir,
+    ) {
+        Ok(spec) => spec,
+        Err(e) => {
+            error!("{}", e);
+            std::process::exit(1);
         }
     };
 
@@ -360,68 +284,8 @@ pub(crate) async fn run_node(
                 ProducerSet::new()
             }
         }
-    } else if let Some(ref spec) = chainspec {
-        let genesis_producers = spec.get_genesis_producers();
-        if !genesis_producers.is_empty() {
-            info!(
-                "Initializing {} with {} genesis producers from chainspec",
-                network.name(),
-                genesis_producers.len()
-            );
-            for (pk, bonds) in &genesis_producers {
-                info!("  - {} (bonds: {})", pk.to_hex(), bonds);
-            }
-            ProducerSet::with_genesis_producers(genesis_producers, network.bond_unit())
-        } else {
-            // Chainspec has no genesis producers — fall back to hardcoded constants
-            match network {
-                Network::Mainnet => {
-                    use doli_core::genesis::mainnet_genesis_producers;
-                    let genesis_producers = mainnet_genesis_producers();
-                    info!(
-                        "Chainspec has no genesis producers, using {} hardcoded mainnet producers",
-                        genesis_producers.len()
-                    );
-                    ProducerSet::with_genesis_producers(genesis_producers, network.bond_unit())
-                }
-                Network::Testnet => {
-                    use doli_core::genesis::testnet_genesis_producers;
-                    let genesis_producers = testnet_genesis_producers();
-                    info!(
-                        "Chainspec has no genesis producers, using {} hardcoded testnet producers",
-                        genesis_producers.len()
-                    );
-                    ProducerSet::with_genesis_producers(genesis_producers, network.bond_unit())
-                }
-                _ => {
-                    info!("Chainspec has no genesis producers, using bootstrap mode");
-                    ProducerSet::new()
-                }
-            }
-        }
     } else {
-        // No chainspec at all — fall back to hardcoded genesis producers
-        match network {
-            Network::Mainnet => {
-                use doli_core::genesis::mainnet_genesis_producers;
-                let genesis_producers = mainnet_genesis_producers();
-                info!(
-                    "No chainspec provided, using {} hardcoded mainnet genesis producers",
-                    genesis_producers.len()
-                );
-                ProducerSet::with_genesis_producers(genesis_producers, network.bond_unit())
-            }
-            Network::Testnet => {
-                use doli_core::genesis::testnet_genesis_producers;
-                let genesis_producers = testnet_genesis_producers();
-                info!(
-                    "No chainspec provided, using {} hardcoded testnet genesis producers",
-                    genesis_producers.len()
-                );
-                ProducerSet::with_genesis_producers(genesis_producers, network.bond_unit())
-            }
-            Network::Devnet => ProducerSet::new(),
-        }
+        crate::chainspec_select::genesis_producer_set(network, chainspec.as_ref())
     };
     let producer_set = Arc::new(RwLock::new(producer_set));
 

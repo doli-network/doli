@@ -1,7 +1,9 @@
 //! Fork recovery walk entry points on `SyncManager` (INC-I-235).
 
 use crypto::Hash;
+use doli_core::validation::verify_block_signature_at;
 use libp2p::PeerId;
+use tracing::warn;
 
 use super::SyncManager;
 
@@ -27,6 +29,26 @@ impl SyncManager {
             .fork_recovery
             .set_alternate_peers(alternates.into_iter().skip(skip).map(|(_, p)| p).collect());
         true
+    }
+
+    /// Feed a block response to the walk. At `local_height + 1 >= AH` a pending
+    /// answer whose signature fails is consumed without advancing the walk; the
+    /// fetch fails over on its request timeout.
+    pub(super) fn walk_intake(&mut self, peer: PeerId, block: Option<doli_core::Block>) -> bool {
+        let ah = self.config.inc_i_236_block_signature_activation_height;
+        let height = self.local_height.saturating_add(1);
+        let refused = block.as_ref().is_some_and(|b| {
+            verify_block_signature_at(&b.header, height, ah).is_err()
+                && self.fork.fork_recovery.is_pending_answer(peer, b)
+        });
+        if refused {
+            warn!(
+                "Fork recovery: refusing walk block from {}: invalid block signature",
+                peer
+            );
+            return true;
+        }
+        self.fork.fork_recovery.handle_block(peer, block)
     }
 
     /// Record that the walked branch ending at `branch_tip` was not adopted on `local_tip`.

@@ -55,7 +55,7 @@
 #   T14: gauntlet.sh parses --gs019 into a flag var                       — O6/O7
 #   T15: inj_tag() prints [inj] for GS-019 when the flag is set           — O6
 #   T16: gauntlet.sh assert() routes all three tokens                     — O6
-#   T17: gauntlet-seed.sql registers GS-019 active with all three tokens  — O6
+#   T17: gauntlet-seed.sql registers GS-019 (active, or manual and armed by --gs019) with all three tokens  — O6
 #   T18: library parses under bash -n                                     — hygiene
 # MATRIX: 7 outputs x 18 partitions (only cells a path reaches are asserted)
 #   T1: O1 O2 O3 O4 | T2: O1 O3 O5 | T3: O1 O2 O3 | T4: O1 O3 | T5: O3 | T6: O5
@@ -409,7 +409,7 @@ seed_assertions_for() {
     if command -v sqlite3 >/dev/null 2>&1; then
         sqlite3 "$db" "CREATE TABLE gauntlet_scenarios (scenario_id TEXT PRIMARY KEY, name TEXT, description TEXT, incident_ids TEXT, assertions TEXT, scale_params TEXT, runner TEXT, status TEXT);" >/dev/null 2>&1
         sqlite3 "$db" < "$SEED_FILE" >/dev/null 2>&1
-        sqlite3 "$db" "SELECT assertions FROM gauntlet_scenarios WHERE scenario_id='$sid' AND status='active';" 2>/dev/null
+        sqlite3 "$db" "SELECT assertions FROM gauntlet_scenarios WHERE scenario_id='$sid' AND status IN ('active','manual');" 2>/dev/null
     else
         grep -A8 "'$sid'," "$SEED_FILE" | grep -oE "'gs[0-9]{3}-[a-z0-9,-]+'" | tr -d "'" | head -1
     fi
@@ -451,11 +451,11 @@ done
 
 # T17 — REQ-BLS-013 (Must) — Decision: assert() is only ever called with tokens read from gauntlet_scenarios, so a scenario absent from the seed is dead code on every machine but this one.
 SEED_019="$(seed_assertions_for GS-019)"
-if [ -n "$SEED_019" ]; then
-    test_result "T17 seed_registration: gauntlet-seed.sql registers GS-019 as active" "pass" ""
+if [ -n "$SEED_019" ] && grep -qF "[ \"\$GS019\" = 1 ] && ARMED_MANUAL=\"\$ARMED_MANUAL,'GS-019'\"" "$GAUNTLET" 2>/dev/null; then
+    test_result "T17 seed_registration: gauntlet-seed.sql registers GS-019 and --gs019 evaluates it" "pass" ""
 else
-    test_result "T17 seed_registration: gauntlet-seed.sql registers GS-019 as active" "fail" \
-        "no active GS-019 row parsed from $SEED_FILE"
+    test_result "T17 seed_registration: gauntlet-seed.sql registers GS-019 and --gs019 evaluates it" "fail" \
+        "no active/manual GS-019 row parsed from $SEED_FILE, or gauntlet.sh does not arm GS-019 under --gs019"
 fi
 if [[ "$SEED_019" == *"$TOKEN_POISON"* ]] && [[ "$SEED_019" == *"$TOKEN_LIVE"* ]] && [[ "$SEED_019" == *"$TOKEN_VICTIM"* ]]; then
     test_result "T17 seed_registration: assertions column lists all three tokens" "pass" ""

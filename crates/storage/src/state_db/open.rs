@@ -250,6 +250,20 @@ impl StateDb {
         })
     }
 
+    /// Open an existing state_db read-only for offline inspection.
+    ///
+    /// Writes fail; the UTXO count is not loaded. Takes no lock and writes
+    /// nothing under `path`; any RocksDB info log goes to `log_dir`.
+    pub fn open_read_only(path: &Path, log_dir: &Path) -> Result<Self, StorageError> {
+        Ok(Self {
+            db: crate::read_only::open_db(path, log_dir)?,
+            utxo_count: AtomicU64::new(0),
+            promote_abort_after: AtomicU64::new(u64::MAX),
+            block_cache: rocksdb::Cache::new_lru_cache(8 * 1024 * 1024),
+            block_cache_capacity_bytes: 8 * 1024 * 1024,
+        })
+    }
+
     /// Flush the cf_utxo column family to disk.
     ///
     /// Forces the memtable to be written as SST + blob files. Used in tests

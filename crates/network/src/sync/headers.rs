@@ -48,6 +48,10 @@ pub struct HeaderDownloader {
     /// D2 (INC-I-090): chain break detected in the most recent `process_headers` call.
     /// Cleared at the start of each call; populated if a break occurs.
     last_chain_break: Option<HeaderChainBreak>,
+    /// Headers at height >= this must carry a valid producer signature (INC-I-236).
+    block_signature_activation_height: u64,
+    /// Height of the next continuation header; meaningful only while `expected_prev_hash` is set.
+    next_height: u64,
 }
 
 impl HeaderDownloader {
@@ -61,7 +65,18 @@ impl HeaderDownloader {
             expected_prev_hash: None,
             total_downloaded: 0,
             last_chain_break: None,
+            block_signature_activation_height: u64::MAX,
+            next_height: 0,
         }
+    }
+
+    pub fn set_block_signature_activation_height(&mut self, ah: u64) {
+        self.block_signature_activation_height = ah;
+    }
+
+    /// Height of the next continuation header, while a continuation is set.
+    pub fn next_height(&self) -> Option<u64> {
+        self.expected_prev_hash.map(|_| self.next_height)
     }
 
     /// Create a header request starting from the given hash
@@ -80,13 +95,23 @@ impl HeaderDownloader {
     /// D2 (INC-I-090): when a chain break is detected (header.prev_hash != expected),
     /// `self.last_chain_break` is populated with the break details. The caller
     /// should check `take_chain_break()` after this call.
-    pub fn process_headers(&mut self, headers: &[BlockHeader], local_tip: Hash) -> usize {
-        self.accept_headers(headers, local_tip).len()
+    pub fn process_headers(
+        &mut self,
+        headers: &[BlockHeader],
+        local_tip: Hash,
+        local_height: u64,
+    ) -> usize {
+        self.accept_headers(headers, local_tip, local_height).len()
     }
 
     /// Same as [`Self::process_headers`], but returns the newly accepted
     /// headers in order (INC-I-237: they are not always a prefix of `headers`).
-    pub fn accept_headers(&mut self, headers: &[BlockHeader], local_tip: Hash) -> Vec<BlockHeader> {
+    pub fn accept_headers(
+        &mut self,
+        headers: &[BlockHeader],
+        local_tip: Hash,
+        local_height: u64,
+    ) -> Vec<BlockHeader> {
         // D2: clear previous chain break info
         self.last_chain_break = None;
 
@@ -97,6 +122,10 @@ impl HeaderDownloader {
 
         let mut valid_count = 0u32;
         let mut prev_hash = self.expected_prev_hash.unwrap_or(local_tip);
+        let mut height = match self.expected_prev_hash {
+            Some(_) => self.next_height,
+            None => local_height.saturating_add(1),
+        };
 
         // INC-I-237: the request was built from an older tip; a block applied
         // while it was in flight moved the tip onto a header in this response.
@@ -130,6 +159,7 @@ impl HeaderDownloader {
             if self.known_hashes.contains(&hash) {
                 debug!("Skipping known header {}", hash);
                 prev_hash = hash;
+                height = height.saturating_add(1);
                 continue;
             }
 
@@ -138,17 +168,25 @@ impl HeaderDownloader {
                 warn!("Invalid header {}", hash);
                 break;
             }
+            if height >= self.block_signature_activation_height {
+                if let Err(e) = doli_core::validation::verify_block_signature(header) {
+                    warn!("Invalid header {} at height {}: {}", hash, height, e);
+                    break;
+                }
+            }
 
             // Add to validated chain
             self.validated_headers.push_back(header.clone());
             accepted.push(header.clone());
             self.known_hashes.insert(hash);
             prev_hash = hash;
+            height = height.saturating_add(1);
             valid_count += 1;
         }
 
         if valid_count > 0 {
             self.expected_prev_hash = Some(prev_hash);
+            self.next_height = height;
             self.total_downloaded += valid_count as usize;
             debug!(
                 "Validated {} headers, total: {}",
@@ -213,6 +251,7 @@ impl HeaderDownloader {
         self.known_hashes.clear();
         self.expected_prev_hash = None;
         self.last_chain_break = None;
+        self.next_height = 0;
         info!(
             "[HEADER_DEBUG] clear() called, expected_prev_hash=None (will use local_tip on next process)"
         );
@@ -225,9 +264,11 @@ impl HeaderDownloader {
 
     /// Resume downloading from a specific hash (after preserving sync data).
     /// Sets expected_prev_hash so the next request continues from this point
-    /// instead of re-downloading from local_tip.
-    pub fn resume_from(&mut self, hash: Hash) {
+    /// instead of re-downloading from local_tip. `height` is the chain height
+    /// of the header `hash`.
+    pub fn resume_from(&mut self, hash: Hash, height: u64) {
         self.expected_prev_hash = Some(hash);
+        self.next_height = height.saturating_add(1);
         // Clear internal buffers — validated_headers should already be drained
         // into pipeline.pending_headers, and known_hashes is stale after restart.
         self.validated_headers.clear();
@@ -281,7 +322,7 @@ mod tests {
         let hash1 = header1.hash();
         let header2 = create_test_header(hash1, 2);
 
-        let valid = downloader.process_headers(&[header1, header2], genesis);
+        let valid = downloader.process_headers(&[header1, header2], genesis, 0);
         assert_eq!(valid, 2);
         assert_eq!(downloader.pending_count(), 2);
     }
@@ -295,7 +336,7 @@ mod tests {
         // header2 has wrong prev_hash
         let header2 = create_test_header(Hash::ZERO, 2);
 
-        let valid = downloader.process_headers(&[header1, header2], genesis);
+        let valid = downloader.process_headers(&[header1, header2], genesis, 0);
         assert_eq!(valid, 1); // Only first header is valid
     }
 
@@ -310,7 +351,7 @@ mod tests {
         // header2 has wrong prev_hash — points to genesis instead of hash1
         let header2 = create_test_header(Hash::from_bytes([0xAA; 32]), 2);
 
-        let valid = downloader.process_headers(&[header1, header2], genesis);
+        let valid = downloader.process_headers(&[header1, header2], genesis, 0);
         assert_eq!(valid, 1);
 
         let chain_break = downloader.take_chain_break();
@@ -334,7 +375,7 @@ mod tests {
         let hash1 = header1.hash();
         let header2 = create_test_header(hash1, 2);
 
-        let _valid = downloader.process_headers(&[header1, header2], genesis);
+        let _valid = downloader.process_headers(&[header1, header2], genesis, 0);
         assert!(
             downloader.take_chain_break().is_none(),
             "no chain break should be captured for valid headers"

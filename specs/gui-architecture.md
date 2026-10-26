@@ -139,10 +139,15 @@ Requirements document: `specs/gui-desktop-requirements.md`
   pub fn format_balance(units: u64) -> String;
   ```
 - **Dependencies**: `crypto` (Ed25519, BLAKE3, BLS, bech32m addresses), `bip39`, `serde`/`serde_json` (wallet serialization), `reqwest` (HTTP client), `anyhow`/`thiserror`, `hex`, `zeroize`
-- **Does NOT depend on**: `doli-core`, `vdf` -- the wallet crate avoids the VDF dependency chain entirely
+- **Producer txs (INC-I-262)**: depends on `doli-core` and `doli-producer-tx`. AddBond and RequestWithdrawal are built and signed by the shared producer-tx builders (`TxBuilder::build_add_bond(utxos, count, bond_unit, lock_until, fee, &ProducerSigner)`, `TxBuilder::build_request_withdrawal(&WithdrawalRequest, &ProducerSigner)`, both return signed hex). `vdf` is the hash-chain VDF (no GMP), so this adds no GMP dependency.
 - **Implementation order**: 1 (foundation for everything else)
 
-#### Design Decision: No `doli-core` Dependency
+#### Design Decision: No `doli-core` Dependency (superseded by INC-I-262)
+
+> Superseded: the wallet crate now depends on `doli-core` and `doli-producer-tx`
+> so the GUI and the CLI build and sign producer transactions with one
+> implementation. `vdf` no longer depends on GMP. The text below is the original
+> decision, kept for history.
 
 The wallet crate does NOT depend on `doli-core`. This is a critical architectural choice:
 
@@ -976,7 +981,7 @@ User enters bond count → Registration form
 |----------|------------------------|---------------|
 | **Svelte 5 frontend** | React, Vue 3, Solid | Smallest bundle size (~5 KB compiled vs 45 KB React runtime). Tauri's official template supports Svelte. Compiled reactivity has no runtime overhead. Matches GUI-NF-002 installer size target. |
 | **Separate `crates/wallet/` crate** | Keep wallet code in CLI, duplicate in GUI; or add GUI-specific code to CLI crate | Shared crate guarantees wallet format compatibility (GUI-NF-008). Avoids code duplication. Clean dependency: wallet depends only on `crypto`, not `doli-core`/`vdf`. |
-| **Wallet crate does NOT depend on `doli-core`** | Depend on `doli-core` with `default-features = false` | `doli-core` has deep VDF integration (BlockHeader, Transaction structs contain VDF types). Feature-flagging all of it is high-risk. The wallet crate only needs: key management, address encoding, transaction byte construction, and RPC. These can be implemented with `crypto` alone (~200 lines of tx builder). |
+| **Wallet crate does NOT depend on `doli-core`** (superseded by INC-I-262: it depends on `doli-core` + `doli-producer-tx` for producer txs) | Depend on `doli-core` with `default-features = false` | `doli-core` has deep VDF integration (BlockHeader, Transaction structs contain VDF types). Feature-flagging all of it is high-risk. The wallet crate only needs: key management, address encoding, transaction byte construction, and RPC. These can be implemented with `crypto` alone (~200 lines of tx builder). |
 | **VDF feature flag in `doli-core` (additive)** | No feature flag; only rely on wallet crate isolation | Belt-and-suspenders. The wallet crate avoids `doli-core` entirely, but having the feature flag in `doli-core` enables future tools (explorers, analytics) that need core types without GMP. Low risk since `default = ["vdf"]` preserves all existing behavior. |
 | **Transaction building in wallet crate** | Use `doli-core` Transaction type | The wallet crate builds transactions by serializing the canonical byte format directly. This duplicates ~200 lines of serialization logic but eliminates the entire `doli-core` -> `vdf` -> `rug` -> GMP dependency chain. The serialization format is stable (changing it would require a chain reset per CLAUDE.md). Integration tests verify byte-level compatibility. |
 | **Separate CI jobs for GUI and CLI/node** | Single job builds everything | Isolation: GUI build failure does not block CLI/node release. Different system dependencies (Tauri needs webkit2gtk on Linux, not RocksDB/GMP). Different runners may be optimal. |

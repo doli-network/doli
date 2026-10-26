@@ -42,6 +42,10 @@ mod tests_inc_i_233;
 #[cfg(test)]
 mod tests_inc_i_234;
 
+/// Pins of the four defense gates (236/255/257/182): testnet 330_849, mainnet 806_859.
+#[cfg(test)]
+mod tests_defense_pin;
+
 #[cfg(test)]
 mod tests_oracle;
 
@@ -857,6 +861,14 @@ pub struct NetworkParams {
 
     /// INC-I-234 output-creation-authority gate.
     pub inc_i_234_activation_height: u64,
+
+    /// INC-I-236 block producer-signature gate.
+    pub inc_i_236_block_signature_activation_height: u64,
+
+    pub inc_i_255_slashing_activation_height: u64,
+    /// INC-I-257 unbonding-lock gate; never above `effective_slashing_activation_height()`.
+    pub inc_i_257_unbonding_activation_height: u64,
+    pub inc_i_182_producer_auth_activation_height: u64,
 
     /// INC-I-233 (F4) coinbase-credit gate. At and above it the six fee-exempt
     /// tx types credit 0 to the coinbase (`validation::coinbase_credit`); below

@@ -165,7 +165,7 @@ pub(crate) fn truncate_chain(
     }
 
     if let Some(bytes) = producer_snapshot_bytes {
-        if let Ok(restored_ps) = bincode::deserialize::<ProducerSet>(&bytes) {
+        if let Ok(restored_ps) = ProducerSet::from_snapshot_bytes(&bytes) {
             state_db.write_producer_set(&restored_ps)?;
             println!("Producer set restored from undo snapshot.");
         } else {

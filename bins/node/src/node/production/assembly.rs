@@ -20,6 +20,11 @@ impl Node {
         // merkle root from exactly the transactions that will be in the final block.
         let pool_hash = doli_core::consensus::reward_pool_pubkey_hash();
         let fork_id_activation = self.config.network.params().fork_id_activation_height;
+        let pauth_gate = self
+            .config
+            .network
+            .params()
+            .inc_i_182_producer_auth_activation_height;
         let fork_id = if height >= fork_id_activation {
             self.current_fork_id()
         } else {
@@ -135,13 +140,20 @@ impl Node {
                 };
                 let extra_data = bincode::serialize(&reg_data)
                     .expect("RegistrationData serialization cannot fail");
-                let reg_tx = Transaction {
+                let mut reg_tx = Transaction {
                     version: 1,
                     tx_type: TxType::Registration,
                     inputs: vec![],
                     outputs: vec![],
                     extra_data,
                 };
+                if let Some(kp) = self.producer_key.as_ref().filter(|_| height >= pauth_gate) {
+                    doli_core::transaction::sign_producer_auth(
+                        &mut reg_tx,
+                        &self.params.genesis_hash,
+                        kp,
+                    );
+                }
                 builder.add_transaction(reg_tx);
                 info!(
                     "Included genesis VDF proof Registration TX in block {} for {}",
@@ -202,12 +214,12 @@ impl Node {
             wd_parity.load(&producers, &mempool_txs);
             drop(producers);
         }
+        let slash_targets = self.slash_facts(None, height, &mempool_txs).await;
         {
             let deadline = Instant::now() + Duration::from_millis(self.params.slot_duration * 600); // 60% of slot
             let utxo = self.utxo_set.read().await;
             let mut cumulative_user_bytes: usize = 0;
-            // Use self.params which already has chainspec overrides applied
-            // (ConsensusParams::for_network() ignores chainspec env vars for bond_unit)
+            // self.params has the chainspec overrides (for_network() ignores them)
             let utxo_ctx = validation::ValidationContext::new(
                 self.params.clone(),
                 self.config.network,
@@ -257,6 +269,28 @@ impl Node {
             .with_inc_i_234_activation_height(
                 self.config.network.params().inc_i_234_activation_height,
             )
+            .with_inc_i_236_block_signature_activation_height(
+                self.config
+                    .network
+                    .params()
+                    .inc_i_236_block_signature_activation_height,
+            )
+            .with_inc_i_255_slashing_activation_height(
+                self.config
+                    .network
+                    .params()
+                    .effective_slashing_activation_height(),
+            )
+            .with_inc_i_257_unbonding(
+                self.config
+                    .network
+                    .params()
+                    .inc_i_257_unbonding_activation_height,
+                self.config.network.params().unbonding_period,
+            )
+            .with_inc_i_182_producer_auth(pauth_gate)
+            .with_prev_slot(prev_slot)
+            .with_slash_targets(slash_targets)
             .with_oracle_activation_height(self.config.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
@@ -265,7 +299,8 @@ impl Node {
             let total_mempool = mempool_txs.len();
             let mut included_count = 0usize;
             let mut included_txs: Vec<&Transaction> = Vec::new();
-            for tx in &mempool_txs {
+            let mut slash_budget = validation::SlashBlockBudget::default();
+            for tx in validation::slashes_first(&mempool_txs, &utxo_ctx) {
                 if Instant::now() > deadline {
                     warn!(
                         "Block building deadline reached: including {}/{} mempool TXs",
@@ -282,7 +317,9 @@ impl Node {
                     );
                     continue;
                 }
-                if let Err(e) = validation::validate_transaction_with_utxos(tx, &utxo_ctx, &*utxo) {
+                if let Err(e) = validation::validate_slash_target(tx, &utxo_ctx).and_then(|()| {
+                    validation::validate_transaction_with_utxos(tx, &utxo_ctx, &*utxo)
+                }) {
                     warn!(
                         "Skipping mempool tx {} — UTXO validation failed: {}",
                         tx.hash(),
@@ -345,6 +382,15 @@ impl Node {
                     );
                     continue;
                 }
+                if !slash_budget.fits(tx, &utxo_ctx) || slash_budget.spends_accused_bond(tx, &*utxo)
+                {
+                    debug!(
+                        "Skipping {:?} {} — slash cap, accused taken, or bond spend by an accused",
+                        tx.tx_type,
+                        tx.hash()
+                    );
+                    continue;
+                }
                 // INC-I-180 M2 / S1 (INV-PROD-003): last skip gate, so the
                 // in-block accounting below counts only what was included.
                 if let Err(reason) = wd_parity.allow(tx, &utxo) {
@@ -358,6 +404,7 @@ impl Node {
                     continue;
                 }
                 wd_parity.accept(tx);
+                slash_budget.accept(tx, &utxo_ctx);
                 cumulative_user_bytes += tx_size;
                 included_count += 1;
                 included_txs.push(tx);

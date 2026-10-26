@@ -14,6 +14,10 @@ bip39 = { workspace = true }
 hex.workspace = true
 zeroize.workspace = true
 
+# Producer transactions: one shared builder and core's signing messages
+doli-core = { workspace = true }
+doli-producer-tx = { workspace = true }
+
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
@@ -34,7 +38,5 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["full", "test-util"] }
 wiremock = "0.6"
 serde_json.workspace = true
-# doli-core + bincode as dev-only deps for cross-crate serialization tests.
-# The runtime wallet crate does NOT depend on doli-core (architectural constraint).
-doli-core = { workspace = true }
+# bincode for cross-crate serialization tests.
 bincode.workspace = true

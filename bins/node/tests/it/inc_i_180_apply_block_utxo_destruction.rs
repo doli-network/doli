@@ -200,11 +200,12 @@ fn signed_withdrawal(node: &Node, kp: &KeyPair, declared: u32, spends: u32) -> T
         .collect();
     let dest = crypto::hash::hash(b"inc-i-180-apply-block-destination");
     let net = unit * u64::from(spends) - unit / 100;
-    let mut tx = Transaction::new_request_withdrawal(inputs, *kp.public_key(), declared, dest, net);
+    let mut tx =
+        super::inc_i_255_m2_common::run_b_withdrawal(inputs, *kp.public_key(), declared, dest, net);
     for i in 0..tx.inputs.len() {
         sign_input(&mut tx, i, kp);
     }
-    tx
+    super::inc_i_255_m2_common::producer_auth(tx, kp)
 }
 
 /// Build the whole `U > P` world at `height` and apply one block carrying the
@@ -232,7 +233,8 @@ async fn apply_n11_shape(node: &mut Node, kp: &KeyPair, height: u64) -> Result<(
     }
 
     let tx = signed_withdrawal(node, kp, OWNED_BOND_UTXOS, OWNED_BOND_UTXOS);
-    let block = block_with(node, height, pk, vec![tx]);
+    let mut block = block_with(node, height, pk, vec![tx]);
+    crate::block_sig::sign_block(&mut block, kp);
 
     node.apply_block(block, ValidationMode::Light)
         .await

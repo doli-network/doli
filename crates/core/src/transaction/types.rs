@@ -303,6 +303,9 @@ pub enum OutputType {
     ///
     /// Spec: `specs/oracle-structural-anchored-economics.md` §1.2.
     OraclePrice = 15,
+    /// Withdrawn bond value, owned by the producer and locked by `lock_until`.
+    /// Must stay the LAST variant: serde writes the variant position.
+    Unbonding = 16,
 }
 
 impl OutputType {
@@ -325,6 +328,7 @@ impl OutputType {
             13 => Some(Self::ZKRollup),
             14 => Some(Self::EncryptedContent),
             15 => Some(Self::OraclePrice),
+            16 => Some(Self::Unbonding),
             _ => None,
         }
     }
@@ -380,6 +384,7 @@ impl OutputType {
                 | Self::BridgeHTLC
                 | Self::NFT
                 | Self::EncryptedContent
+                | Self::Unbonding
         )
     }
 }

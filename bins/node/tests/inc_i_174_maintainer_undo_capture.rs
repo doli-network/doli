@@ -102,6 +102,8 @@
 //!   PC5: O1        PR1: O2 O3 O4 O5 O6 O7 x {IP-DUP, IP-MAX, IP-THR, IP-EMPTY}
 //!   PR2: O2 O5 O6
 
+#[path = "support/block_sig.rs"]
+mod block_sig;
 use std::sync::Arc;
 
 use crypto::{Hash, KeyPair, PublicKey};
@@ -152,7 +154,7 @@ fn build_block(
     let merkle_root = doli_core::block::compute_merkle_root(&txs);
     let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
 
-    let header = BlockHeader {
+    let mut header = BlockHeader {
         version: 2,
         prev_hash,
         merkle_root,
@@ -169,6 +171,7 @@ fn build_block(
         data_root: crypto::Hash::ZERO,
         fork_id: crypto::Hash::ZERO,
     };
+    crate::block_sig::sign_header(&mut header, producer);
     Block::new(header, txs)
 }
 

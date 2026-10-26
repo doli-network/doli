@@ -106,7 +106,7 @@ pub fn withdrawal_tx_with_inputs(
         .map(|i| Input::new(h, i))
         .collect();
     let dest = crypto::hash::hash(b"inc-i-180-withdrawal-destination");
-    Transaction::new_request_withdrawal(inputs, *pk, declared, dest, 1)
+    super::inc_i_255_m2_common::run_b_withdrawal(inputs, *pk, declared, dest, 1)
 }
 
 pub fn exit_tx(pk: &PublicKey) -> Transaction {
@@ -209,7 +209,7 @@ pub fn withdrawal_tx_chained(
         .chain((0..prior_outputs).map(|j| Input::new(prior_hash, j)))
         .collect();
     let dest = crypto::hash::hash(b"inc-i-180-withdrawal-destination");
-    Transaction::new_request_withdrawal(inputs, *pk, declared, dest, 1)
+    super::inc_i_255_m2_common::run_b_withdrawal(inputs, *pk, declared, dest, 1)
 }
 
 /// Insert a NON-Bond (Normal) UTXO for every input of `tx` — models a

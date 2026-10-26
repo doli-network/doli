@@ -10,10 +10,8 @@ use doli_core::validation::{
     ValidationError,
 };
 use doli_core::{BlockHeight, Transaction, TxType};
-use serde_json::Value;
 use storage::producer::resolve_withdrawal_inputs;
 use storage::{Outpoint, UtxoSet};
-use thiserror::Error;
 use tracing::{debug, info, warn};
 
 use super::contention::{
@@ -21,146 +19,15 @@ use super::contention::{
     MempoolDiagnostic,
 };
 use super::entry::MempoolEntry;
+pub use super::error::MempoolError;
 use super::holdings::HoldingsSources;
 use super::pending_registrations;
 use super::policy::MempoolPolicy;
+use super::unbonding;
 use super::withdrawal_holdings;
 use super::zero_flow_auth::ZeroFlowSnapshot;
 use super::zero_flow_newness::ChangeIndex;
 use super::{zero_flow_mined::MinedCheck, zero_flow_policy};
-
-/// Mempool errors
-#[derive(Debug, Error)]
-pub enum MempoolError {
-    #[error("transaction already exists in mempool")]
-    AlreadyExists,
-
-    #[error("mempool is full")]
-    Full,
-
-    #[error("invalid transaction: {0}")]
-    InvalidTransaction(String),
-
-    #[error("validation failed: {0}")]
-    Validation(#[from] ValidationError),
-
-    #[error("fee too low: {0} < {1}")]
-    FeeTooLow(u64, u64),
-
-    #[error("transaction too large: {0} > {1}")]
-    TooLarge(usize, usize),
-
-    #[error("too many ancestors: {0} > {1}")]
-    TooManyAncestors(usize, usize),
-
-    #[error("too many descendants: {0} > {1}")]
-    TooManyDescendants(usize, usize),
-
-    #[error("missing input: {0}:{1}")]
-    MissingInput(Hash, u32),
-
-    #[error(
-        "double spend: outpoint {tx_hash}:{output_index} already spent by mempool tx {spending_tx}"
-    )]
-    DoubleSpend {
-        /// Transaction hash of the output being double-spent.
-        tx_hash: crypto::Hash,
-        /// Output index within that transaction.
-        output_index: u32,
-        /// Hash of the mempool transaction that already spends this output.
-        spending_tx: crypto::Hash,
-    },
-}
-
-impl MempoolError {
-    /// Returns a stable, machine-readable error code.
-    pub fn error_code(&self) -> &str {
-        match self {
-            Self::AlreadyExists => "TX_ALREADY_EXISTS",
-            Self::Full => "MEMPOOL_FULL",
-            Self::InvalidTransaction(msg) => {
-                // Extract [MPTX0XX] code if present
-                if msg.starts_with("[MPTX") {
-                    if let Some(end) = msg.find(']') {
-                        return &msg[1..end];
-                    }
-                }
-                "INVALID_TRANSACTION"
-            }
-            Self::Validation(e) => e.error_code(),
-            Self::FeeTooLow(..) => "FEE_TOO_LOW",
-            Self::TooLarge(..) => "TX_TOO_LARGE",
-            Self::TooManyAncestors(..) => "TOO_MANY_ANCESTORS",
-            Self::TooManyDescendants(..) => "TOO_MANY_DESCENDANTS",
-            Self::MissingInput(..) => "MISSING_INPUT",
-            Self::DoubleSpend { .. } => "DOUBLE_SPEND",
-        }
-    }
-
-    /// Serializes this error to structured JSON for agentic consumption.
-    ///
-    /// Returns a JSON object with `error_code`, `message`, `stage`, and
-    /// variant-specific fields. Agents can match on `error_code` programmatically.
-    pub fn to_structured_json(&self) -> Value {
-        let mut obj = serde_json::json!({
-            "error_code": self.error_code(),
-            "message": self.to_string(),
-            "stage": "mempool",
-        });
-
-        let map = obj.as_object_mut().unwrap();
-
-        match self {
-            Self::AlreadyExists | Self::Full => {}
-            Self::InvalidTransaction(msg) => {
-                map.insert("detail".into(), Value::String(msg.clone()));
-            }
-            Self::Validation(e) => {
-                // Merge the full ValidationError JSON (which has all fields)
-                let val_json = e.to_structured_json();
-                if let Value::Object(val_map) = val_json {
-                    for (k, v) in val_map {
-                        if k != "message" {
-                            map.insert(k, v);
-                        }
-                    }
-                }
-                map.insert("stage".into(), Value::String("mempool_validation".into()));
-            }
-            Self::FeeTooLow(actual, minimum) => {
-                map.insert("actual_fee".into(), (*actual).into());
-                map.insert("minimum_fee".into(), (*minimum).into());
-            }
-            Self::TooLarge(size, max) => {
-                map.insert("size".into(), (*size).into());
-                map.insert("max".into(), (*max).into());
-            }
-            Self::TooManyAncestors(count, max) => {
-                map.insert("count".into(), (*count).into());
-                map.insert("max".into(), (*max).into());
-            }
-            Self::TooManyDescendants(count, max) => {
-                map.insert("count".into(), (*count).into());
-                map.insert("max".into(), (*max).into());
-            }
-            Self::MissingInput(hash, index) => {
-                map.insert("tx_hash".into(), Value::String(hash.to_hex()));
-                map.insert("output_index".into(), (*index).into());
-            }
-            Self::DoubleSpend {
-                tx_hash,
-                output_index,
-                spending_tx,
-            } => {
-                map.insert("tx_hash".into(), Value::String(tx_hash.to_hex()));
-                map.insert("output_index".into(), (*output_index).into());
-                map.insert("spending_tx".into(), Value::String(spending_tx.to_hex()));
-            }
-        }
-
-        obj
-    }
-}
 
 /// Transaction mempool
 pub struct Mempool {
@@ -337,13 +204,17 @@ impl Mempool {
         vesting_lane: bool,
         count_residents: bool,
     ) -> Result<(), String> {
-        if tx.tx_type != TxType::RequestWithdrawal {
-            return Ok(());
-        }
-        let Some(wd) = tx.withdrawal_request_data() else {
+        let Some(producer) = doli_core::validation::bond_withdrawal_producer(tx) else {
             return Ok(());
         };
         let params = self.network.params();
+        crate::slash_admission::withdrawal_refusal(
+            &producer,
+            current_height.saturating_add(1),
+            params.effective_slashing_activation_height(),
+            &self.producer_holdings,
+            self.entries.values().map(|e| &e.tx),
+        )?;
         let holdings_open = current_height >= params.withdrawal_holdings_gate_activation_height;
         // INV-VEST-011: the watermark, never the call slot. A slot that went
         // backwards must not turn an in-flight honest withdrawal into a
@@ -363,13 +234,13 @@ impl Mempool {
             return Ok(());
         }
         // INV-VEST-008: ONE resolution feeds both arms.
-        let owner = withdrawal_holdings::address_of(&wd.producer_pubkey);
+        let owner = withdrawal_holdings::address_of(&producer);
         let resolved = resolve_withdrawal_inputs(tx, utxo_set, &owner);
         if holdings_open {
             let resident = if count_residents {
                 withdrawal_holdings::resident_withdrawn(
                     self.entries.values().map(|e| &e.tx),
-                    &wd.producer_pubkey,
+                    &producer,
                 )
             } else {
                 0
@@ -378,7 +249,7 @@ impl Mempool {
                 tx,
                 utxo_set,
                 &resolved,
-                self.producer_holdings.lookup(&wd.producer_pubkey),
+                self.producer_holdings.lookup(&producer),
                 resident,
                 current_height,
             )?;
@@ -441,6 +312,15 @@ impl Mempool {
     /// `validate_registration_data_inner` — which is unreachable for every
     /// other transaction type, so every other type keeps a bit-identical
     /// `Vec::new()` and pays no traversal.
+    /// Bond owners of the accused of the resident slashes, judged at the next height.
+    fn slash_bond_owners(&self, current_height: BlockHeight) -> HashSet<Hash> {
+        crate::slash_admission::slash_bond_owners(
+            self.entries.values().map(|e| &e.tx),
+            current_height.saturating_add(1),
+            self.network.params().effective_slashing_activation_height(),
+        )
+    }
+
     fn pending_keys_for(&self, tx: &Transaction, exclude: Option<&Hash>) -> Vec<crypto::PublicKey> {
         if tx.tx_type != TxType::Registration {
             return Vec::new();
@@ -477,6 +357,73 @@ impl Mempool {
         )
     }
 
+    /// Admission context on the tip `(height, slot)` for every tx type.
+    fn admission_base_ctx(
+        &self,
+        (current_height, current_slot): (BlockHeight, u32),
+        pending_keys: Vec<crypto::PublicKey>,
+    ) -> ValidationContext {
+        // AUDIT-P1-001: the active_producers snapshot lets validate_transaction's
+        // contains-check (transaction.rs:242) see the live set. It may be empty
+        // pre-activation (no producer set wired); oracle_activation_height =
+        // u64::MAX rejects PriceAttestation at the height gate first.
+        let active_producers_snapshot = self
+            .active_producers_weighted
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        ValidationContext::new(self.params.clone(), self.network, 0, current_height)
+            .with_prev_slot(current_slot)
+            .with_sig_verification_height(self.network.params().sig_verification_height)
+            .with_encrypted_content_activation_height(
+                self.network.params().encrypted_content_activation_height,
+            )
+            .with_encrypted_content_v2_activation_height(
+                self.network.params().encrypted_content_v2_activation_height,
+            )
+            .with_security_audit_activation_height(
+                self.network.params().security_audit_activation_height,
+            )
+            .with_defi_activation_height(self.network.params().defi_activation_height)
+            .with_amm_activation_height(self.network.params().amm_activation_height)
+            .with_inc_i_092_activation_height(self.network.params().inc_i_092_activation_height)
+            .with_inc_i_096_activation_height(self.network.params().inc_i_096_activation_height)
+            // INC-I-173 M3 / AUDIT-P3-003. Node-local ADMISSION policy: without
+            // this the mempool holds u64::MAX and so evaluates the fee gate on
+            // its frozen pre-activation branch, admitting a transaction shape
+            // that apply_block (which IS wired) would then reject.
+            .with_inc_i_173_activation_height(self.network.params().inc_i_173_activation_height)
+            .with_bls_key_rotation_activation_height(
+                self.network.params().bls_key_rotation_activation_height,
+            )
+            .with_inc_i_234_activation_height(self.network.params().inc_i_234_activation_height)
+            .with_inc_i_236_block_signature_activation_height(
+                self.network
+                    .params()
+                    .inc_i_236_block_signature_activation_height,
+            )
+            .with_inc_i_255_slashing_activation_height(
+                self.network.params().effective_slashing_activation_height(),
+            )
+            .with_inc_i_257_unbonding(
+                self.network.params().inc_i_257_unbonding_activation_height,
+                self.network.params().unbonding_period,
+            )
+            .with_inc_i_182_producer_auth(
+                self.network
+                    .params()
+                    .inc_i_182_producer_auth_activation_height,
+            )
+            .with_inc_i_257_rules_at_next_height()
+            .with_oracle_activation_height(self.network.params().oracle_activation_height)
+            .with_oracle_sunset_triggered(
+                self.oracle_sunset_triggered
+                    .load(std::sync::atomic::Ordering::Acquire),
+            )
+            .with_producers_weighted(active_producers_snapshot)
+            .with_pending_producer_keys(pending_keys)
+    }
+
     /// Add a transaction to the mempool.
     ///
     /// `current_slot` feeds the INC-I-171 vesting bound and raises the
@@ -503,58 +450,21 @@ impl Mempool {
         }
 
         // Validate transaction structure
-        // AUDIT-P1-001: pull active_producers snapshot so validate_transaction's
-        // contains-check at transaction.rs:242 sees the live set instead of
-        // an empty Vec. Snapshot may be empty pre-activation (no real
-        // producer set wired) — that is harmless because oracle_activation_height
-        // = u64::MAX rejects PriceAttestation at the height gate first.
-        let active_producers_snapshot = self
-            .active_producers_weighted
-            .read()
-            .map(|g| g.clone())
-            .unwrap_or_default();
         // INC-I-147: populate pending_producer_keys so the duplicate-registration
         // check at validation/registration.rs:173 is reachable at admission
         // instead of evaluating Vec::new().contains(&pk) == false. `tx` is not
         // yet in `entries` (the AlreadyExists guard above returned otherwise),
         // so the exclusion is defensive.
         let pending_keys = self.pending_keys_for(&tx, Some(&tx_hash));
-        let ctx = ValidationContext::new(self.params.clone(), self.network, 0, current_height)
-            .with_sig_verification_height(self.network.params().sig_verification_height)
-            .with_encrypted_content_activation_height(
-                self.network.params().encrypted_content_activation_height,
-            )
-            .with_encrypted_content_v2_activation_height(
-                self.network.params().encrypted_content_v2_activation_height,
-            )
-            .with_security_audit_activation_height(
-                self.network.params().security_audit_activation_height,
-            )
-            .with_defi_activation_height(self.network.params().defi_activation_height)
-            .with_amm_activation_height(self.network.params().amm_activation_height)
-            .with_inc_i_092_activation_height(self.network.params().inc_i_092_activation_height)
-            .with_inc_i_096_activation_height(self.network.params().inc_i_096_activation_height)
-            // INC-I-173 M3 / AUDIT-P3-003. Node-local ADMISSION policy: without
-            // this the mempool holds u64::MAX and so evaluates the fee gate on
-            // its frozen pre-activation branch, admitting a transaction shape
-            // that apply_block (which IS wired) would then reject.
-            .with_inc_i_173_activation_height(self.network.params().inc_i_173_activation_height)
-            .with_bls_key_rotation_activation_height(
-                self.network.params().bls_key_rotation_activation_height,
-            )
-            .with_inc_i_234_activation_height(self.network.params().inc_i_234_activation_height)
-            .with_oracle_activation_height(self.network.params().oracle_activation_height)
-            .with_oracle_sunset_triggered(
-                self.oracle_sunset_triggered
-                    .load(std::sync::atomic::Ordering::Acquire),
-            )
-            .with_producers_weighted(active_producers_snapshot)
-            .with_pending_producer_keys(pending_keys);
+        let ctx = self.admission_base_ctx((current_height, current_slot), pending_keys);
         // INC-I-217 M6: the named rotation verdict runs BEFORE the generic
         // validator, so it is the verdict and not a second opinion.
         crate::rotation_filter::rotation_admissible(&tx, &ctx)
             .map_err(MempoolError::InvalidTransaction)?;
+        let slash_ctx =
+            crate::slash_admission::admission_ctx(&tx, &ctx, &self.producer_holdings, utxo_set)?;
         validate_transaction(&tx, &ctx)?;
+        crate::slash_admission::resident_refusal(&tx, &ctx, self.entries.values().map(|e| &e.tx))?;
 
         // Validate input spending conditions: pubkey + signature for Normal/Bond,
         // covenant evaluation for conditioned outputs. Reject early to prevent
@@ -669,6 +579,9 @@ impl Mempool {
         // two independently gated arms.
         self.withdrawal_verdict(&tx, utxo_set, current_height, true, true)
             .map_err(MempoolError::InvalidTransaction)?;
+        let slash_owners = self.slash_bond_owners(current_height);
+        crate::slash_admission::bond_spend_refusal(&tx, &slash_owners, utxo_set)
+            .map_err(MempoolError::InvalidTransaction)?;
 
         // INC-I-203 M2: same verdict the builder applies (REQ-BOND-004).
         self.addbond_holdings_verdict(&tx, current_height)
@@ -743,7 +656,11 @@ impl Mempool {
         // INC-I-233: the six fee-exempt types skip the floor, like consensus
         // (one shared list); with native-only inputs they would otherwise be
         // rejected here while consensus accepts them (INC-I-147 class).
-        let fee_exempt = doli_core::validation::coinbase_credit::is_native_fee_exempt(tx.tx_type);
+        let slash_exempt = slash_ctx
+            .as_ref()
+            .is_some_and(|c| doli_core::validation::slash_fee_exempt(&tx, c));
+        let fee_exempt = doli_core::validation::coinbase_credit::is_native_fee_exempt(tx.tx_type)
+            || slash_exempt;
         if !amm_gated && !fee_exempt {
             // Require fee >= minimum_fee (base + per-byte for output extra_data)
             let min_fee = tx.minimum_fee();
@@ -819,6 +736,7 @@ impl Mempool {
 
         // Create entry
         let mut entry = MempoolEntry::new(tx.clone(), fee);
+        entry.evict_exempt = slash_exempt;
 
         // Calculate ancestor fees
         for ancestor_hash in &ancestors {
@@ -860,6 +778,16 @@ impl Mempool {
         self.by_fee_rate.insert((fee_rate, tx_hash));
         self.total_size += tx_size;
         self.entries.insert(tx_hash, entry);
+        let beside = self.entries.iter().map(|(h, e)| (h, &e.tx));
+        let evicted = crate::slash_admission::withdrawals_for_slash(
+            &tx,
+            slash_ctx.as_ref(),
+            beside,
+            utxo_set,
+        );
+        for hash in evicted {
+            self.remove_transaction(&hash);
+        }
 
         debug!(
             "Added transaction {} to mempool (fee_rate: {})",
@@ -994,6 +922,23 @@ impl Mempool {
                 self.network.params().bls_key_rotation_activation_height,
             )
             .with_inc_i_234_activation_height(self.network.params().inc_i_234_activation_height)
+            .with_inc_i_236_block_signature_activation_height(
+                self.network
+                    .params()
+                    .inc_i_236_block_signature_activation_height,
+            )
+            .with_inc_i_255_slashing_activation_height(
+                self.network.params().effective_slashing_activation_height(),
+            )
+            .with_inc_i_257_unbonding(
+                self.network.params().inc_i_257_unbonding_activation_height,
+                self.network.params().unbonding_period,
+            )
+            .with_inc_i_182_producer_auth(
+                self.network
+                    .params()
+                    .inc_i_182_producer_auth_activation_height,
+            )
             .with_oracle_activation_height(self.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
@@ -1002,6 +947,7 @@ impl Mempool {
             .with_producers_weighted(active_producers_snapshot)
             .with_pending_producer_keys(pending_keys);
         validate_transaction(tx, &ctx)?;
+        crate::slash_admission::registrant_refusal(tx, &ctx, &self.producer_holdings)?;
         let genesis = &self.params.genesis_hash;
         zero_flow_policy::check(tx, snapshot, current_height, self.network, genesis)?;
         let key = zero_flow_policy::change_key(tx);
@@ -1329,6 +1275,7 @@ impl Mempool {
             // First check if output is in mempool
             if let Some(parent_entry) = self.entries.get(&input.prev_tx_hash) {
                 if let Some(output) = parent_entry.tx.outputs.get(input.output_index as usize) {
+                    unbonding::check_output(self.network, tx.tx_type, output, current_height)?;
                     // INC-I-233: native amounts only, same as consensus (utxo.rs).
                     if output.output_type.is_native_amount() {
                         total += output.amount;
@@ -1342,19 +1289,7 @@ impl Mempool {
 
             // Then check UTXO set
             if let Some(utxo) = utxo_set.get(&outpoint) {
-                // Skip lock check for RequestWithdrawal and Exit — they unlock Bond UTXOs
-                // (matches validation.rs:2527 exemption)
-                let skip_lock =
-                    tx.tx_type == TxType::RequestWithdrawal || tx.tx_type == TxType::Exit;
-                if !skip_lock {
-                    let maturity = self.network.coinbase_maturity();
-                    if !utxo.is_spendable_at_with_maturity(current_height, maturity) {
-                        return Err(MempoolError::InvalidTransaction(format!(
-                            "[MPTX009] output not spendable until height {} (current={}, maturity={})",
-                            utxo.height + maturity, current_height, maturity
-                        )));
-                    }
-                }
+                unbonding::check_utxo(self.network, tx.tx_type, &utxo, current_height)?;
                 // INC-I-233: token/LP units are not native DOLI and never pay a fee.
                 if utxo.output.output_type.is_native_amount() {
                     total += utxo.output.amount;
@@ -1385,7 +1320,7 @@ impl Mempool {
             .find(|&&(_, hash)| {
                 self.entries
                     .get(&hash)
-                    .map(|e| e.descendants.is_empty())
+                    .map(|e| e.descendants.is_empty() && !e.evict_exempt)
                     .unwrap_or(false)
             })
             .map(|&(_, hash)| hash);
@@ -1403,7 +1338,7 @@ impl Mempool {
         let hashes: Vec<Hash> = self
             .entries
             .iter()
-            .filter(|(_, e)| e.age() > self.policy.max_age)
+            .filter(|(_, e)| !e.evict_exempt && e.age() > self.policy.max_age)
             .map(|(h, _)| *h)
             .collect();
 
@@ -1423,6 +1358,7 @@ impl Mempool {
     ) {
         self.slot_watermark = self.slot_watermark.max(current_slot);
         let mut to_remove = Vec::new();
+        let slash_owners = self.slash_bond_owners(current_height);
 
         for (hash, entry) in &self.entries {
             let tx = &entry.tx;
@@ -1452,6 +1388,14 @@ impl Mempool {
                     valid = false;
                 }
             }
+            if valid {
+                if let Err(reason) =
+                    crate::slash_admission::bond_spend_refusal(tx, &slash_owners, utxo_set)
+                {
+                    warn!("INC-I-255: evicting {} — {}", hash, reason);
+                    valid = false;
+                }
+            }
 
             // INC-I-203 M2: an AddBond the ledger moved over the cap after
             // admission keeps every input alive, so input existence cannot shed it.
@@ -1468,6 +1412,18 @@ impl Mempool {
         }
 
         to_remove.extend(self.registrations_that_became_duplicates(current_height));
+        to_remove.extend(crate::slash_admission::slash_rule_evictions(
+            self.entries.iter().map(|(h, e)| (h, &e.tx)),
+            &self.admission_base_ctx((current_height, current_slot), Vec::new()),
+            &self.producer_holdings,
+            utxo_set,
+        ));
+        to_remove.extend(unbonding::unmineable_producer_txs(
+            self.entries.iter().map(|(h, e)| (h, &e.tx)),
+            &self.params,
+            self.network,
+            current_height,
+        ));
 
         for hash in to_remove {
             info!("Removing invalidated transaction {}", hash);

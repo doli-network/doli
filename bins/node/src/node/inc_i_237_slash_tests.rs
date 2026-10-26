@@ -1,26 +1,19 @@
-//! INC-I-237 — SlashProducer flood. TDD RED.
-//!
-//! Consensus makes every 0-in/0-out SlashProducer invalid in a block: it is not
-//! in `TxType::allows_empty_io` (INC-I-173 C1 — headers are unsigned and the
-//! hash-chain VDF is public, so double-production evidence is forgeable) and it
-//! is not fee-exempt, so `validate_transaction_with_utxos` returns
-//! InsufficientFee at every height. A node that builds and broadcasts such a
-//! tx injects a message no peer can admit or mine; gossip relays it forever.
+//! INC-I-237 — SlashProducer flood. Devnet node: the INC-I-255 slash gate is 0,
+//! so one equivocation yields exactly one canonical slash tx, never more.
 //!
 //! OUTPUT CONTRACT
 //!   fn Node::handle_equivocation(&mut self, EquivocationProof)
 //!     O1 receiver: mempool SlashProducer count (broadcast is gated on it)
-//!     O2 log only
 //!   fn Node::handle_new_block(&mut self, Block, PeerId) — equivocation arm
 //!     O1 receiver: mempool SlashProducer count
-//!     O2 detector still records the proof (detection is kept, for logs)
+//!     O2 detector still records the proof
 //!   fn Node::handle_gossip_txs(&self, Vec<Transaction>) -> Verdict (M2)
 //!     O1 receiver: mempool membership   O3 verdict (relay is gated on it)
 //!
 //! INPUT PARTITIONS
-//!   P1 VDF-committed pair (merkle_root differs)   -> no slash tx anywhere
-//!   P2 presence_root-only pair (same VDF input)   -> no slash tx anywhere
-//!   P3 slash tx arriving by gossip                -> not admitted
+//!   P1 VDF-committed pair (merkle_root differs)   -> exactly one slash tx
+//!   P2 presence_root-only pair (same VDF input)   -> exactly one slash tx
+//!   P3 reporter-signed slash tx arriving by gossip -> not admitted
 
 use super::*;
 use doli_core::tpop::heartbeat::verify_hash_chain_vdf;
@@ -33,19 +26,40 @@ async fn node(producers: &[KeyPair]) -> (Node, TempDir) {
     let node = Node::new_for_test(temp.path().to_path_buf(), producers.to_vec())
         .await
         .expect("Node::new_for_test failed");
+    let unit = node.config.network.bond_unit();
+    for kp in producers {
+        let pk = kp.public_key().as_bytes();
+        let at = storage::Outpoint::new(crypto::hash::hash_with_domain(b"genesis_bond", pk), 0);
+        let owner = crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, pk);
+        let entry = storage::UtxoEntry {
+            output: doli_core::transaction::Output::bond(unit, owner, u64::MAX, 0),
+            height: 0,
+            is_coinbase: false,
+            is_epoch_reward: false,
+        };
+        node.utxo_set
+            .write()
+            .await
+            .insert(at, entry)
+            .expect("FIXTURE: genesis bond, stamped at slot 0 as genesis does");
+    }
     (node, temp)
 }
 
 /// A header whose VDF output is REAL for the node's network (Devnet).
 fn header(by: &KeyPair, prev: Hash, merkle: Hash, presence: Hash) -> BlockHeader {
+    header_at(by, prev, merkle, presence, SLOT)
+}
+
+fn header_at(by: &KeyPair, prev: Hash, merkle: Hash, presence: Hash, slot: u32) -> BlockHeader {
     let mut h = BlockHeader {
         version: 2,
         prev_hash: prev,
         merkle_root: merkle,
         presence_root: presence,
         genesis_hash: doli_core::chainspec::ChainSpec::devnet().genesis_hash(),
-        timestamp: SLOT as u64 * 10,
-        slot: SLOT,
+        timestamp: slot as u64 * 10,
+        slot,
         producer: *by.public_key(),
         vdf_output: VdfOutput { value: vec![] },
         vdf_proof: VdfProof::empty(),
@@ -57,6 +71,7 @@ fn header(by: &KeyPair, prev: Hash, merkle: Hash, presence: Hash) -> BlockHeader
     h.vdf_output = VdfOutput {
         value: out.to_vec(),
     };
+    crate::node::test_block_sig::sign_header(&mut h, by);
     h
 }
 
@@ -78,7 +93,7 @@ async fn slash_count(node: &Node) -> usize {
         .count()
 }
 
-// T1 — handle_equivocation must not build a tx that consensus cannot mine.
+// T1 — handle_equivocation builds exactly one canonical slash tx.
 #[tokio::test]
 async fn test_handle_equivocation_creates_no_unmineable_slash_tx() {
     let producers: Vec<KeyPair> = (0..3).map(|_| KeyPair::generate()).collect();
@@ -112,9 +127,9 @@ async fn test_handle_equivocation_creates_no_unmineable_slash_tx() {
     n.handle_equivocation(proof).await;
     let got = slash_count(&n).await;
     assert_eq!(
-        got, 0,
-        "INC-I-237: handle_equivocation put {got} SlashProducer tx(s) in the mempool \
-         (and broadcast them); consensus rejects every such tx (InsufficientFee)"
+        got, 1,
+        "INC-I-237: handle_equivocation put {got} SlashProducer tx(s) in the mempool; \
+         exactly one canonical tx is allowed"
     );
 }
 
@@ -153,8 +168,8 @@ async fn test_handle_new_transaction_does_not_admit_gossiped_slash() {
     );
 }
 
-// T3 — through the real block entry point, neither pair shape yields a slash
-// tx; detection itself still runs (the detector records the proof).
+// T3 — through the real block entry point, each pair shape yields exactly one
+// slash tx; the detector records the proof.
 #[tokio::test]
 async fn test_handle_new_block_equivocation_yields_no_slash_tx() {
     let producers: Vec<KeyPair> = (0..3).map(|_| KeyPair::generate()).collect();
@@ -164,18 +179,25 @@ async fn test_handle_new_block_equivocation_yields_no_slash_tx() {
     let pairs = [
         (
             "merkle_root pair",
-            header(&producers[0], p, crypto_hash(b"m-A"), Hash::ZERO),
-            header(&producers[0], p, crypto_hash(b"m-B"), Hash::ZERO),
+            (crypto_hash(b"m-A"), Hash::ZERO),
+            (crypto_hash(b"m-B"), Hash::ZERO),
         ),
         (
             "presence_root-only pair",
-            header(&producers[0], p, m, crypto_hash(b"attest-set-A")),
-            header(&producers[0], p, m, crypto_hash(b"attest-set-B")),
+            (m, crypto_hash(b"attest-set-A")),
+            (m, crypto_hash(b"attest-set-B")),
         ),
     ];
-    for (name, h1, h2) in pairs {
-        assert!(vdf_ok(&h1) && vdf_ok(&h2), "{name}: setup VDFs valid");
+    for (name, (m1, r1), (m2, r2)) in pairs {
         let (mut n, _t) = node(&producers).await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs();
+        let slot = n.params.timestamp_to_slot(now);
+        let h1 = header_at(&producers[0], p, m1, r1, slot);
+        let h2 = header_at(&producers[0], p, m2, r2, slot);
+        assert!(vdf_ok(&h1) && vdf_ok(&h2), "{name}: setup VDFs valid");
         let _ = n.handle_new_block(Block::new(h1, vec![]), peer).await;
         let _ = n.handle_new_block(Block::new(h2, vec![]), peer).await;
         let detected = n
@@ -187,7 +209,7 @@ async fn test_handle_new_block_equivocation_yields_no_slash_tx() {
         assert_eq!(detected, 1, "{name}: setup — equivocation must be detected");
         let got = slash_count(&n).await;
         assert_eq!(
-            got, 0,
+            got, 1,
             "INC-I-237 {name}: produced {got} SlashProducer tx(s)"
         );
     }

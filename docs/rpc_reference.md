@@ -417,6 +417,7 @@ Returns balance for an address.
     "unconfirmed": 5000000,
     "immature": 100000000,
     "bonded": 50000000000,
+    "unbonding": 0,
     "total": 150105000000
 }
 ```
@@ -428,7 +429,8 @@ Returns balance for an address.
 | unconfirmed | Pending credits from mempool (incoming change outputs) |
 | immature | Coinbase/epoch rewards awaiting maturity (6 blocks) |
 | bonded | Balance locked in Bond UTXOs (not spendable directly) |
-| total | confirmed + unconfirmed + immature + bonded |
+| unbonding | Withdrawn bond value in Unbonding outputs not yet past their `lockUntil` (not spendable). Once unlocked, the amount moves to `confirmed`. |
+| total | confirmed + unconfirmed + immature + bonded + unbonding |
 
 **Note:** Amounts are in base units (1 DOLI = 100,000,000 units)
 
@@ -523,6 +525,7 @@ Returns unspent transaction outputs for an address.
 | bridgeHtlc | Cross-chain bridge HTLC |
 | pool | AMM pool state output |
 | lpShare | Liquidity provider share |
+| unbonding | Payout of a bond withdrawal, locked until `lockUntil` (`spendable` is `false` before it; a pending one is never `spendable`) |
 
 **Example:**
 ```bash
@@ -1708,7 +1711,7 @@ curl -X POST http://127.0.0.1:8500 \
 | -32001 | Transaction not found | Requested tx doesn't exist |
 | -32002 | Invalid transaction | Transaction validation failed |
 | -32003 | Already in mempool | Transaction already submitted |
-| -32004 | Mempool full / Node busy | Mempool at capacity; or `"Node busy: broadcast queue full, retry later"` with `data.error_code = "BROADCAST_BUSY"` (`sendTransaction`, `submitVote`, `submitMaintainerChange`; retryable) |
+| -32004 | Mempool full / Node busy | Mempool at capacity; or `"Node busy: broadcast queue full, retry later"` with `data.error_code = "BROADCAST_BUSY"` (`sendTransaction`, `submitVote`, `submitMaintainerChange`; retryable); or `"Node busy: producer set locked, retry later"` with `data.error_code = "MEMPOOL_BUSY"` (`sendTransaction` of a slash; retryable) |
 | -32005 | UTXO not found | Referenced UTXO doesn't exist |
 | -32006 | Producer not found | Producer not in registry |
 | -32007 | Pool not found | AMM pool not found |

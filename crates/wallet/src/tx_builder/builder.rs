@@ -1,7 +1,19 @@
+use std::str::FromStr;
+
 use anyhow::{anyhow, Result};
-use crypto::{signature, KeyPair};
+use crypto::{signature, Hash, KeyPair};
+use doli_core::transaction::OutputType;
+use doli_core::validation::bond_owner;
+use doli_core::Network;
+use doli_producer_tx::producer_tx::{
+    build_add_bond_tx, chain_genesis_hash, finalize_producer_tx, AddBondSpec,
+};
+use doli_producer_tx::unbonding_tx::{
+    build_withdrawal_tx, builder_params, FeeUtxo, WithdrawalSpec,
+};
 
 use super::types::{TxInput, TxOutput, TxType, TX_VERSION};
+use super::{ProducerSigner, WithdrawalRequest};
 use crate::types::*;
 
 /// Transaction builder for constructing and signing transactions.
@@ -136,14 +148,13 @@ impl TxBuilder {
     /// matching `doli-core::Transaction::serialize()` exactly, so the node can deserialize
     /// it with `bincode::deserialize()`.
     pub fn sign_and_build(&mut self, keypair: &KeyPair) -> Result<String> {
-        let signing_bytes = self.build_for_signing()?;
+        self.build_for_signing()?;
 
-        // Hash the signing bytes and sign
-        let hash = crypto::hash::hash(&signing_bytes);
-        let sig = signature::sign(hash.as_bytes(), keypair.private_key());
-
-        // Set signature and public key on all inputs
-        for input in &mut self.inputs {
+        // Input i signs core's per-input message, the one the node verifies.
+        let unsigned = self.core_unsigned()?;
+        for (i, input) in self.inputs.iter_mut().enumerate() {
+            let msg = unsigned.signing_message_for_input(i);
+            let sig = signature::sign_hash(&msg, keypair.private_key());
             input.signature = Some(sig.as_bytes().to_vec());
             input.public_key = Some(keypair.public_key().as_bytes().to_vec());
         }
@@ -236,6 +247,34 @@ impl TxBuilder {
         Ok(hex::encode(buf))
     }
 
+    /// This builder as an unsigned core transaction, for core's signing messages.
+    fn core_unsigned(&self) -> Result<doli_core::Transaction> {
+        let tx_type = doli_core::transaction::TxType::from_u32(self.tx_type.to_core_type_id())
+            .ok_or_else(|| anyhow!("Unknown transaction type {:?}", self.tx_type))?;
+        let mut outputs = Vec::with_capacity(self.outputs.len());
+        for o in &self.outputs {
+            outputs.push(doli_core::transaction::Output {
+                output_type: OutputType::from_u8(o.output_type)
+                    .ok_or_else(|| anyhow!("Unknown output type {}", o.output_type))?,
+                amount: o.amount,
+                pubkey_hash: Hash::from_bytes(o.pubkey_hash),
+                lock_until: o.lock_until,
+                extra_data: o.extra_data.clone(),
+            });
+        }
+        Ok(doli_core::Transaction {
+            version: TX_VERSION,
+            tx_type,
+            inputs: self
+                .inputs
+                .iter()
+                .map(|i| doli_core::Input::new(Hash::from_bytes(i.prev_tx_hash), i.output_index))
+                .collect(),
+            outputs,
+            extra_data: self.extra_data.clone(),
+        })
+    }
+
     // ========================================================================
     // Convenience builders for common transaction types
     // ========================================================================
@@ -300,13 +339,17 @@ impl TxBuilder {
         Ok(builder)
     }
 
-    /// Build an AddBond transaction (TxType 7).
+    /// Build and sign an AddBond: greedy over spendable normal coins, change to
+    /// the signer's own address, then the shared builder and its signing step.
+    /// Returns the signed tx as hex.
     pub fn build_add_bond(
         utxos: &[Utxo],
         bond_count: u32,
-        sender_hash: [u8; 32],
+        bond_unit: u64,
+        lock_until: u64,
         fee: u64,
-    ) -> Result<Self> {
+        signer: &ProducerSigner<'_>,
+    ) -> Result<String> {
         if bond_count == 0 {
             return Err(anyhow!("Bond count must be greater than 0"));
         }
@@ -317,34 +360,24 @@ impl TxBuilder {
                 MAX_BONDS_PER_PRODUCER
             ));
         }
-
-        let bond_cost = (bond_count as u64)
-            .checked_mul(BOND_UNIT)
-            .ok_or_else(|| anyhow!("Bond cost overflow"))?;
-        let total_needed = bond_cost
-            .checked_add(fee)
+        let genesis = chain_genesis_hash(signer.genesis_hash).map_err(|e| anyhow!(e))?;
+        let total_needed = u64::from(bond_count)
+            .checked_mul(bond_unit)
+            .and_then(|cost| cost.checked_add(fee))
             .ok_or_else(|| anyhow!("Bond cost + fee overflow"))?;
 
+        let mut inputs = Vec::new();
         let mut selected_amount: u64 = 0;
-        let mut builder = TxBuilder::new(TxType::AddBond);
-
         for utxo in utxos
             .iter()
             .filter(|u| u.spendable && u.output_type == "normal")
         {
-            let tx_hash_bytes: [u8; 32] = hex::decode(&utxo.tx_hash)
-                .map_err(|_| anyhow!("Invalid tx hash hex"))?
-                .try_into()
-                .map_err(|_| anyhow!("Tx hash must be 32 bytes"))?;
-
-            builder.add_input(tx_hash_bytes, utxo.output_index);
-            selected_amount += utxo.amount;
-
             if selected_amount >= total_needed {
                 break;
             }
+            inputs.push(outpoint(utxo)?);
+            selected_amount = selected_amount.saturating_add(utxo.amount);
         }
-
         if selected_amount < total_needed {
             return Err(anyhow!(
                 "Insufficient balance for {} bonds: need {} DOLI",
@@ -353,46 +386,70 @@ impl TxBuilder {
             ));
         }
 
-        // Bond output(s)
-        for _ in 0..bond_count {
-            builder.add_output(BOND_UNIT, sender_hash, 1, u64::MAX, Vec::new());
-        }
-
-        // Change
-        let change = selected_amount - total_needed;
-        if change > 0 {
-            builder.add_output(change, sender_hash, 0, 0, Vec::new());
-        }
-
-        Ok(builder)
+        let producer = *signer.keypair.public_key();
+        let mut tx = build_add_bond_tx(&AddBondSpec {
+            inputs,
+            producer,
+            count: bond_count,
+            bond_unit,
+            lock_until,
+            change: selected_amount - total_needed,
+            change_to: bond_owner(&producer),
+        });
+        finalize_producer_tx(&mut tx, signer.keypair, &genesis);
+        Ok(hex::encode(tx.serialize()))
     }
 
-    /// Build a RequestWithdrawal transaction (TxType 8).
+    /// Build and sign a RequestWithdrawal through the shared builder, with the
+    /// node's params for `req.network`. Returns the signed tx as hex.
     pub fn build_request_withdrawal(
-        bond_count: u32,
-        sender_hash: [u8; 32],
-        destination_hash: Option<[u8; 32]>,
-    ) -> Result<Self> {
-        if bond_count == 0 {
+        req: &WithdrawalRequest<'_>,
+        signer: &ProducerSigner<'_>,
+    ) -> Result<String> {
+        if req.bond_count == 0 {
             return Err(anyhow!("Bond count must be greater than 0"));
         }
-
-        let mut builder = TxBuilder::new(TxType::RequestWithdrawal);
-
-        // RequestWithdrawal encodes the bond_count in extra_data
-        let mut extra = Vec::new();
-        extra.extend_from_slice(&bond_count.to_le_bytes());
-        if let Some(dest) = destination_hash {
-            extra.extend_from_slice(&dest);
+        if req.bond_utxos.len() < req.bond_count as usize {
+            return Err(anyhow!(
+                "Not enough Bond UTXOs: need {}, own {}",
+                req.bond_count,
+                req.bond_utxos.len()
+            ));
         }
-        builder.set_extra_data(extra);
+        let genesis = chain_genesis_hash(signer.genesis_hash).map_err(|e| anyhow!(e))?;
+        let network = Network::from_str(req.network)
+            .map_err(|_| anyhow!("Unknown network reported by the node: {}", req.network))?;
 
-        // The actual input/output structure depends on node implementation
-        // A dummy input is required for the sender's identity
-        builder.add_input(sender_hash, 0);
-        builder.add_output(0, destination_hash.unwrap_or(sender_hash), 0, 0, Vec::new());
-
-        Ok(builder)
+        let producer = *signer.keypair.public_key();
+        let bond_inputs = req.bond_utxos.iter().map(outpoint).collect::<Result<_>>()?;
+        let mut fee_utxos = Vec::new();
+        for utxo in req
+            .fee_utxos
+            .iter()
+            .filter(|u| u.spendable && u.output_type == "normal")
+        {
+            let (tx_hash, output_index) = outpoint(utxo)?;
+            fee_utxos.push(FeeUtxo {
+                tx_hash,
+                output_index,
+                amount: utxo.amount,
+            });
+        }
+        let spec = WithdrawalSpec {
+            producer,
+            bond_count: req.bond_count,
+            bond_inputs,
+            total_net: req.total_net,
+            destination: req
+                .destination
+                .map_or_else(|| bond_owner(&producer), Hash::from_bytes),
+            fee_utxos,
+            fee: req.fee,
+        };
+        let mut tx = build_withdrawal_tx(builder_params(network), req.best_height, &spec)
+            .map_err(|e| anyhow!(e))?;
+        finalize_producer_tx(&mut tx, signer.keypair, &genesis);
+        Ok(hex::encode(tx.serialize()))
     }
 
     /// Build a RewardClaim transaction (TxType 6).
@@ -413,4 +470,12 @@ impl TxBuilder {
 
         Ok(builder)
     }
+}
+
+fn outpoint(utxo: &Utxo) -> Result<(Hash, u32)> {
+    let bytes: [u8; 32] = hex::decode(&utxo.tx_hash)
+        .map_err(|_| anyhow!("Invalid tx hash hex"))?
+        .try_into()
+        .map_err(|_| anyhow!("Tx hash must be 32 bytes"))?;
+    Ok((Hash::from_bytes(bytes), utxo.output_index))
 }

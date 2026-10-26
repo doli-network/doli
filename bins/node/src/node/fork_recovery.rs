@@ -29,6 +29,7 @@ impl Node {
             .ok()
             .flatten()
             .unwrap_or(current_height);
+        self.verify_fork_signed(&recovery.blocks, fork_base_height.saturating_add(1))?;
         let mut last_block_weight = 1u64;
         {
             let producers = self.producer_set.read().await;
@@ -748,9 +749,9 @@ impl Node {
         }
         // Apply via the standard block-apply path so all invariants (UTXO update,
         // ProducerSet mutations, state root recompute) fire as they normally would.
-        // Use Light validation — consistent with execute_reorg (block_handling.rs)
-        // since the block comes from fork recovery (peer-provided, VDF already
-        // validated at gossip layer).
+        // Use Light validation — consistent with execute_reorg (block_handling.rs).
+        // Light still checks the INC-I-236 block signature at h >= AH; the VDF
+        // does not prove authorship.
         self.apply_block(candidate.clone(), ValidationMode::Light)
             .await?;
         Ok(true)

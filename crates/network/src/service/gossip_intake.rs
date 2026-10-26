@@ -1,7 +1,7 @@
 //! Gossipsub message intake (INC-I-237 D1/D2/D6/R2): one relay decision, then
 //! one validation report — by the swarm, or by the node's verdict on Defer.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Instant, SystemTime};
 
 use doli_core::Block;
@@ -21,6 +21,13 @@ use super::event_sink::{EmitOutcome, EventSink};
 use super::types::NetworkEvent;
 use super::GossipHandle;
 
+/// The node-written local tip the gossip intake reads.
+#[derive(Default)]
+pub(super) struct LocalTip {
+    pub(super) slot: AtomicU32,
+    pub(super) height: AtomicU64,
+}
+
 /// Decide, report at most once, then deliver what the decision processes.
 /// Order on blocks: per-peer bucket (non-candidates) BEFORE the report;
 /// memory shed and the global bucket AFTER it, as local drops (F-1).
@@ -31,7 +38,7 @@ pub(super) fn handle_gossip_message(
     event_tx: &EventSink,
     config: &NetworkConfig,
     rate_limiter: &mut RateLimiter,
-    best_slot: &AtomicU32,
+    local_tip: &LocalTip,
     shed_metrics: &GossipShedMetrics,
     memory_shed_flag: &AtomicBool,
     source: PeerId,
@@ -40,12 +47,14 @@ pub(super) fn handle_gossip_message(
 ) {
     let handle = GossipHandle::now();
     let topic = RelayTopic::from_topic_str(message.topic.as_str());
-    let best = best_slot.load(Ordering::Relaxed);
+    let best = local_tip.slot.load(Ordering::Relaxed);
     let ctx = StalenessCtx {
         now_unix: now_unix_secs(),
         genesis_time: config.genesis_time,
         slot_duration: config.slot_duration,
         best_slot: best,
+        best_height: local_tip.height.load(Ordering::Relaxed),
+        block_signature_activation_height: config.block_signature_activation_height,
     };
     let (decision, payload) = match decide(topic, &message.data, &ctx) {
         (RelayDecision::AcceptBlock(b), payload)

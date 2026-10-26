@@ -44,6 +44,8 @@ fn decide(topic: RelayTopic, data: &[u8]) -> RelayDecision {
         genesis_time: v::GENESIS_TIME,
         slot_duration: v::SLOT_DURATION,
         best_slot: WALL,
+        best_height: 0,
+        block_signature_activation_height: u64::MAX,
     };
     relay_decision(topic, data, &ctx)
 }

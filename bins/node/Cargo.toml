@@ -45,10 +45,16 @@ thiserror.workspace = true
 reqwest = { version = "0.11", features = ["json"] }  # HTTP client for devnet RPC checks
 base64.workspace = true
 
+# fcntl probe of a RocksDB LOCK file (check-producer-set)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile.workspace = true
 futures.workspace = true
 libp2p.workspace = true
+wallet = { workspace = true }
+doli-cli = { path = "../cli" }
 
 [package.metadata.deb]
 name = "doli"
@@ -135,3 +141,34 @@ path = "tests/m4_peak_ratio_red.rs"
 [[test]]
 name = "inc_i_237_m5_soak"
 path = "tests/inc_i_237_m5_soak.rs"
+
+# INC-I-236 M2 reorg doors — own binaries: `_b` pins the devnet signature AH
+# through a process-wide env override (NetworkParams is a per-process OnceLock).
+[[test]]
+name = "inc_i_236_m2_reorg_doors"
+path = "tests/inc_i_236_m2_reorg_doors.rs"
+
+[[test]]
+name = "inc_i_236_m2_reorg_doors_b"
+path = "tests/inc_i_236_m2_reorg_doors_b.rs"
+
+# INC-I-236 M2 node intake (gossip pre-filter, snap anchor) and apply-entry locks.
+[[test]]
+name = "inc_i_236_m2_intake_node"
+path = "tests/inc_i_236_m2_intake_node.rs"
+
+[[test]]
+name = "inc_i_236_m2_apply_locks"
+path = "tests/inc_i_236_m2_apply_locks.rs"
+
+# INC-I-236 M2 handle_new_block classification arms (below-AH lock re-execs itself
+# with the AH env override: NetworkParams is a per-process OnceLock).
+[[test]]
+name = "inc_i_236_m2_p3_arms"
+path = "tests/inc_i_236_m2_p3_arms.rs"
+
+# INC-I-236 M2 `restore --from-rpc` intake: drives the real doli-node binary
+# against a stub archiver RPC (the operation is private to the bin target).
+[[test]]
+name = "inc_i_236_m2_restore_rpc"
+path = "tests/inc_i_236_m2_restore_rpc.rs"

@@ -59,7 +59,7 @@ fn build_test_block(
     let timestamp = params.genesis_time + (slot as u64 * params.slot_duration);
     let merkle_root = doli_core::block::compute_merkle_root(&[coinbase.clone()]);
 
-    let header = BlockHeader {
+    let mut header = BlockHeader {
         version: 1,
         prev_hash,
         merkle_root,
@@ -76,6 +76,7 @@ fn build_test_block(
     data_root: crypto::Hash::ZERO,
             fork_id: crypto::Hash::ZERO,
     };
+    crate::node::test_block_sig::sign_header(&mut header, &producer);
 
     Block::new(header, vec![coinbase])
 }

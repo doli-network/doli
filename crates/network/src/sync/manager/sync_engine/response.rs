@@ -87,10 +87,7 @@ impl SyncManager {
                 );
                 // Fork recovery intercept: consume blocks during active recovery
                 if self.fork.fork_recovery.is_active()
-                    && self
-                        .fork
-                        .fork_recovery
-                        .handle_block(peer, maybe_block.clone())
+                    && self.walk_intake(peer, maybe_block.clone())
                 {
                     return vec![]; // Consumed by fork recovery
                 }
@@ -429,10 +426,11 @@ impl SyncManager {
         info!("Received {} headers from {}", headers.len(), peer);
 
         // Validate and store headers
-        let accepted = self
-            .pipeline
-            .header_downloader
-            .accept_headers(&headers, self.local_hash);
+        let accepted = self.pipeline.header_downloader.accept_headers(
+            &headers,
+            self.local_hash,
+            self.local_height,
+        );
         let valid_count = accepted.len();
 
         // D2 (INC-I-090): record chain break info for diagnostic emission
@@ -511,7 +509,7 @@ impl SyncManager {
         self.network.last_sync_activity = Instant::now();
 
         // Process through body_downloader to update its internal state
-        let processed_bodies = self.pipeline.body_downloader.process_response(peer, bodies);
+        let processed_bodies = self.take_requested_bodies(peer, bodies);
 
         // Remove these hashes from needed list and store blocks
         let mut blocks_to_apply = Vec::new();
@@ -691,9 +689,16 @@ impl SyncManager {
             }
         }
 
-        // Resume header downloader from the last preserved header
+        // Resume header downloader from the last preserved header; the
+        // surviving headers chain from local_hash, so the last one sits at
+        // local_height + len.
         if let Some(last) = self.pipeline.pending_headers.back() {
-            self.pipeline.header_downloader.resume_from(last.hash());
+            let last_height = self
+                .local_height
+                .saturating_add(self.pipeline.pending_headers.len() as u64);
+            self.pipeline
+                .header_downloader
+                .resume_from(last.hash(), last_height);
         } else {
             self.pipeline.header_downloader.clear();
         }

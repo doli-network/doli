@@ -93,6 +93,7 @@ mod maintainer_wellformed;
 pub mod metrics;
 pub mod mmr;
 pub mod producer;
+mod read_only;
 pub mod snapshot;
 pub mod state_db;
 pub mod update;

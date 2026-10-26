@@ -1,10 +1,8 @@
 use crate::transaction::{
-    AddBondData, ClaimBondData, ClaimData, ExitData, OutputType, SlashData, Transaction,
-    WithdrawalRequestData,
+    AddBondData, ClaimBondData, ClaimData, ExitData, OutputType, Transaction, WithdrawalRequestData,
 };
 use crypto::Hash;
 
-use super::producer::validate_vdf;
 use super::{ValidationContext, ValidationError};
 
 /// Validate exit transaction data.
@@ -142,189 +140,6 @@ pub(super) fn validate_claim_bond_data(tx: &Transaction) -> Result<(), Validatio
     Ok(())
 }
 
-/// Validate slash producer transaction data.
-///
-/// Structural validation for SlashProducer transactions:
-/// - Must have no inputs
-/// - Must have no outputs (bond is burned, not redistributed)
-/// - Must have valid slash data with cryptographically verifiable evidence
-///
-/// Evidence verification is now done here with VDF verification to prevent
-/// fabricated evidence attacks. The VDF proves the producer actually created
-/// both blocks (since the VDF input includes the producer's public key).
-pub(super) fn validate_slash_data(
-    tx: &Transaction,
-    ctx: &ValidationContext,
-) -> Result<(), ValidationError> {
-    // Slash must have no inputs
-    if !tx.inputs.is_empty() {
-        return Err(ValidationError::InvalidSlash(
-            "slash transaction must have no inputs".to_string(),
-        ));
-    }
-
-    // Slash must have no outputs (bond is burned)
-    if !tx.outputs.is_empty() {
-        return Err(ValidationError::InvalidSlash(
-            "slash transaction must have no outputs".to_string(),
-        ));
-    }
-
-    // Parse and validate slash data from extra_data
-    if tx.extra_data.is_empty() {
-        return Err(ValidationError::InvalidSlash(
-            "missing slash data".to_string(),
-        ));
-    }
-
-    // Try to deserialize slash data
-    let slash_data: SlashData = bincode::deserialize(&tx.extra_data)
-        .map_err(|e| ValidationError::InvalidSlash(format!("invalid slash data: {}", e)))?;
-
-    // Validate evidence structure with full cryptographic verification
-    // Only double production is slashable - this is the only unambiguously intentional offense
-    match &slash_data.evidence {
-        crate::transaction::SlashingEvidence::DoubleProduction {
-            block_header_1,
-            block_header_2,
-        } => {
-            // 1. Both headers must have the same producer
-            if block_header_1.producer != block_header_2.producer {
-                return Err(ValidationError::InvalidSlash(
-                    "double production evidence must have same producer in both headers"
-                        .to_string(),
-                ));
-            }
-
-            // 2. Both headers must have the same slot
-            if block_header_1.slot != block_header_2.slot {
-                return Err(ValidationError::InvalidSlash(
-                    "double production evidence must have same slot in both headers".to_string(),
-                ));
-            }
-
-            // 3. Block hashes must be different (otherwise it's not double production)
-            if block_header_1.hash() == block_header_2.hash() {
-                return Err(ValidationError::InvalidSlash(
-                    "double production evidence must have different block hashes".to_string(),
-                ));
-            }
-
-            // 4. Producer in evidence must match slash_data.producer_pubkey
-            if block_header_1.producer != slash_data.producer_pubkey {
-                return Err(ValidationError::InvalidSlash(
-                    "evidence producer does not match slash target".to_string(),
-                ));
-            }
-
-            // 5. Verify VDF for header 1 (proves the producer actually created it)
-            validate_vdf(block_header_1, ctx.network).map_err(|_| {
-                ValidationError::InvalidSlash(
-                    "invalid VDF proof in first block header - evidence may be fabricated"
-                        .to_string(),
-                )
-            })?;
-
-            // 6. Verify VDF for header 2 (proves the producer actually created it)
-            validate_vdf(block_header_2, ctx.network).map_err(|_| {
-                ValidationError::InvalidSlash(
-                    "invalid VDF proof in second block header - evidence may be fabricated"
-                        .to_string(),
-                )
-            })?;
-        }
-        crate::transaction::SlashingEvidence::PriceAttestationEquivocation {
-            attestation_1,
-            attestation_2,
-        } => {
-            validate_price_attestation_equivocation_evidence(
-                ctx,
-                &slash_data.producer_pubkey,
-                attestation_1,
-                attestation_2,
-            )?;
-        }
-    }
-
-    // Note: The following validations are done at the node level:
-    // - Producer exists and is active (not already slashed or exited)
-    // - Reporter signature is valid
-
-    Ok(())
-}
-
-/// Same as `validate_slash_data` but skips VDF verification for evidence headers.
-///
-/// Used when slash VDFs have already been verified in parallel (block.rs).
-/// All structural checks (same producer, same slot, different hashes) still run.
-pub(super) fn validate_slash_data_skip_vdf(
-    tx: &Transaction,
-    _ctx: &ValidationContext,
-) -> Result<(), ValidationError> {
-    if !tx.inputs.is_empty() {
-        return Err(ValidationError::InvalidSlash(
-            "slash transaction must have no inputs".to_string(),
-        ));
-    }
-    if !tx.outputs.is_empty() {
-        return Err(ValidationError::InvalidSlash(
-            "slash transaction must have no outputs".to_string(),
-        ));
-    }
-    if tx.extra_data.is_empty() {
-        return Err(ValidationError::InvalidSlash(
-            "missing slash data".to_string(),
-        ));
-    }
-    let slash_data: SlashData = bincode::deserialize(&tx.extra_data)
-        .map_err(|e| ValidationError::InvalidSlash(format!("invalid slash data: {}", e)))?;
-
-    match &slash_data.evidence {
-        crate::transaction::SlashingEvidence::DoubleProduction {
-            block_header_1,
-            block_header_2,
-        } => {
-            if block_header_1.producer != block_header_2.producer {
-                return Err(ValidationError::InvalidSlash(
-                    "double production evidence must have same producer in both headers"
-                        .to_string(),
-                ));
-            }
-            if block_header_1.slot != block_header_2.slot {
-                return Err(ValidationError::InvalidSlash(
-                    "double production evidence must have same slot in both headers".to_string(),
-                ));
-            }
-            if block_header_1.hash() == block_header_2.hash() {
-                return Err(ValidationError::InvalidSlash(
-                    "double production evidence must have different block hashes".to_string(),
-                ));
-            }
-            if block_header_1.producer != slash_data.producer_pubkey {
-                return Err(ValidationError::InvalidSlash(
-                    "evidence producer does not match slash target".to_string(),
-                ));
-            }
-            // VDF verification skipped — already verified in parallel pre-pass
-        }
-        crate::transaction::SlashingEvidence::PriceAttestationEquivocation {
-            attestation_1,
-            attestation_2,
-        } => {
-            // No VDF in PriceAttestation evidence — signatures are
-            // the proof. We always verify them; there is no "skip"
-            // shortcut equivalent for this variant.
-            validate_price_attestation_equivocation_evidence(
-                _ctx,
-                &slash_data.producer_pubkey,
-                attestation_1,
-                attestation_2,
-            )?;
-        }
-    }
-    Ok(())
-}
-
 /// Validate evidence for `SlashingEvidence::PriceAttestationEquivocation`
 /// — Phase 2.1 Oracle M7. Spec §1.4.
 ///
@@ -342,7 +157,7 @@ pub(super) fn validate_slash_data_skip_vdf(
 ///     (defense-in-depth — pre-activation no valid PriceAttestation
 ///     can exist, but explicitly gating avoids any pathological
 ///     fabricated-evidence path).
-fn validate_price_attestation_equivocation_evidence(
+pub(super) fn validate_price_attestation_equivocation_evidence(
     ctx: &ValidationContext,
     producer_pubkey: &crypto::PublicKey,
     attestation_1: &crate::transaction::PriceAttestationData,
@@ -573,7 +388,10 @@ pub(super) fn validate_withdrawal_request_data(tx: &Transaction) -> Result<(), V
     }
 
     let output = &tx.outputs[0];
-    if output.output_type != OutputType::Normal {
+    if !matches!(
+        output.output_type,
+        OutputType::Normal | OutputType::Unbonding
+    ) {
         return Err(ValidationError::InvalidWithdrawalRequest(
             "withdrawal output must be Normal type".to_string(),
         ));

@@ -1,7 +1,8 @@
 //! The one per-topic gossip relay table (INC-I-237 D2). Blocks keep the one
-//! pre-verdict Accept (decode + stale <= 6 slots) and undecodable block bytes
-//! are the only Reject. Every other topic is Ignore, LocalOnly (processed,
-//! never forwarded) or Defer (the node's verdict decides).
+//! pre-verdict Accept (decode + stale <= 6 slots + signature at or above the
+//! INC-I-236 AH); undecodable block bytes and a failed signature are the only
+//! Rejects. Every other topic is Ignore, LocalOnly (processed, never
+//! forwarded) or Defer (the node's verdict decides).
 
 use crypto::{Hash, PublicKey};
 use doli_core::{
@@ -61,7 +62,7 @@ fn is_region_topic(topic: &str) -> bool {
 /// The swarm's verdict for one gossip message.
 #[derive(Debug)]
 pub enum RelayDecision {
-    /// Undecodable block bytes.
+    /// Undecodable block bytes, or a block signature that fails at or above the AH.
     Reject,
     /// Neither forwarded nor processed.
     Ignore,
@@ -111,6 +112,9 @@ pub(crate) fn decide(
     let (genesis, slot_secs, now) = (ctx.genesis_time, ctx.slot_duration, ctx.now_unix);
     match topic {
         RelayTopic::Blocks => match classify_block_gossip(data, genesis, slot_secs, now) {
+            (MessageAcceptance::Accept, Some(b)) if !block_authenticated(&b, ctx) => {
+                (RelayDecision::Reject, Payload::None)
+            }
             (MessageAcceptance::Accept, Some(b)) => {
                 (RelayDecision::AcceptBlock(Box::new(b)), Payload::None)
             }
@@ -144,6 +148,16 @@ pub(crate) fn decide(
         | RelayTopic::RegionBlocks
         | RelayTopic::Unknown => (RelayDecision::Ignore, Payload::None),
     }
+}
+
+/// INC-I-236: the producer signature, at prospective height `best_height + 1`.
+fn block_authenticated(b: &Block, ctx: &StalenessCtx) -> bool {
+    doli_core::validation::verify_block_signature_at(
+        &b.header,
+        ctx.best_height.saturating_add(1),
+        ctx.block_signature_activation_height,
+    )
+    .is_ok()
 }
 
 /// Only the vote field the age bound needs.

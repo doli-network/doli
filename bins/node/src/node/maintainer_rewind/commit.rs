@@ -170,29 +170,10 @@ impl Node {
         };
 
         let mut ms = maintainer_state.write().await;
-        let previous_set = ms.set.clone();
-        let previous_derived = ms.last_derived_height;
-
-        // REQ-174-002 AC-4: `last_derived_height` is restored with the set, never zeroed.
-        // `maintainer_seed_is_done` reads (members.is_empty() && last_derived_height == 0)
-        // as "never seeded", and the seed is driven on EVERY applied block
-        // (`apply_block/state_update.rs`), so a restore that zeroed both would re-derive
-        // the root from LIVE producer state on the next block and re-arm any key
-        // governance removed — the INC-I-172 R1 hazard.
-        ms.set = snapshot.set.clone();
-        ms.last_derived_height = snapshot.last_derived_height;
-
-        // REQ-174-006: an in-memory-only restore is undone by the next restart, because
-        // `Node::new` re-reads this file and the updater reads it to decide who may
-        // authorize a root install.
-        if let Err(e) = ms.save(&self.config.data_dir) {
-            // Surfaced, not swallowed. And the in-memory value is put BACK, so memory and
-            // disk still agree: leaving them divergent would replace one silent
-            // inconsistency with a worse one that no restart can resolve. The rollback
-            // itself is already durable at this point, so returning an error here would
-            // make the caller re-attempt a rewind that succeeded.
-            ms.set = previous_set;
-            ms.last_derived_height = previous_derived;
+        if let Err(e) = install_maintainer_snapshot(&mut ms, &snapshot, &self.config.data_dir) {
+            // Surfaced, not swallowed. The rollback itself is already durable at this
+            // point, so returning an error here would make the caller re-attempt a rewind
+            // that succeeded.
             let digest =
                 doli_core::maintainer::maintainer_set_digest(&ms.set, genesis_hash.as_bytes());
             error!(
@@ -299,4 +280,26 @@ impl Node {
         );
         self.maintainer_rewind_unrestored_count += 1;
     }
+}
+
+/// Install `snapshot`'s set and `last_derived_height` into `ms` and persist it.
+/// On a save error `ms` is put back, so memory and disk still agree.
+///
+/// Both fields move together: zeroing `last_derived_height` would let the
+/// per-block seed re-derive the root from live producer state (INC-I-172 R1).
+/// The save is required because `Node::new` and the updater re-read the file.
+pub(in crate::node) fn install_maintainer_snapshot(
+    ms: &mut storage::MaintainerState,
+    snapshot: &MaintainerUndoSnapshot,
+    data_dir: &std::path::Path,
+) -> Result<(), storage::StorageError> {
+    let previous_set = std::mem::replace(&mut ms.set, snapshot.set.clone());
+    let previous_derived =
+        std::mem::replace(&mut ms.last_derived_height, snapshot.last_derived_height);
+    if let Err(e) = ms.save(data_dir) {
+        ms.set = previous_set;
+        ms.last_derived_height = previous_derived;
+        return Err(e);
+    }
+    Ok(())
 }

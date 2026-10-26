@@ -19,6 +19,8 @@
 //!         P2a: 4 producers with equal bonds, no delegation
 //!   MATRIX: 4 outputs x 2 paths = 8 cells, all covered
 
+#[path = "support/block_sig.rs"]
+mod block_sig;
 use std::collections::HashSet;
 use std::sync::Once;
 
@@ -81,7 +83,7 @@ fn build_block_with_full_bitfield(
     let merkle_root = doli_core::block::compute_merkle_root(std::slice::from_ref(&coinbase));
     let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
 
-    let header = BlockHeader {
+    let mut header = BlockHeader {
         version: 2,
         prev_hash,
         merkle_root,
@@ -98,6 +100,7 @@ fn build_block_with_full_bitfield(
         data_root: crypto::Hash::ZERO,
         fork_id: crypto::Hash::ZERO,
     };
+    crate::block_sig::sign_header(&mut header, producer);
 
     let mut block = Block::new(header, vec![coinbase]);
     block.attestation_bitfield = bitfield;

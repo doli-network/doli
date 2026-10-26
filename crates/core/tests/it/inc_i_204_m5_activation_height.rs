@@ -35,12 +35,9 @@
 //! ---------------------------------------------------------------------------
 //! PROCESS-WIDE HAZARD — READ BEFORE ADDING A MODULE TO `tests/it/main.rs`
 //! ---------------------------------------------------------------------------
-//! `NetworkParams::load` caches per network in a `OnceLock`, process-wide, and this is
-//! ONE test binary. [`the_env_override_is_locked_on_mainnet_and_honoured_elsewhere`]
-//! must therefore be the only caller of `load` in the whole `it` binary. Verified when
-//! this file was written: `inc_i_180_activation_height.rs` calls neither `load` nor
-//! `set_var`. A future module that calls `load` first will silently void that test —
-//! it will still pass, while asserting the cached defaults instead of the override.
+//! `NetworkParams::load` caches per network in a `OnceLock`, process-wide, and any
+//! module reaching `Network::params()` first voids an override. So
+//! [`the_env_override_is_locked_on_mainnet_and_honoured_elsewhere`] runs in a child.
 
 // OUTPUT CONTRACT — ENUMERATION OF OBSERVABLE OUTPUTS.
 //
@@ -530,6 +527,22 @@ fn req_fork_014_no_devnet_activation_height_was_moved() {
 /// half lives in `inc_i_171_m2_activation_height.rs`.
 #[test]
 fn the_env_override_is_locked_on_mainnet_and_honoured_elsewhere() {
+    const CHILD: &str = "INC_I_204_M5_ENV_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let out = std::process::Command::new(std::env::current_exe().expect("current exe"))
+            .arg("inc_i_204_m5_activation_height::the_env_override_is_locked_on_mainnet_and_honoured_elsewhere")
+            .args(["--exact", "--test-threads=1", "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .expect("spawn child test process");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && stdout.contains("1 passed"),
+            "child failed or did not run:\n{stdout}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        return;
+    }
     // Neither network's default, so neither branch can pass by coincidence.
     const SENTINEL: &str = "9";
     const BLS_SENTINEL: &str = "11";

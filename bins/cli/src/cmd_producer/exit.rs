@@ -1,14 +1,21 @@
+use std::str::FromStr;
+
 use anyhow::Result;
-use crypto::{signature, Hash, PublicKey};
-use doli_core::{Input, Transaction};
+use crypto::{Hash, PublicKey};
+use doli_core::validation::bond_owner;
+use doli_core::Network;
 
 use super::common::{compute_fifo_breakdown, display_fifo_breakdown};
 use crate::common::address_prefix;
-use crate::rpc_client::{format_balance, RpcClient};
+use crate::rpc_client::RpcClient;
 use crate::wallet::Wallet;
 use doli_cli::producer_ledger::{
     max_withdrawable, producer_set_allowance, select_bond_inputs_by_count,
     withdrawal_ledger_mismatch,
+};
+use doli_cli::producer_tx::{chain_genesis_hash, finalize_producer_tx};
+use doli_cli::unbonding_tx::{
+    build_withdrawal_tx, builder_params, exit_summary_lines, FeeUtxo, WithdrawalSpec,
 };
 
 pub(super) async fn handle_exit(wallet: &Wallet, rpc: &RpcClient, force: bool) -> Result<()> {
@@ -29,14 +36,8 @@ pub(super) async fn handle_exit(wallet: &Wallet, rpc: &RpcClient, force: bool) -
         );
     }
 
-    let bond_count = producer_info.bond_count;
-    if bond_count == 0 {
-        anyhow::bail!("Producer has no bonds to withdraw");
-    }
-
-    // Fetch per-bond details for FIFO breakdown
-    let details = rpc.get_bond_details(&pk).await?;
-    // INC-I-180: allowance from the ProducerSet, and abort on a ledger mismatch.
+    // INC-I-180: the bond count comes from the ProducerSet. The UTXO-derived
+    // count is 0 for a producer that owns no live Bond UTXO.
     let received_total: u64 = producer_info
         .received_delegations
         .iter()
@@ -47,7 +48,15 @@ pub(super) async fn handle_exit(wallet: &Wallet, rpc: &RpcClient, force: bool) -
         received_total,
         producer_info.delegated_bonds as u64,
     );
-    if withdrawal_ledger_mismatch(details.bond_count as u64, allowance_p) {
+    if allowance_p == 0 {
+        anyhow::bail!("Producer has no bonds to withdraw");
+    }
+
+    // Fetch per-bond details for FIFO breakdown
+    let details = rpc.get_bond_details(&pk).await?;
+    let live = details.bond_count as u64;
+    // No live Bond UTXO is the zero-Bond-input exit; a partial mismatch aborts.
+    if live != 0 && withdrawal_ledger_mismatch(live, allowance_p) {
         anyhow::bail!(
             "Ledger mismatch: wallet shows {} Bond UTXO(s) but the ProducerSet allowance is {}. \
              Aborting exit — retry after the next epoch boundary.",
@@ -79,27 +88,81 @@ pub(super) async fn handle_exit(wallet: &Wallet, rpc: &RpcClient, force: bool) -
     if s.q1 > 0 {
         println!("  {} bonds — Q1 (75% penalty)", s.q1);
     }
+    if live == 0 {
+        println!("  no live Bond UTXO — no Bond input is spent; spendable coins pay the fee");
+    }
     println!();
 
     // Calculate FIFO breakdown
     let breakdown = compute_fifo_breakdown(&details, withdraw_count);
     display_fifo_breakdown(&breakdown);
     println!();
-    println!("You receive: {}", format_balance(breakdown.total_net));
-    if breakdown.total_penalty > 0 {
-        println!(
-            "Penalty burned: {}",
-            format_balance(breakdown.total_penalty)
-        );
-        let pct = (breakdown.total_penalty * 100) / (breakdown.total_net + breakdown.total_penalty);
-        if pct >= 50 {
-            println!(
-                "WARNING: High penalty — {}% of bond value will be burned.",
-                pct
-            );
+
+    // Parse producer public key
+    let pubkey_bytes = hex::decode(&pk)?;
+    let producer_pubkey = PublicKey::try_from_slice(&pubkey_bytes)
+        .map_err(|e| anyhow::anyhow!("Invalid public key: {}", e))?;
+
+    let pubkey_hash = wallet.primary_pubkey_hash();
+    let all_utxos = rpc.get_utxos(&pubkey_hash, false).await?;
+
+    // AUDIT-P2-003: bind selection to COUNT, not value — emit exactly `withdraw_count` Bond inputs.
+    let mut bond_inputs: Vec<(Hash, u32)> = Vec::new();
+    if live != 0 {
+        let bond_utxos: Vec<_> = all_utxos
+            .iter()
+            .filter(|u| u.output_type == "bond")
+            .collect();
+        let bond_amounts: Vec<u64> = bond_utxos.iter().map(|u| u.amount).collect();
+        let selected_idx = select_bond_inputs_by_count(&bond_amounts, withdraw_count)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        for &i in &selected_idx {
+            let utxo = &bond_utxos[i];
+            let prev_tx_hash = Hash::from_hex(&utxo.tx_hash)
+                .ok_or_else(|| anyhow::anyhow!("Invalid Bond UTXO tx_hash"))?;
+            bond_inputs.push((prev_tx_hash, utxo.output_index));
         }
-    } else {
-        println!("No penalty — all bonds fully vested.");
+    }
+
+    let mut fee_utxos: Vec<FeeUtxo> = Vec::new();
+    for utxo in all_utxos
+        .iter()
+        .filter(|u| u.output_type == "normal" && u.spendable)
+    {
+        let tx_hash =
+            Hash::from_hex(&utxo.tx_hash).ok_or_else(|| anyhow::anyhow!("Invalid UTXO tx_hash"))?;
+        fee_utxos.push(FeeUtxo {
+            tx_hash,
+            output_index: utxo.output_index,
+            amount: utxo.amount,
+        });
+    }
+
+    let rpc_params = rpc.get_network_params().await?;
+    let network = Network::from_str(&rpc_params.network).map_err(|_| {
+        anyhow::anyhow!(
+            "Unknown network reported by the node: {}",
+            rpc_params.network
+        )
+    })?;
+    let net_params = builder_params(network);
+    let chain_info = rpc.get_chain_info().await?;
+    let best_height = chain_info.best_height;
+    let genesis = chain_genesis_hash(&chain_info.genesis_hash).map_err(|e| anyhow::anyhow!(e))?;
+
+    let spec = WithdrawalSpec {
+        producer: producer_pubkey,
+        bond_count: withdraw_count,
+        bond_inputs,
+        total_net: breakdown.total_net,
+        destination: bond_owner(&producer_pubkey),
+        fee_utxos,
+        fee: 1,
+    };
+    let mut tx = build_withdrawal_tx(net_params, best_height, &spec)
+        .map_err(|e| anyhow::anyhow!("Cannot build the exit: {}", e))?;
+    for line in exit_summary_lines(net_params, best_height, &spec, &tx, breakdown.total_penalty) {
+        println!("{}", line);
     }
     println!();
 
@@ -108,102 +171,9 @@ pub(super) async fn handle_exit(wallet: &Wallet, rpc: &RpcClient, force: bool) -
         return Ok(());
     }
 
-    // Parse producer public key
-    let pubkey_bytes = hex::decode(&pk)?;
-    let producer_pubkey = PublicKey::try_from_slice(&pubkey_bytes)
-        .map_err(|e| anyhow::anyhow!("Invalid public key: {}", e))?;
-
-    // Destination: wallet's own address
-    let pubkey_hash = wallet.primary_pubkey_hash();
-    let dest_hash =
-        Hash::from_hex(&pubkey_hash).ok_or_else(|| anyhow::anyhow!("Invalid wallet address"))?;
-
-    // Lock/unlock: find Bond UTXOs to consume as inputs
-    let all_utxos = rpc.get_utxos(&pubkey_hash, false).await?;
-    let bond_utxos: Vec<_> = all_utxos
-        .iter()
-        .filter(|u| u.output_type == "bond")
-        .collect();
-
-    let bond_unit = {
-        let params = rpc.get_network_params().await?;
-        params.bond_unit
-    };
-    let required_bond_value = bond_unit * withdraw_count as u64;
-    let available_bond_value: u64 = bond_utxos.iter().map(|u| u.amount).sum();
-
-    if available_bond_value < required_bond_value {
-        anyhow::bail!(
-            "Insufficient Bond UTXOs for exit. Need {} DOLI, have {}",
-            format_balance(required_bond_value),
-            format_balance(available_bond_value)
-        );
-    }
-
-    // AUDIT-P2-003: bind selection to COUNT, not value — emit exactly `withdraw_count` Bond inputs.
-    let bond_amounts: Vec<u64> = bond_utxos.iter().map(|u| u.amount).collect();
-    let selected_idx = select_bond_inputs_by_count(&bond_amounts, withdraw_count)
-        .map_err(|e| anyhow::anyhow!(e))?;
-    let mut bond_inputs: Vec<Input> = Vec::new();
-    for &i in &selected_idx {
-        let utxo = &bond_utxos[i];
-        let prev_tx_hash = Hash::from_hex(&utxo.tx_hash)
-            .ok_or_else(|| anyhow::anyhow!("Invalid Bond UTXO tx_hash"))?;
-        bond_inputs.push(Input::new(prev_tx_hash, utxo.output_index));
-    }
-
-    // Select a normal UTXO to cover the tx fee
-    let normal_utxos: Vec<_> = all_utxos
-        .iter()
-        .filter(|u| u.output_type == "normal")
-        .collect();
-    let mut fee_input_total = 0u64;
-    let mut fee_inputs: Vec<Input> = Vec::new();
-    let fee_estimate = 1u64;
-    for utxo in &normal_utxos {
-        if fee_input_total >= fee_estimate {
-            break;
-        }
-        let prev_tx_hash =
-            Hash::from_hex(&utxo.tx_hash).ok_or_else(|| anyhow::anyhow!("Invalid UTXO tx_hash"))?;
-        fee_inputs.push(Input::new(prev_tx_hash, utxo.output_index));
-        fee_input_total += utxo.amount;
-    }
-
-    // Combine bond + fee inputs
-    let mut all_inputs = bond_inputs;
-    all_inputs.extend(fee_inputs);
-
-    // Flat fee: 1 satoshi per transaction
-    let fee = 1u64;
-    if fee_input_total < fee {
-        anyhow::bail!(
-            "Insufficient spendable balance for tx fee. Need {}, have {}",
-            format_balance(fee),
-            format_balance(fee_input_total)
-        );
-    }
-
-    // Create RequestWithdrawal for ALL bonds with Bond + fee inputs
-    // Validation requires exactly 1 output, so fee change is rolled into payout
-    let total_net = breakdown.total_net;
-    let fee_change = fee_input_total - fee;
-    let payout_amount = total_net + fee_change;
-    let mut tx = Transaction::new_request_withdrawal(
-        all_inputs,
-        producer_pubkey,
-        withdraw_count,
-        dest_hash,
-        payout_amount,
-    );
-
-    // Sign all inputs (BIP-143: per-input signing hash)
+    // Inputs (BIP-143) then the producer-auth signature over the chain genesis.
     let keypair = wallet.primary_keypair()?;
-    for i in 0..tx.inputs.len() {
-        let signing_hash = tx.signing_message_for_input(i);
-        tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
-        tx.inputs[i].public_key = Some(*keypair.public_key());
-    }
+    finalize_producer_tx(&mut tx, &keypair, &genesis);
 
     let tx_hex = hex::encode(tx.serialize());
 

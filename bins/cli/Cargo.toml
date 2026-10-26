@@ -19,6 +19,7 @@ vdf = { workspace = true }
 updater = { workspace = true }
 channels = { workspace = true }
 bridge = { workspace = true }
+doli-producer-tx = { workspace = true }
 bincode.workspace = true
 sha2.workspace = true
 tiny-keccak = { workspace = true }

@@ -37,9 +37,14 @@ pub mod output_authority;
 pub mod parallel;
 pub(crate) mod pool;
 mod producer;
+pub mod producer_auth;
 mod registration;
 mod rewards_legacy;
 pub mod rotate_bls;
+mod slash_evidence;
+mod slash_registration;
+mod slash_state;
+mod slash_window;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -51,6 +56,7 @@ mod tests_oracle_slash;
 mod transaction;
 mod tx_types;
 mod types;
+mod unbonding;
 mod utxo;
 /// INC-I-171 vesting-penalty predicate (pure integer arithmetic, no storage types).
 pub mod vesting;
@@ -58,17 +64,28 @@ pub mod vesting;
 pub mod zk;
 
 pub use amm::{verify_amm_conservation, AmmConservationResult};
-pub use block::{validate_block_with_mode, validate_header};
+pub use block::{
+    validate_block_with_mode, validate_header, verify_block_signature, verify_block_signature_at,
+};
 pub use error::ValidationError;
 pub use output_authority::{check_output_placement, check_value_authority};
 pub use producer::{
     bootstrap_fallback_order, bootstrap_schedule_with_liveness, validate_producer_eligibility,
 };
 pub use rotate_bls::rotate_stateless;
+pub use slash_evidence::{
+    double_production_evidence_fits, evidence_header_admissible, slash_fee_exempt,
+};
+pub use slash_registration::{slash_registrant, validate_not_slashed_registrant};
+pub use slash_state::{
+    bond_owner, bond_withdrawal_producer, is_slash_burnable, slashes_first, spends_owned_bond,
+    validate_slash_bond_spends, validate_slash_target, SlashBlockBudget, SlashTargetState,
+};
 pub use transaction::{validate_transaction, validate_transaction_skip_registration_vdf};
 pub use tx_types::{check_addbond_cap, count_bond_outputs};
 pub use types::{
     RegistrationChainState, UtxoInfo, UtxoProvider, ValidationContext, ValidationMode,
 };
+pub use unbonding::{check_unbonding_rules, spend_lock_verdict};
 pub use utxo::validate_transaction_with_utxos;
 pub use zk::{proof_system, verify_zk_proof, ZkVerifyContext, ZkVerifyError};

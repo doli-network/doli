@@ -1,9 +1,10 @@
 use crate::block::{Block, BlockHeader};
 use crate::consensus::{max_block_size, MAX_DRIFT, MAX_FUTURE_SLOTS, NETWORK_MARGIN};
-use crate::transaction::{RegistrationData, SlashData, TxType};
+use crate::transaction::{RegistrationData, TxType};
 
 use super::producer::{validate_producer_eligibility, validate_vdf};
 use super::registration::validate_registration_vdf;
+use super::slash_evidence::decode_slash_data;
 use super::transaction::{validate_transaction, validate_transaction_skip_registration_vdf};
 use super::utxo::check_internal_double_spend;
 use super::{ValidationContext, ValidationError, ValidationMode};
@@ -100,6 +101,33 @@ pub fn validate_header(
     Ok(())
 }
 
+/// Verify the producer's strict Ed25519 signature carried in `header.vdf_proof.pi`
+/// over `header.signing_message()` (INC-I-236).
+pub fn verify_block_signature(header: &BlockHeader) -> Result<(), ValidationError> {
+    let fail = |reason: String| ValidationError::InvalidBlockSignature { reason };
+    let sig = crypto::Signature::try_from_slice(&header.vdf_proof.pi)
+        .map_err(|e| fail(format!("malformed signature: {e}")))?;
+    crypto::signature_strict::verify_strict(
+        header.signing_message().as_bytes(),
+        &sig,
+        &header.producer,
+    )
+    .map_err(|e| fail(format!("verification failed: {e}")))
+}
+
+/// [`verify_block_signature`] for a block at `height`; below `activation_height`
+/// it returns `Ok` without reading `pi`.
+pub fn verify_block_signature_at(
+    header: &BlockHeader,
+    height: u64,
+    activation_height: u64,
+) -> Result<(), ValidationError> {
+    if height < activation_height {
+        return Ok(());
+    }
+    verify_block_signature(header)
+}
+
 /// Validate a block with a specified validation mode.
 ///
 /// In `Full` mode, this is identical to `validate_block()` -- all checks including
@@ -123,6 +151,12 @@ pub fn validate_block_with_mode(
             super::rotate_bls::rotate_stateless(tx, ctx)?;
         }
     }
+
+    if ctx.current_height >= ctx.inc_i_236_block_signature_activation_height {
+        verify_block_signature(&block.header)?;
+    }
+
+    super::slash_state::validate_block_slashes(&block.transactions, ctx)?;
 
     match mode {
         ValidationMode::Full => {
@@ -188,7 +222,7 @@ pub fn validate_block_with_mode(
                                 let err_ref = &vdf_error;
                                 s.spawn(move || {
                                     if let Ok(slash_data) =
-                                        bincode::deserialize::<SlashData>(&tx.extra_data)
+                                        decode_slash_data(&tx.extra_data, ctx)
                                     {
                                         // Only DoubleProduction evidence carries VDFs
                                         // worth verifying in the parallel pre-pass.

@@ -29,6 +29,14 @@ impl RpcContext {
             maturity,
         );
         let bonded = utxo_set.get_bonded_balance(&pubkey_hash);
+        let unbonding = utxo_set
+            .get_by_pubkey_hash(&pubkey_hash)
+            .iter()
+            .filter(|(_, e)| {
+                e.output.output_type == doli_core::OutputType::Unbonding
+                    && !e.output.is_spendable_at(chain_state.best_height)
+            })
+            .fold(0u64, |sum, (_, e)| sum.saturating_add(e.output.amount));
 
         // Get incoming (change outputs) and outgoing (spent UTXOs) from mempool
         let (incoming, outgoing) = mempool.calculate_unconfirmed_balance(&pubkey_hash, &utxo_set);
@@ -36,17 +44,19 @@ impl RpcContext {
         // Spendable = confirmed minus mempool-spent UTXOs (matches getUtxos filtering)
         let spendable = confirmed.saturating_sub(outgoing);
 
-        // Total = all assets: spendable + pending change + immature rewards + bonded
+        // Total = all assets: spendable + pending change + immature rewards + bonded + unbonding
         let total = spendable
             .saturating_add(incoming)
             .saturating_add(immature)
-            .saturating_add(bonded);
+            .saturating_add(bonded)
+            .saturating_add(unbonding);
 
         let response = BalanceResponse {
             confirmed: spendable,
             unconfirmed: incoming,
             immature,
             bonded,
+            unbonding,
             total,
         };
 
@@ -94,6 +104,7 @@ impl RpcContext {
                     doli_core::OutputType::ZKRollup => "zkRollup",
                     doli_core::OutputType::EncryptedContent => "encryptedContent",
                     doli_core::OutputType::OraclePrice => "oraclePrice",
+                    doli_core::OutputType::Unbonding => "unbonding",
                 };
 
                 let condition = if entry.output.output_type.is_conditioned() {
@@ -214,6 +225,7 @@ impl RpcContext {
                     doli_core::OutputType::ZKRollup => "zkRollup",
                     doli_core::OutputType::EncryptedContent => "encryptedContent",
                     doli_core::OutputType::OraclePrice => "oraclePrice",
+                    doli_core::OutputType::Unbonding => "unbonding",
                 };
 
                 let nft = if output.output_type == doli_core::OutputType::NFT {

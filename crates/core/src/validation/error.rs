@@ -98,6 +98,13 @@ pub enum ValidationError {
     #[error("invalid data root")]
     InvalidDataRoot,
 
+    /// Producer signature over the block header is missing or invalid (INC-I-236).
+    #[error("invalid block signature: {reason}")]
+    InvalidBlockSignature {
+        /// What specifically failed.
+        reason: String,
+    },
+
     /// VDF proof is invalid.
     #[error("invalid VDF proof: {reason}")]
     InvalidVdfProof {
@@ -571,6 +578,14 @@ pub enum ValidationError {
         /// Canonical length, `ROTATE_BLS_DATA_LEN`.
         expected: usize,
     },
+
+    /// [ERRTX071] a Registration or AddBond names a producer that is Slashed
+    /// or has a queued Slash. One variant for both types.
+    #[error("[ERRTX071] producer is slashed or slash-queued: producer={producer}")]
+    SlashedRegistrant {
+        /// Hex of the producer key the payload names.
+        producer: String,
+    },
 }
 
 impl ValidationError {
@@ -592,6 +607,7 @@ impl ValidationError {
             Self::InvalidMerkleRoot { .. } => "INVALID_MERKLE_ROOT",
             Self::InvalidDataRoot => "INVALID_DATA_ROOT",
             Self::InvalidVdfProof { .. } => "INVALID_VDF_PROOF",
+            Self::InvalidBlockSignature { .. } => "INVALID_BLOCK_SIGNATURE",
             Self::InvalidProducer { .. } => "INVALID_PRODUCER",
             Self::BlockTooLarge { .. } => "BLOCK_TOO_LARGE",
             Self::MissingCoinbase => "MISSING_COINBASE",
@@ -648,6 +664,7 @@ impl ValidationError {
             Self::RotateBlsProducerMismatch { .. } => "ROTATE_BLS_PRODUCER_MISMATCH",
             Self::RotateBlsOutputShape { .. } => "ROTATE_BLS_OUTPUT_SHAPE",
             Self::RotateBlsBadPayload { .. } => "ROTATE_BLS_BAD_PAYLOAD",
+            Self::SlashedRegistrant { .. } => "SLASHED_REGISTRANT",
         }
     }
 
@@ -718,7 +735,7 @@ impl ValidationError {
                 map.insert("computed".into(), Value::String(computed.to_string()));
             }
             Self::InvalidDataRoot => {}
-            Self::InvalidVdfProof { reason } => {
+            Self::InvalidVdfProof { reason } | Self::InvalidBlockSignature { reason } => {
                 map.insert("reason".into(), Value::String(reason.clone()));
             }
             Self::InvalidProducer {
@@ -918,7 +935,9 @@ impl ValidationError {
                 map.insert("current_height".into(), (*current_height).into());
                 map.insert("activation_height".into(), (*activation_height).into());
             }
-            Self::RotateBlsBadSignature { producer } | Self::RotateBlsBadPop { producer } => {
+            Self::RotateBlsBadSignature { producer }
+            | Self::RotateBlsBadPop { producer }
+            | Self::SlashedRegistrant { producer } => {
                 map.insert("producer".into(), Value::String(producer.clone()));
             }
             Self::RotateBlsBadPoint { reason } => {

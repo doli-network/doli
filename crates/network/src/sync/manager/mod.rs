@@ -605,10 +605,10 @@ impl SyncManager {
         headers: &[doli_core::BlockHeader],
         local_tip: crypto::Hash,
     ) {
-        let _valid = self
-            .pipeline
-            .header_downloader
-            .process_headers(headers, local_tip);
+        let _valid =
+            self.pipeline
+                .header_downloader
+                .process_headers(headers, local_tip, self.local_height);
         if let Some(cb) = self.pipeline.header_downloader.take_chain_break() {
             if self.fork.chain_breaks.len() >= 32 {
                 self.fork.chain_breaks.pop_front();

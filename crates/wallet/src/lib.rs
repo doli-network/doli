@@ -6,15 +6,15 @@
 //!
 //! # Architecture
 //!
-//! This crate does NOT depend on `doli-core` to avoid the VDF/GMP dependency chain.
-//! Transaction construction happens via a standalone `TxBuilder` that produces canonical
-//! byte encodings matching `doli-core`'s serialization format.
+//! `TxBuilder` encodes transfer-style transactions itself, in `doli-core`'s byte
+//! format. Producer transactions go through the shared `doli-producer-tx`
+//! builders, so the wallet, the GUI and the CLI emit the same signed bytes.
 //!
 //! # Modules
 //!
 //! - `wallet` -- Wallet creation, restoration, key derivation, address management
 //! - `rpc_client` -- Async JSON-RPC client for DOLI node communication
-//! - `tx_builder` -- Transaction construction without `doli-core` dependency
+//! - `tx_builder` -- Transaction construction and signing
 //! - `types` -- Shared response types (Balance, UTXO, ChainInfo, etc.)
 
 pub mod rpc_client;
@@ -25,7 +25,8 @@ pub mod wallet;
 // Re-exports for convenience
 pub use rpc_client::{default_endpoints, network_prefix, RpcClient};
 pub use tx_builder::{
-    calculate_registration_cost, calculate_withdrawal_net, vesting_penalty_pct, TxBuilder, TxType,
+    calculate_registration_cost, calculate_withdrawal_net, vesting_penalty_pct, ProducerSigner,
+    TxBuilder, TxType, WithdrawalRequest,
 };
 pub use types::*;
 pub use wallet::{verify_message, Wallet, WalletAddress};

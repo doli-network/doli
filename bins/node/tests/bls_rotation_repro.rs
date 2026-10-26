@@ -43,6 +43,8 @@ use storage::{Outpoint, UtxoEntry};
 use tempfile::TempDir;
 use vdf::{VdfOutput, VdfProof};
 
+#[path = "support/block_sig.rs"]
+mod block_sig;
 #[path = "it/inc_i_178_m0_common.rs"]
 mod m0_common;
 

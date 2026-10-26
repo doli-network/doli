@@ -37,6 +37,8 @@
 use std::collections::HashSet;
 use std::sync::Once;
 
+use crate::bls_rotation_convergence_child::ran_in_child;
+
 use crypto::{BlsKeyPair, Hash, KeyPair, PublicKey};
 use doli_core::genesis::genesis_hash;
 use doli_core::network_params::NetworkParams;
@@ -54,7 +56,7 @@ const GENESIS_BLOCKS: u64 = 40;
 
 /// Devnet override value. `> EPOCH_LEN` so no test observation lands in epoch 0,
 /// where the flush runs every block and the pool clear does not (architecture D5).
-const ROT_AH: u64 = 8;
+pub(crate) const ROT_AH: u64 = 8;
 
 /// Geometry of the APPLIED fixture (`apply_block`, real undo entries).
 const A_ROT_H: u64 = 9;
@@ -156,7 +158,7 @@ fn block_at(
     );
     let mut all = vec![coinbase];
     all.extend(txs);
-    let header = BlockHeader {
+    let mut header = BlockHeader {
         version: 2,
         prev_hash: prev,
         merkle_root: doli_core::block::compute_merkle_root(&all),
@@ -173,6 +175,7 @@ fn block_at(
         data_root: Hash::ZERO,
         fork_id: Hash::ZERO,
     };
+    crate::block_sig::sign_header(&mut header, by);
     Block::new(header, all)
 }
 
@@ -402,6 +405,9 @@ fn precondition_the_three_shipped_defaults_are_still_frozen() {
 /// queue order included.
 #[tokio::test]
 async fn req_rot_007_rebuild_from_blocks_matches_live_apply_across_a_rotation() {
+    if ran_in_child("req_rot_007_rebuild_from_blocks_matches_live_apply_across_a_rotation") {
+        return;
+    }
     let (node, target, bls, blocks, _t) = seeded_fixture().await;
     let tpk = *target.public_key();
     let new_key = bls.public_key().as_bytes().to_vec();
@@ -485,6 +491,9 @@ async fn req_rot_007_rebuild_from_blocks_matches_live_apply_across_a_rotation() 
 /// the OLD key and the ProducerSet matches a node that never saw the rotation.
 #[tokio::test]
 async fn req_rot_006_reorg_across_the_rotation_restores_the_old_key() {
+    if ran_in_child("req_rot_006_reorg_across_the_rotation_restores_the_old_key") {
+        return;
+    }
     let (mut a, kp, bls, op, _ta) = applied_fixture().await;
     let pk = *kp.public_key();
     let old_key = bls_of(&a, &pk).await;
@@ -594,6 +603,9 @@ async fn applied_fixture_from(kp: &KeyPair) -> (Node, KeyPair, BlsKeyPair, Outpo
 /// is the old key, and `parent_sig_pool` holds nothing.
 #[tokio::test]
 async fn req_rot_011_rollback_across_the_rotation_clears_the_parent_sig_pool() {
+    if ran_in_child("req_rot_011_rollback_across_the_rotation_clears_the_parent_sig_pool") {
+        return;
+    }
     let (mut node, kp, bls, op, _t) = applied_fixture().await;
     let pk = *kp.public_key();
     let old_key = bls_of(&node, &pk).await;
@@ -654,6 +666,9 @@ async fn req_rot_011_rollback_across_the_rotation_clears_the_parent_sig_pool() {
 /// i.e. whether a mismatched producer can actually recover.
 #[tokio::test]
 async fn req_rot_005_queued_rotation_installs_the_new_key_at_the_epoch_boundary() {
+    if ran_in_child("req_rot_005_queued_rotation_installs_the_new_key_at_the_epoch_boundary") {
+        return;
+    }
     let (mut node, kp, bls, op, _t) = applied_fixture().await;
     let pk = *kp.public_key();
     let old_key = bls_of(&node, &pk).await;
@@ -687,6 +702,9 @@ async fn req_rot_005_queued_rotation_installs_the_new_key_at_the_epoch_boundary(
 /// what a restart reads — is the persisted `ProducerSet` plus the boundary flush.
 #[tokio::test]
 async fn req_rot_011_queued_rotation_survives_the_persisted_producer_set() {
+    if ran_in_child("req_rot_011_queued_rotation_survives_the_persisted_producer_set") {
+        return;
+    }
     let (mut node, kp, bls, op, _t) = applied_fixture().await;
     let pk = *kp.public_key();
     let new_key = bls.public_key().as_bytes().to_vec();
@@ -724,6 +742,9 @@ async fn req_rot_011_queued_rotation_survives_the_persisted_producer_set() {
 /// at a non-boundary height NEITHER fires, at a boundary height BOTH do.
 #[tokio::test]
 async fn req_rot_011_boundary_flush_and_pool_clear_agree_above_epoch_zero() {
+    if ran_in_child("req_rot_011_boundary_flush_and_pool_clear_agree_above_epoch_zero") {
+        return;
+    }
     let (mut node, kp, bls, op, _t) = applied_fixture().await;
     let pk = *kp.public_key();
     let old_key = bls_of(&node, &pk).await;

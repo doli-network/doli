@@ -192,6 +192,7 @@ output = {
 | 13 | ZKRollup | L2 committed state (verifying_key + state_root) | `ZkRollupData` (per `specs/l2-settlement.md`) |
 | 14 | EncryptedContent | Privacy-first NFT replacement | `[ciphertext_len(4 LE) | ciphertext | wrapped_key(80) | nonce(12) | content_hash(32)]` (≥128 bytes) |
 | 15 | OraclePrice | Phase 2.1 oracle aggregated price (system-only UTXO) | 50 bytes: `[price_cents(8 LE) | last_update_height(8 LE) | contributor_count(2 LE) | pair_id(32)]` |
+| 16 | Unbonding | Locked payout of a bond withdrawal (INC-I-257, §3.13) | Empty |
 
 Output types 2-8 use the programmable conditions system (`crates/core/src/conditions/`)
 with composable predicates (Signature, Multisig, Hashlock, Timelock, And, Or, Threshold).
@@ -202,6 +203,12 @@ OutputType 15 (OraclePrice) is the Phase 2.1 oracle's per-pair singleton — cre
 and consumed exclusively by `apply_block` at epoch boundaries (system-spent only;
 user transactions cannot mint one — validation hard-rejects with `[ERRTX-ORACLE004]`).
 See `specs/oracle-structural-anchored-economics.md` §1.2.
+OutputType 16 (Unbonding) is a native-amount output spent by a signature on its
+`pubkey_hash`, like Normal. It is declared last in the enum, so its bincode variant
+position is 14 and the positions of all older types do not change. It needs a
+non-zero `lock_until` and empty `extra_data` (`[ERRTX-UNBOND007]`). Only a
+RequestWithdrawal at or above `inc_i_257_unbonding_activation_height` may create
+one (§3.13).
 
 **Bond UTXO extra_data format:**
 ```
@@ -293,7 +300,7 @@ exit_tx = {
 }
 ```
 
-Initiates the 7-day unbonding period. Producer is removed from active set. Exit transactions must have no inputs or outputs - they simply identify the producer exiting. The bond is released after the unbonding period via ClaimBond transaction.
+Exit transactions must have no inputs or outputs - they simply identify the producer exiting. Transaction validation refuses every Exit at every height, so no block carries one. A producer leaves the set with a full-exit RequestWithdrawal (§3.13, §3.13.2).
 
 ### 3.8 Claim Reward Transaction (DEPRECATED)
 
@@ -347,23 +354,156 @@ slash_tx = {
     version: 1,
     type: 5,
     inputs: [],
-    outputs: [],                 // Bond is burned
-    extra_data: {
-        producer_pubkey: 32 bytes,
+    outputs: [],                 // Nothing is created. Apply burns the bonds.
+    fee: 0,                      // Exempt only when the evidence verifies (§3.10.3)
+    extra_data: bincode(SlashData {
+        producer_pubkey: 32 bytes,   // The accused producer
         evidence: evidence_data,
-        reporter_signature: 64 bytes
-    }
+        reporter_signature: 64 bytes // All zero at and above the gate
+    })
 }
 
 evidence_data = SlashingEvidence::DoubleProduction {
-    block_header_1: BlockHeader,  // Full header with VDF proof
-    block_header_2: BlockHeader,  // Full header with VDF proof (must differ)
-    // Both headers must have same producer + same slot + different hashes
-    // Full headers required so validators can verify VDF proofs
+    block_header_1: BlockHeader,  // Full header. Producer signature in vdf_proof.pi
+    block_header_2: BlockHeader,  // Full header. Hash order: hash(h1) < hash(h2)
+    // Same producer, same slot, different hashes
 }
 ```
 
-Burns 100% of producer's bond. This is the only slashable offense because it's the only one that cannot happen by accident.
+This is the only slashable offense because it is the only one that cannot happen by accident.
+
+#### 3.10.1 Activation
+
+| Network | `inc_i_255_slashing_activation_height` | Override |
+|---------|----------------------------------------|----------|
+| Mainnet | `806859` (pinned with INC-I-236, INC-I-257 and INC-I-182) | None |
+| Testnet | `330849` (pinned with INC-I-236, INC-I-257 and INC-I-182) | None |
+| Devnet | 0 | `DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT` (devnet only) |
+
+The slash rules use the effective height
+`NetworkParams::effective_slashing_activation_height()`:
+
+```
+effective = max(inc_i_255_slashing_activation_height,
+                inc_i_236_block_signature_activation_height,
+                inc_i_181_pending_root_activation_height)
+```
+
+- Evidence is authentic only when blocks carry the INC-I-236 producer signature.
+- At and above the INC-I-181 gate, the pending producer-update queue (which holds a queued Slash) is part of the state root.
+- An env override therefore cannot put the slash rules below either gate.
+- On mainnet the effective height is `806859`: the INC-I-255 and INC-I-236 gates are both pinned there and the INC-I-181 gate (612000) is below it.
+- On testnet the effective height is `330849`: the INC-I-255 and INC-I-236 gates are both pinned there and the INC-I-181 gate (97886) is below it.
+
+Block validation, the builder and apply judge the rules at the height of the block that holds the transaction. Mempool admission and the equivocation handler judge them at `best_height + 1`.
+
+**Below the effective height every verdict and state transition is unchanged.** The fee floor refuses the fee-0 transaction (`InsufficientFee`, or `FeeTooLow` in the mempool). Apply burns nothing. The equivocation handler only logs.
+
+#### 3.10.2 Evidence rules
+
+`crates/core/src/validation/slash_evidence.rs` checks the evidence. At and above the effective height, a SlashProducer is valid only when all of these hold. Each failure gives `InvalidSlash` on every path (mempool, builder, block validation, apply).
+
+1. The transaction has no inputs, no outputs and a non-empty `extra_data`.
+2. `extra_data` is at most 64 KiB and decodes as `SlashData` with a bounded decoder.
+3. The evidence is `DoubleProduction`. `PriceAttestationEquivocation` evidence is refused.
+4. The encoding is canonical: re-encoding the decoded `SlashData` gives exactly `extra_data`. Trailing bytes are refused.
+5. `reporter_signature` is the default (all-zero) signature.
+6. Both headers name the same producer, and that producer is `producer_pubkey`.
+7. Both headers have the same slot and different hashes.
+8. The headers are in ascending hash order.
+9. Each header carries the `genesis_hash` of this chain.
+10. Each header carries a valid strict Ed25519 signature by `header.producer` over `signing_message()` (`verify_block_signature`).
+
+The full transaction validator (mempool admission, Full block validation) also checks the evidence VDFs. The VDF is not the authorship proof: the producer signature is.
+
+`SlashData::double_production` (`crates/core/src/transaction/slash_canonical.rs`) builds the one canonical form. Thus one header pair gives one transaction id, whoever reports it.
+
+#### 3.10.3 Fee exemption
+
+`slash_fee_exempt(tx, ctx)` is true only when all of these hold:
+
+- The type is SlashProducer.
+- The slash rule is active at the height in `ctx`.
+- The evidence check of §3.10.2 passes (VDF excluded).
+
+Only two sites consult it: the consensus fee floor in `validate_transaction_with_utxos` (`crates/core/src/validation/utxo.rs`) and the fee floor of the mempool normal lane (`crates/mempool/src/pool.rs`). SlashProducer is not in the general fee-exempt list (`is_native_fee_exempt`). `allows_empty_io`, `is_state_only` and lane routing do not change. A slash with bad evidence must pay the normal floor, so no block can include it.
+
+#### 3.10.4 Accused-state rules and per-block cap
+
+`validate_slash_target` (`crates/core/src/validation/slash_state.rs`) refuses a slash when the accused:
+
+- is not a registered producer,
+- is already Slashed,
+- already has a queued Slash in the pending producer updates, or
+- has a status other than Active or Unbonding and holds no locked collateral (`SlashTargetState::locked_collateral`: an Unbonding output owned by its bond owner with judged height < `lock_until`, §3.13.1).
+
+**Evidence window.** After the state rules, two time rules run in this order (`crates/core/src/validation/slash_window.rs`). `judged = prev_slot + 1` (saturating), where `prev_slot` is the slot of the parent block. `age = judged − offence slot` (saturating, in slots; the offence slot is the slot of the two evidence headers). `height` is the judged height.
+
+1. `age >= unbonding_period`: `InvalidSlash("slash evidence expired: offence older than the unbonding period")`.
+2. `InvalidSlash("slash evidence predates the accused's current registration")` when (a) `tenure == 0`, where `tenure = height − max(registered_at, effective height)` (saturating); or (b) `age > height − effective height` (saturating, the gate bound); or (c) the accused holds no locked collateral and `oldest_bond_slot` is `None` or the offence slot is below it. `registered_at` is the height of the accused's current registration. `oldest_bond_slot` is the smallest stamped slot (`Output::bond_creation_slot`) of the Bond UTXOs owned by the accused's bond owner, read in the same bounded owner lookup as `locked_collateral`; it is `None` when the owner holds no Bond UTXO or the lookup is past `MAX_SLASH_TXS_PER_BLOCK`.
+
+Every path judges with the parent slot: mempool admission and revalidation with the tip slot that the caller passes, the builder with the parent slot (not the slot of the block it builds), and block validation with the parent slot. `unbonding_period` is a block count and `age` is a slot count. A block takes at least one slot, so the slot window expires no later than the block window. At the effective height itself the tenure is 0, so no slash is valid in the activation block. Block slots strictly increase with height, so rule (b) keeps the offence at or after the slot of the activation block. Apply stamps every Bond UTXO with the slot of its block, so rule (c) keeps the offence at or after the slot of the accused's oldest live Bond UTXO; missed slots after the registration do not refuse a valid slash. While locked collateral exists, rule (c) is waived, so a withdrawal of the older bonds cannot move the floor past the offence. Every input is consensus state or evidence, so a snap-synced node gives the same verdict. Rule (b) is sound but not complete: it can refuse an offence after the activation block when many slots were missed (security model §4.2). No rule accepts an offence before the floor.
+
+The accused's state comes from one function, `mempool::slash_admission::slash_targets(producers, utxos, height, txs)`, which also reads `registered_at`. Mempool admission judges at tip + 1, the builder at the height it builds, block validation at the block height against the parent UTXO set. It does at most one owner lookup per accused and at most `MAX_SLASH_TXS_PER_BLOCK` per call; past that budget `locked_collateral` is false. Mempool admission and revalidation skip this call (and its owner lookup) for an accused already Slashed or slash-queued; the verdict is the same. The same call also adds the key of each Registration and the producer each AddBond names (not an input key), with no UTXO read, when no slash in `txs` names that key.
+
+**Slashed registrant (`[ERRTX071]`).** At and above the effective height, a Registration whose key, or an AddBond whose named producer, is Slashed or has a queued Slash is invalid. One predicate, `validate_not_slashed_registrant`, runs inside `validate_transaction` and `validate_transaction_skip_registration_vdf`, so mempool admission and revalidation (judged at `best_height + 1`), the builder, apply and replay give one verdict. Below the effective height the verdict is unchanged. Mempool admission reads the live producer set with `try_read` and fails open when it is locked; the builder and block validation still enforce the rule.
+
+`validate_block_with_mode` runs the block rules (`validate_block_slashes`) before the mode split. Full, Light and Replay therefore give one verdict:
+
+- A block holds at most `MAX_SLASH_TXS_PER_BLOCK` = 8 SlashProducer transactions (`crates/core/src/consensus/constants.rs`).
+- A block holds at most one slash per accused.
+- A block that holds a slash for accused p holds no RequestWithdrawal that names p, in either order. The error is `InvalidSlash("block holds a slash and a bond withdrawal for one producer")`.
+- A block that holds a slash for accused p holds no Registration of key p and no AddBond that names p, in either order. The error is `SlashedRegistrant` (`[ERRTX071]`).
+- The counts, the withdrawal rule and the Registration / AddBond rule run before any evidence check. Then each slash must pass `validate_slash_target`.
+
+The withdrawal rule uses the producer that the withdrawal names (`bond_withdrawal_producer`). It does not cover every spend of a bond: below `inc_i_257_unbonding_activation_height`, any transaction type (for example a Transfer) can spend a Bond UTXO once `height >= lock_until` (at and above that gate only RequestWithdrawal may spend a Bond, §3.13.1). A Bond output with a finite `lock_until` is still accepted at creation (AUDIT-P1-003; the registration and Bond-output rules do not change here). For this reason the next rule keys on the spent UTXO, not on the transaction type.
+
+**Bond-spend rule.** At and above the effective height, a block that holds a slash for p holds no transaction, of any type and in any order, that spends a Bond UTXO owned by p. This is the burn's own selection: `output_type == Bond` and owner `hash_with_domain(ADDRESS_DOMAIN, p)`. Each input is resolved in the pre-block UTXO set, or as an output of an earlier transaction of the same block. The error is `InvalidSlash("block holds a slash and a spend of the accused's bond")`.
+
+- The predicate is `validate_slash_bond_spends` (`slash_state.rs`). `check_slash_bond_spend` (`bins/node/src/node/validation_checks/slash_withdrawal.rs`) calls it at the start of `check_withdrawal_economics`, before apply, in Full, Light and Replay. It runs before the transaction loop, so the Replay tolerance of UTXO-stage errors cannot skip it. All three modes give the same text.
+- A block with no slash costs no UTXO lookup. The RequestWithdrawal rule above runs first and keeps its own error.
+- A withdrawal that names another producer but spends the accused's bonds is refused by this rule.
+
+The other paths mirror these rules:
+
+- **Builder**: runs `validate_slash_target` before the UTXO check. At and above the effective height, `slashes_first` puts every slash before all other candidates (stable order). The slash wins: `SlashBlockBudget` picks at most the cap and one slash per accused, and then skips a RequestWithdrawal, Registration or AddBond that names a picked accused. It also skips a transaction with an input that is a Bond UTXO owned by a picked accused (`SlashBlockBudget::spends_accused_bond`, against the committed UTXO set; the builder does not pack in-block chains). Below the effective height the candidate order and the selection do not change.
+- **Mempool**: admission runs the accused-state rules at `best_height + 1` and keeps at most one resident slash per accused. It checks the effective height and the evidence first: a slash below the effective height, or one whose evidence fails, reads no producer-set state and does no owner lookup. A slash whose accused is already Slashed or slash-queued is refused (admission) or evicted (revalidation) before the owner lookup, with the same verdict. A slash admitted fee-exempt (at and above the effective height) is never evicted for room and never expires by age; below the effective height a slash stays evictable and expires like any other transaction. Revalidation evicts a resident slash that fails `validate_slash_target` judged at `best_height + 1`. When the producer-set lock is busy, admission at and above the effective height refuses a slash whose evidence verifies with the transient `Busy` (not cached, no peer penalty, the same transaction is admissible once the lock is free) and revalidation evicts nothing. The builder and block validation still enforce the rules.
+- **Re-offer**: the node that created a slash keeps it in a bounded ledger (1,024 accused, not persisted) and the periodic tick re-offers the same transaction, at most 8 per tick, while no slash naming the accused is resident. While the accused is Slashed or slash-queued the tick skips the entry but keeps it, so a rollback or reorg that removes the slash gets the same transaction re-offered. An entry leaves the ledger only when admission refuses it for a reason other than `Busy`, `Full` or `AlreadyExists`, or when the bound evicts the oldest entry. A re-admitted slash is broadcast once under its original id.
+- **Mempool, withdrawal beside a slash** (judged at `best_height + 1`, at and above the effective height): admission of a slash for p evicts every resident RequestWithdrawal that names p. Admission refuses a RequestWithdrawal that names p while a slash for p is resident (`InvalidTransaction`, "RequestWithdrawal by producer … with a resident slash"). Revalidation evicts a resident RequestWithdrawal that names a producer with a resident slash.
+- **Mempool, Registration / AddBond beside a slash** (same height and gate): admission of a slash for p evicts every resident Registration of key p and every resident AddBond that names p. Admission refuses such a transaction while a slash for p is resident (`[ERRTX071]`).
+- **Mempool, bond spend beside a slash** (same height and gate): admission of a slash for p evicts every resident transaction with an input that is a Bond UTXO owned by p. Admission refuses such a transaction while a slash for p is resident (`InvalidTransaction`, "… spend of the accused's bond with a resident slash"). Revalidation evicts it. A slash that is already mined needs no mempool rule: its burn spent those UTXOs.
+
+#### 3.10.5 Effect
+
+At and above the effective height, apply burns the bonds in the slash block itself (`bins/node/src/node/apply_block/slash_burn.rs`):
+
+- It spends every UTXO whose owner is the accused's address and that is slash-burnable at the block height H (`is_slash_burnable`): each Bond, and each Unbonding output with H < `lock_until`. This includes bonds that the accused delegated to another producer. An Unbonding output at or past its `lock_until` is not burned. Below the unbonding gate no Unbonding output exists, so the burn takes the Bonds only.
+- It never spends a delegator's own Bond UTXOs.
+- It creates no output. It credits nothing to the reward pool. It pays no reporter reward.
+- The coin supply drops by exactly the burned amount (100% of the accused's Bond UTXOs and locked Unbonding outputs).
+- Each burned entry goes into the undo data of the block with its full UtxoEntry, so rollback restores its type and `lock_until`.
+
+**Exclusion point.** Apply also queues `PendingProducerUpdate::Slash`. The deferred flush applies it at the next epoch boundary. In epoch 0 the flush runs at the end of every block, so the accused leaves scheduling from the next block. `slash_producer` sets the status to Slashed from any other status (Active, Unbonding or Exited), removes all delegations in both directions and records exit history. It refuses only a producer that is already Slashed, so a second flush cannot slash it again. Slashed is terminal: a Slashed key can never register again, and a second slash for one offence is refused (`slash target is already slashed`, or `slash target already has a pending slash` while the first one is queued).
+
+**After the slash** (at and above the effective height):
+
+- A Slashed producer gives no attester weight.
+- Block validation (`[ECON_WITHDRAWAL_SLASHED]`) and mempool admission refuse a RequestWithdrawal by a Slashed or slash-queued producer.
+- This check reads the producer set as it was before the block. The §3.10.4 withdrawal and bond-spend rules cover the slash block itself: a block cannot hold a slash for p together with a RequestWithdrawal that names p, or with any transaction that spends a Bond UTXO owned by p.
+- Residual: a transaction mined in an earlier block than the slash (a RequestWithdrawal by p, or any spend of a lock-expired Bond UTXO of p) still spends those bonds. The burn takes only the accused's Bond UTXOs that are still live in the slash block. At and above `inc_i_257_unbonding_activation_height` the withdrawn value stays in a locked Unbonding output of p (§3.13.1), and a later slash burns it while it is still locked, also when p is already Exited (§3.10.4).
+
+**Rollback and reorg.** `block_mutates_producer_set` lists SlashProducer, so the slash block stores a ProducerSet snapshot. Undo restores the bonds, the supply and a producer set without the queued Slash. Both rebuild-from-blocks UTXO fallbacks (`rollback.rs`, `execute_reorg`) apply the same burn (`slash_burn_in_utxo_set`).
+
+#### 3.10.6 Detection and submission
+
+- The detector (`crates/network/src/sync/equivocation.rs`, `check_block_with`) stores and pairs only headers that its admission predicate accepts (`detector_admits`, `bins/node/src/node/header_auth.rs`). At and above the gate (judged at `best_height + 1`) the predicate is the per-header evidence rule `evidence_header_admissible`: the genesis hash of the mempool's params, then the producer signature, then the VDF, as §3.10.2 applies them. Below the gate it accepts every header.
+- The window follows the node's wall-clock slot (`timestamp_to_slot(now)`), never the slot of the incoming block. A header with slot > wall slot + `MAX_FUTURE_SLOTS` (1) skips the detector only; the block is not dropped. After each check the detector drops every stored header with slot < wall slot − 360. A node more than 360 slots behind wall time therefore does not detect double production in those old blocks.
+- At the first block judged at or above the gate (`note_gate`, at `best_height + 1`) the detector drops every stored header once, so headers stored under the admit-all rule are learned again under the gate rules. The latch survives `clear()`; a reorg back below the gate does not clear the detector again.
+- A pair of admitted headers is a proof only if its canonical SlashData fits 64 KiB (`double_production_evidence_fits`). For each (producer, slot) the detector keeps the smaller-encoded admitted header, so an oversize decoy cannot block a pair that fits. It holds at most one pending proof per (producer, slot) and at most 64 in total.
+- The detector has no "reported" latch. A re-delivered stored header costs no check. Before the first proof for a (producer, slot), each distinct header costs at most one evidence check (one VDF verification). After it, at most `MAX_EVIDENCE_CHECKS_AFTER_PROOF` (4) more headers for that (producer, slot) are checked. There is no count cap before a proof, because the accused could spend such a cap with decoys before the real pair arrives.
+- The handler (`bins/node/src/node/slash_submit.rs`) judges the gate at `best_height + 1`. It builds the canonical slash and submits it through normal mempool admission. It relays the transaction only after admission.
+- The handler submits nothing when the accused already has a resident slash or a ledger entry. The re-offer ledger (§3.10.4) is the only "reported" mark: the handler writes the entry before admission and removes it only when admission refuses the slash for a reason other than `Busy`, `Full` or `AlreadyExists`, so repeat proofs for one accused add no second slash.
+- Below the gate the handler only logs.
 
 ### 3.11 Epoch Reward Transaction
 
@@ -550,6 +690,9 @@ add_bond_tx = {
 }
 ```
 
+At and above `inc_i_182_producer_auth_activation_height`, the tx `extra_data` is
+this exact payload followed by a 64-byte producer signature as its tail (§3.13.2).
+
 **Validation rules:**
 - Producer must be registered
 - `bond_count` must be > 0
@@ -600,10 +743,12 @@ add_bond_tx = {
 
 ### 3.13 WithdrawalRequest Transaction
 
-Instant bond withdrawal. Consumes Bond UTXOs (FIFO — oldest first), creates a
-Normal output with the net amount after vesting penalties. Penalty is the
+Bond withdrawal. Consumes Bond UTXOs (FIFO — oldest first), creates one
+output with the net amount after vesting penalties. Penalty is the
 difference between input (bond) and output (payout) — burned naturally via
-UTXO accounting. **No delay. Funds available in the same block.**
+UTXO accounting. Below `inc_i_257_unbonding_activation_height` the payout is a
+Normal output, spendable in the next block (the shape below). At and above the
+gate the payout is a locked Unbonding output (§3.13.1).
 
 ```
 withdrawal_request_tx = {
@@ -629,11 +774,15 @@ withdrawal_request_tx = {
 }
 ```
 
+At and above `inc_i_182_producer_auth_activation_height`, the tx `extra_data` is
+this exact payload followed by a 64-byte producer signature as its tail (§3.13.2).
+
 **Validation rules:**
 - Producer must be registered
 - All inputs must reference Bond UTXOs (output_type == 1)
 - Inputs must be owned by the producer (pubkey_hash matches)
-- Validation bypasses `is_spendable_at()` for Bond UTXOs (lock_until=u64::MAX)
+- Validation bypasses `is_spendable_at()` for Bond UTXO inputs (see §3.13.1 for
+  the rule at and above the unbonding gate)
 - Vesting penalty per bond: derived from `creation_slot` in the Bond UTXO's extra_data
 - `net_amount = sum(bond_amounts) - sum(penalties)`
 - Penalty = `sum(inputs) - sum(outputs)` (burned, not redistributed)
@@ -956,6 +1105,120 @@ Penalty calculation uses FIFO order — oldest Bond UTXOs are consumed first,
 ensuring bonds that have vested longer incur lower penalties. The `creation_slot`
 stored in each Bond UTXO's `extra_data` (4 bytes LE) determines the bond's age
 and therefore its penalty tier.
+
+#### 3.13.1 Unbonding lock (INC-I-257)
+
+Gate: `inc_i_257_unbonding_activation_height` — mainnet `806859` (pinned with the INC-I-255 gate),
+testnet `330849` (the same height as the INC-I-255 gate), devnet `0`. The env override
+`DOLI_INC_I_257_UNBONDING_ACTIVATION_HEIGHT` is read on devnet only. The gate
+must not be above the effective slashing height, so that no height range has
+working slashing and an unlocked payout.
+
+Unbonding period (`NetworkParams::unbonding_period`): mainnet 60,480, testnet 72,
+devnet 60 blocks. It is consensus input at and above the gate, so
+`DOLI_UNBONDING_PERIOD` is read on devnet only.
+
+Payout shape at block height `H >= gate`:
+- exactly one output, of type Unbonding (`[ERRTX-UNBOND004]` otherwise; a Normal
+  payout is refused);
+- `pubkey_hash == bond_owner(producer_pubkey)`, the producer's own address
+  (`[ERRTX-UNBOND005]`);
+- `lock_until >= H.saturating_add(unbonding_period)` (`[ERRTX-UNBOND006]`);
+- empty `extra_data`.
+
+Below the gate any Unbonding output is refused (`[ERRTX-UNBOND003]`). At and above
+it, a transaction of any other type that creates one is refused
+(`[ERRTX-UNBOND002]`). These rules hold whether or not the output-creation
+authority gate (§3.22.1) is active.
+
+Lock rule (`spend_lock_verdict`, one predicate on mempool, builder and apply; the
+mempool judges at `best_height + 1`, for UTXO-set inputs and in-mempool parents):
+- below the gate: a Bond input of RequestWithdrawal or Exit skips the lock check;
+  every other input needs `height >= lock_until`;
+- at and above the gate: a Bond input may be spent only by RequestWithdrawal
+  (lock check skipped); any other type that spends a Bond is refused
+  (`[ERRTX-UNBOND001]`), whatever the Bond's `lock_until`;
+- an Unbonding input never skips the lock check, for any transaction type,
+  including RequestWithdrawal and Exit (`OutputLocked`).
+
+Bond-output rule at block height `H >= gate` (`check_bond_outputs`, reached from
+the output placement rule on mempool, builder and apply):
+- a Bond output may appear only in a Registration or an AddBond; any other type
+  with a Bond output is refused (`[ERRTX-UNBOND008]`);
+- each Bond output has `pubkey_hash == bond_owner(producer)`, where the producer
+  is the key in the registration or add-bond data, and `amount ==
+  Network::bond_unit()` (`[ERRTX-UNBOND009]`; also when that data does not decode);
+- `lock_until` is not constrained by this rule.
+
+Below the gate the Bond-output rule does not apply. Genesis bonds are inserted
+into the UTXO set directly and are not transactions.
+
+The DOLI CLI builds the gated shape when `best_height + 1 >= gate`: payout to the
+producer's own address (another `--destination` is refused), fee taken from the
+withdrawn amount (no wallet UTXO is spent, so none is locked), and
+`lock_until = best_height + unbonding_period + 10`. The 10-block margin keeps the
+transaction valid while it waits for inclusion. The mempool judges the payout and
+Bond-output rules at `best_height + 1` on admission and on every revalidate, and
+evicts a waiting RequestWithdrawal that fails them there (for example once its
+margin has run out). Wallet send spends an Unbonding output only once it is
+spendable.
+
+#### 3.13.2 Producer authorization (INC-I-182)
+
+Gate: `inc_i_182_producer_auth_activation_height` — mainnet `806859` (pinned with the INC-I-255 gate),
+testnet `330849` (the same height as the INC-I-255 gate), devnet `0`. The env override
+`DOLI_INC_I_182_PRODUCER_AUTH_ACTIVATION_HEIGHT` is read on devnet only.
+
+At block height `H >= gate`, a Registration, AddBond or RequestWithdrawal is valid
+only when `extra_data = payload ‖ signature`, where:
+- `payload` is the exact encoding of the type's data: canonical bincode
+  `RegistrationData`, the 36-byte `AddBondData`, or the 68-byte
+  `WithdrawalRequestData` (no extra bytes);
+- `signature` is 64 bytes, the Ed25519 signature of the producer that the payload
+  names, over `BLAKE3("DOLI-PRODUCER-AUTH-V1" ‖ genesis_hash ‖
+  tx.signing_message() ‖ payload)`.
+
+`signing_message()` covers the type, every input outpoint and every output, so a
+signature cannot move to another transaction. The input signatures do not cover
+`extra_data`, so the producer signs after the inputs and outputs are final and a
+third party may still pay the fee. Every refusal is `[ERRTX-PAUTH001]`, on
+mempool, builder and block validation in Full, Light and Replay mode. Other types
+are not checked. Below the gate nothing is checked, and the payload decoders read
+the same fields with or without the 64-byte tail. The mempool judges the rule at
+`best_height + 1` on admission and on revalidate. The node builder signs its own
+genesis-window Registration at and above the gate. The DOLI CLI signs register,
+add-bond, request-withdrawal and exit at every height, with the genesis hash from
+`getChainInfo`. The desktop wallet (GUI register, add bonds, request withdrawal)
+does the same through the same builder crate (`doli-producer-tx`, INC-I-262); a
+malformed genesis hash or an unknown network aborts the build.
+
+Exit is outside this rule and unchanged: transaction validation refuses every
+Exit at every height, so it stays unmineable (§3.7). A producer leaves the set
+with a RequestWithdrawal that declares its whole allowance (a full exit), which
+must spend every Bond UTXO the producer owns.
+
+When the ProducerSet still lists bonds for a producer that owns no live Bond
+UTXO, its full exit has zero Bond inputs. Normal inputs pay the fee and fund the
+payout, and their total must exceed the fee because a zero-value output is
+refused (`[ERRTX003]`). At and above the unbonding gate (§3.13.1) the payout is
+one Unbonding output to the producer's own address; below it, one Normal output.
+At and above the producer-authorization gate the producer signature is the only
+authorization of this form, so only the producer's own key can force this full
+exit. The DOLI
+CLI `exit` builds it when the wallet owns no live Bond UTXO, from the wallet's
+spendable Normal outputs. At and above the unbonding gate it spends exactly one
+of them, the smallest whose amount is above the fee, so only that coin minus the
+fee is locked (INC-I-262); with no such coin it refuses to build.
+
+Post-states. After a full withdrawal the ProducerSet entry stays with status
+Exited, 0 bonds and 0 pending withdrawals; a later RequestWithdrawal that names
+it is refused, because a declared 0 is malformed and any declared count exceeds
+the allowance 0 (`[ECON_WITHDRAWAL_OVER_HOLDINGS]`). From the slashing
+activation height, a slashed or slash-queued producer cannot withdraw:
+block validation refuses a RequestWithdrawal that names it with
+`[ECON_WITHDRAWAL_SLASHED]` (§3.10), and the mempool refuses it as well. That
+refusal applies even when the producer signs it, and it is not
+`[ERRTX-PAUTH001]`.
 
 ### 3.15 RemoveMaintainer Transaction
 
@@ -1922,6 +2185,9 @@ registration_tx = {
 }
 ```
 
+At and above `inc_i_182_producer_auth_activation_height`, the tx `extra_data` is
+this exact payload followed by a 64-byte producer signature as its tail (§3.13.2).
+
 `bls_pubkey` and `bls_pop` are **required on every registration path** — they are not
 optional and have no activation-height gate. `crates/core/src/validation/registration.rs:47,144`
 rejects an empty `bls_pubkey`, `:52,149` rejects an empty `bls_pop`, and `validate_bls_pop()`
@@ -2380,6 +2646,10 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | Fee-exempt coinbase credit (`inc_i_233_activation_height`, §3.6) | 612,000 | 94,500 | 0 | Non-mainnet (`DOLI_INC_I_233_ACTIVATION_HEIGHT`) |
 | Output-Creation Authority (`inc_i_234_activation_height`, §3.22.1) | 612,000 | 78,199 | 0 | Non-mainnet (`DOLI_INC_I_234_ACTIVATION_HEIGHT`) |
 | Pending-updates state-root cover (`inc_i_181_pending_root_activation_height`) | 612,000 | 97,886 | 0 | Non-mainnet (`DOLI_INC_I_181_PENDING_ROOT_ACTIVATION_HEIGHT`) |
+| Block producer signature (`inc_i_236_block_signature_activation_height`) | 806,859 | 330,849 | 0 | Devnet only (`DOLI_INC_I_236_BLOCK_SIGNATURE_ACTIVATION_HEIGHT`) |
+| Equivocation slashing (`inc_i_255_slashing_activation_height`, §3.10.1) | 806,859 | 330,849 | 0 | Devnet only (`DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT`) |
+| Unbonding lock (`inc_i_257_unbonding_activation_height`, §3.13.1) | 806,859 | 330,849 | 0 | Devnet only (`DOLI_INC_I_257_UNBONDING_ACTIVATION_HEIGHT`) |
+| Producer authorization (`inc_i_182_producer_auth_activation_height`, §3.13.2) | 806,859 | 330,849 | 0 | Devnet only (`DOLI_INC_I_182_PRODUCER_AUTH_ACTIVATION_HEIGHT`) |
 | Data Directory | `~/.doli/mainnet/` | `~/.doli/testnet/` | `~/.doli/devnet/` | - |
 | Config File | `.env` in data dir | `.env` in data dir | `.env` in data dir | - |
 

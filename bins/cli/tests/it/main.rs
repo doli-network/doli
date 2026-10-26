@@ -5,8 +5,11 @@
 //! OUTPUT CONTRACT: N/A — fixture file (module aggregator only, no test logic).
 //! INPUT PARTITIONS: N/A — fixture file.
 
+mod b3_m2_register_refuses_slashed;
 mod inc_i_171_m7_ladder_single_source;
 mod inc_i_180_withdrawal_guard;
+mod inc_i_182_m1_producer_txs;
+mod inc_i_182_m2_cli_exit;
 mod inc_i_188_upgrade_reset_failed_test;
 mod inc_i_203_addbond_headroom;
 mod inc_i_214_release_sign_verify;
@@ -22,5 +25,12 @@ mod inc_i_222_helper_refresh_paths;
 mod inc_i_248_doli_snap_maintainer;
 mod inc_i_248_rel_m1_doli_snap;
 mod inc_i_248_snap_maintainer_writer;
+mod inc_i_257_m1_withdrawal_tx;
+mod inc_i_257_m25_guard_parser;
+mod inc_i_262_m1_exit_coins;
+mod inc_i_262_m1_exit_summary;
+mod inc_i_262_m1_gui_registration;
+mod inc_i_262_m1_wiring;
+mod ldp_m1_cli_gate_source;
 mod sk_m1_service_unit_render;
 mod sk_m1_staged_installs_skills;

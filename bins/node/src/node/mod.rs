@@ -28,11 +28,15 @@ mod inc_i_237_m5_tests;
 mod inc_i_237_slash_tests;
 #[cfg(test)]
 mod orphan_chase_tests;
+#[cfg(test)]
+#[path = "../../tests/support/block_sig.rs"]
+pub(crate) mod test_block_sig;
 pub use force_reorg::ForceReorgOutcome;
 mod fork_recovery;
 mod fork_walk;
 mod genesis;
 mod gossip_verdicts;
+mod header_auth;
 mod holdings;
 use holdings::holdings_of_every_producer;
 mod fork_cache;
@@ -48,12 +52,11 @@ mod orphan_chase;
 
 // Phase 4 disk cleanup helpers, re-exported for integration tests (lib target only).
 #[allow(unused_imports)]
-pub use init::cleanup_orphan_utxo_store;
-#[allow(unused_imports)]
-pub use init::recover_body_gaps;
+pub use init::{cleanup_orphan_utxo_store, recover_body_gaps};
 mod periodic;
 mod producer_merge;
 mod production;
+mod replay_chainspec;
 mod rewards;
 #[allow(unused_imports)]
 pub use rewards::IncompleteEpochStoreError;
@@ -62,6 +65,9 @@ pub use rollback::RollbackOutcome;
 mod rollback_authority;
 pub use rollback_authority::RollbackAuthority;
 mod rpc_broadcast;
+mod slash_redeliver;
+mod slash_reported;
+mod slash_submit;
 mod startup;
 mod state_root_serve;
 pub mod state_session;
@@ -165,6 +171,7 @@ pub struct Node {
     pub first_peer_connected: Option<Instant>,
     /// Equivocation detector for slashing double-signers
     pub equivocation_detector: Arc<RwLock<EquivocationDetector>>,
+    pub(crate) slash_reported: std::sync::Mutex<slash_reported::SlashReported>,
     /// VDF calibrator for dynamic iteration adjustment
     pub vdf_calibrator: Arc<RwLock<VdfCalibrator>>,
     /// Cache of blocks received during forks (for reorg execution)

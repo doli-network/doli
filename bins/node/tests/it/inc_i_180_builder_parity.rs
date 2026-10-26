@@ -143,11 +143,16 @@ fn signed_withdrawal(
         .collect();
     let dest = crypto::hash::hash(b"inc-i-180-m2-withdrawal-destination");
     let net = unit * spends.len() as u64 - unit / 100;
-    let mut tx = Transaction::new_request_withdrawal(inputs, *producer, declared, dest, net);
+    let mut tx =
+        super::inc_i_255_m2_common::run_b_withdrawal(inputs, *producer, declared, dest, net);
     for (i, (_, owner)) in spends.iter().enumerate() {
         sign_input(&mut tx, i, owner);
     }
-    tx
+    let (_, key) = spends
+        .iter()
+        .find(|(_, k)| k.public_key() == producer)
+        .expect("fixture: the producer spends one of the inputs");
+    super::inc_i_255_m2_common::producer_auth(tx, key)
 }
 
 /// A high-fee `Transfer` used ONLY as the lower-index parent of the R4

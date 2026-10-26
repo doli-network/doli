@@ -5,88 +5,81 @@
 //! Transaction struct. This is critical: if the wire format doesn't match,
 //! nodes will reject every transaction the GUI sends.
 //!
-//! NOTE: doli-core is added as a DEV-dependency only. The runtime wallet crate
-//! does NOT depend on doli-core (architectural constraint: no VDF/GMP).
+//! NOTE: the wallet depends on doli-core at runtime. The expected bytes here
+//! come from core's own types and core's per-input signing messages.
 
-use crypto::{hash::hash, signature, KeyPair};
-use doli_core::{Input, Output, OutputType, SighashType, Transaction, TxType};
+use crypto::{signature, KeyPair};
+use doli_core::{Input, Output, OutputType, Transaction, TxType};
 use wallet::Utxo;
 
-/// Build a Transfer tx via TxBuilder, then build the identical tx via doli-core,
-/// serialize both, and compare byte-for-byte.
-#[test]
-fn test_m1_transfer_serialization_matches_core() {
-    // Deterministic keypair from fixed seed
-    let seed = [42u8; 32];
-    let kp = KeyPair::from_seed(seed);
-
-    let tx_hash_bytes = [0xAAu8; 32];
-    let recipient_hash = [0xBBu8; 32];
-    let sender_hash = [0xCCu8; 32];
-    let amount: u64 = 500_000_000; // 5 DOLI
-    let change: u64 = 300_000_000; // 3 DOLI
-
-    // --- Build via wallet TxBuilder ---
-    let mut wallet_builder = wallet::TxBuilder::new(wallet::TxType::Transfer);
-    wallet_builder.add_input(tx_hash_bytes, 0);
-    wallet_builder.add_output(amount, recipient_hash, 0, 0, Vec::new());
-    wallet_builder.add_output(change, sender_hash, 0, 0, Vec::new());
-    let wallet_hex = wallet_builder.sign_and_build(&kp).unwrap();
-    let wallet_bytes = hex::decode(&wallet_hex).unwrap();
-
-    // --- Build via doli-core ---
-    // First, compute the same signing message the wallet computes
-    let signing_bytes = wallet_builder.build_for_signing().unwrap();
-    let signing_hash = hash(&signing_bytes);
-    let sig = signature::sign(signing_hash.as_bytes(), kp.private_key());
-
-    let core_tx = Transaction {
+fn core_transfer_signed_per_input(
+    kp: &KeyPair,
+    inputs: &[([u8; 32], u32)],
+    outputs: &[(u64, [u8; 32])],
+) -> Vec<u8> {
+    let mut tx = Transaction {
         version: 1,
         tx_type: TxType::Transfer,
-        inputs: vec![Input {
-            prev_tx_hash: crypto::Hash::from_bytes(tx_hash_bytes),
-            output_index: 0,
-            signature: sig,
-            sighash_type: SighashType::All,
-            committed_output_count: 0,
-            public_key: Some(*kp.public_key()),
-        }],
-        outputs: vec![
-            Output {
-                output_type: OutputType::Normal,
-                amount,
-                pubkey_hash: crypto::Hash::from_bytes(recipient_hash),
-                lock_until: 0,
-                extra_data: Vec::new(),
-            },
-            Output {
-                output_type: OutputType::Normal,
-                amount: change,
-                pubkey_hash: crypto::Hash::from_bytes(sender_hash),
-                lock_until: 0,
-                extra_data: Vec::new(),
-            },
-        ],
+        inputs: inputs
+            .iter()
+            .map(|(h, i)| Input::new(crypto::Hash::from_bytes(*h), *i))
+            .collect(),
+        outputs: outputs
+            .iter()
+            .map(|(a, h)| Output::normal(*a, crypto::Hash::from_bytes(*h)))
+            .collect(),
         extra_data: Vec::new(),
     };
+    for i in 0..tx.inputs.len() {
+        let msg = tx.signing_message_for_input(i);
+        tx.inputs[i].signature = signature::sign_hash(&msg, kp.private_key());
+        tx.inputs[i].public_key = Some(*kp.public_key());
+    }
+    bincode::serialize(&tx).unwrap()
+}
 
-    let core_bytes = bincode::serialize(&core_tx).unwrap();
+// OUTPUT CONTRACT: fn wallet::TxBuilder::sign_and_build(&mut self, &KeyPair) -> Result<String>
+//   O1 return Ok: hex of the bincode Transaction; input i = outpoint + sig over core
+//      signing_message_for_input(i) + the signer's public key; outputs and extra_data unchanged
+//   O2 return Err: not reached (inputs and outputs well-formed)
+//   O3 receiver signatures: observable only through O1
+// PATHS: P-ONE one input | P-TWO two inputs, distinct outpoints
+// MATRIX
+//   O1 x {P-ONE, P-TWO} -> test_m1_transfer_serialization_matches_core
+// INPUT PARTITIONS:
+//   inputs {AA..:0} | {AA..:0, AD..:3}; outputs 5 DOLI to BB.., 3 DOLI to CC..; seed 42
+// REQ-DEF-001 — Decision: a failure means a wallet-built transfer carries a signature the node does not verify for some input, so the node refuses it.
+#[test]
+fn test_m1_transfer_serialization_matches_core() {
+    let kp = KeyPair::from_seed([42u8; 32]);
+    let outputs = [(500_000_000u64, [0xBBu8; 32]), (300_000_000, [0xCCu8; 32])];
+    let one: Vec<([u8; 32], u32)> = vec![([0xAAu8; 32], 0)];
+    let two: Vec<([u8; 32], u32)> = vec![([0xAAu8; 32], 0), ([0xADu8; 32], 3)];
 
-    assert_eq!(
-        wallet_bytes,
-        core_bytes,
-        "Wallet TxBuilder output must be byte-identical to bincode::serialize(Transaction).\n\
-         wallet len={}, core len={}\n\
-         wallet first 64 bytes: {:02x?}\n\
-         core   first 64 bytes: {:02x?}",
-        wallet_bytes.len(),
-        core_bytes.len(),
-        &wallet_bytes[..wallet_bytes.len().min(64)],
-        &core_bytes[..core_bytes.len().min(64)],
-    );
+    for (label, inputs) in [("one input", one), ("two inputs", two)] {
+        let mut wallet_builder = wallet::TxBuilder::new(wallet::TxType::Transfer);
+        for (h, i) in &inputs {
+            wallet_builder.add_input(*h, *i);
+        }
+        for (a, h) in &outputs {
+            wallet_builder.add_output(*a, *h, 0, 0, Vec::new());
+        }
+        let wallet_bytes = hex::decode(wallet_builder.sign_and_build(&kp).unwrap()).unwrap();
+        let core_bytes = core_transfer_signed_per_input(&kp, &inputs, &outputs);
+
+        assert_eq!(
+            wallet_bytes,
+            core_bytes,
+            "{label}: wallet transfer bytes differ from core with per-input signatures \
+             (wallet len={}, core len={})",
+            wallet_bytes.len(),
+            core_bytes.len(),
+        );
+    }
 }
 
 /// Build an AddBond tx via the convenience builder and compare with core.
+// REQ-DEF-001 — Decision: a failure means the wallet AddBond bytes differ from the canonical core AddBond with per-input signatures and the producer-auth tail.
 #[test]
 fn test_m1_add_bond_serialization_matches_core() {
     let seed = [99u8; 32];
@@ -103,62 +96,45 @@ fn test_m1_add_bond_serialization_matches_core() {
         spendable: true,
     }];
 
-    let sender_hash = [0xEEu8; 32];
     let fee = 1000u64;
     let bond_count = 2u32;
-
-    let mut wallet_builder =
-        wallet::TxBuilder::build_add_bond(&utxos, bond_count, sender_hash, fee).unwrap();
-
-    // Sign with wallet
-    let wallet_hex = wallet_builder.sign_and_build(&kp).unwrap();
+    let lock_until = 2_000u64;
+    let genesis = doli_core::consensus::ConsensusParams::devnet().genesis_hash;
+    let genesis_hex = genesis.to_hex();
+    let signer = wallet::ProducerSigner {
+        keypair: &kp,
+        genesis_hash: &genesis_hex,
+    };
+    let wallet_hex = wallet::TxBuilder::build_add_bond(
+        &utxos,
+        bond_count,
+        wallet::BOND_UNIT,
+        lock_until,
+        fee,
+        &signer,
+    )
+    .unwrap();
     let wallet_bytes = hex::decode(&wallet_hex).unwrap();
 
-    // Compute the same signing message
-    let signing_bytes = wallet_builder.build_for_signing().unwrap();
-    let signing_hash = hash(&signing_bytes);
-    let sig = signature::sign(signing_hash.as_bytes(), kp.private_key());
-
     let utxo_hash_bytes: [u8; 32] = hex::decode(&utxo_hash).unwrap().try_into().unwrap();
-
-    // Expected: 2 bond outputs + 1 change output
     let bond_cost = bond_count as u64 * wallet::BOND_UNIT;
-    let total_needed = bond_cost + fee;
-    let change_amount = 50_000_000_000u64 - total_needed;
+    let change_amount = 50_000_000_000u64 - bond_cost - fee;
+    let own = doli_core::validation::bond_owner(kp.public_key());
 
-    let core_tx = Transaction {
-        version: 1,
-        tx_type: TxType::AddBond,
-        inputs: vec![Input {
-            prev_tx_hash: crypto::Hash::from_bytes(utxo_hash_bytes),
-            output_index: 0,
-            signature: sig,
-            sighash_type: SighashType::All,
-            committed_output_count: 0,
-            public_key: Some(*kp.public_key()),
-        }],
-        outputs: {
-            let mut outs = Vec::new();
-            for _ in 0..bond_count {
-                outs.push(Output {
-                    output_type: OutputType::Bond,
-                    amount: wallet::BOND_UNIT,
-                    pubkey_hash: crypto::Hash::from_bytes(sender_hash),
-                    lock_until: u64::MAX,
-                    extra_data: Vec::new(),
-                });
-            }
-            outs.push(Output {
-                output_type: OutputType::Normal,
-                amount: change_amount,
-                pubkey_hash: crypto::Hash::from_bytes(sender_hash),
-                lock_until: 0,
-                extra_data: Vec::new(),
-            });
-            outs
-        },
-        extra_data: Vec::new(),
-    };
+    let mut core_tx = Transaction::new_add_bond(
+        vec![Input::new(crypto::Hash::from_bytes(utxo_hash_bytes), 0)],
+        *kp.public_key(),
+        bond_count,
+        bond_cost,
+        lock_until,
+    );
+    core_tx.outputs.push(Output::normal(change_amount, own));
+    for i in 0..core_tx.inputs.len() {
+        core_tx.inputs[i].public_key = Some(*kp.public_key());
+        let msg = core_tx.signing_message_for_input(i);
+        core_tx.inputs[i].signature = signature::sign_hash(&msg, kp.private_key());
+    }
+    doli_core::transaction::sign_producer_auth(&mut core_tx, &genesis, &kp);
 
     let core_bytes = bincode::serialize(&core_tx).unwrap();
 

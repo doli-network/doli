@@ -149,14 +149,16 @@ impl Node {
                 "[FORK] RECOVERY_DONE fork tip {:.16}: no reorg ({})",
                 fork_tip, reason
             );
-            let branch_tip = {
-                let cache = self.fork_block_cache.read().await;
-                cached_branch_tip(&cache, fork_tip)
-            };
-            self.sync_manager
-                .write()
-                .await
-                .mark_fork_branch_rejected(branch_tip, tip_before);
+            if !super::header_auth::is_fork_signature_rejection(&result) {
+                let branch_tip = {
+                    let cache = self.fork_block_cache.read().await;
+                    cached_branch_tip(&cache, fork_tip)
+                };
+                self.sync_manager
+                    .write()
+                    .await
+                    .mark_fork_branch_rejected(branch_tip, tip_before);
+            }
         } else {
             info!(
                 "[FORK] RECOVERY_DONE fork tip {:.16}: reorged, tip {:.16} -> {:.16}",

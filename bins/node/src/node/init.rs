@@ -766,6 +766,11 @@ impl Node {
             // INC-I-152: sync-side bootstrap window, so orphan chase walking a freshly
             // wiped node off h==0 does not foreclose bootstrap snap admission.
             genesis_blocks: config.network.params().genesis_blocks,
+            // INC-I-236: header-first sync verifies producer signatures at h >= AH.
+            inc_i_236_block_signature_activation_height: config
+                .network
+                .params()
+                .inc_i_236_block_signature_activation_height,
             ..SyncConfig::default()
         };
         let sync_manager = Arc::new(RwLock::new(SyncManager::new(sync_config, genesis_hash)));
@@ -1068,6 +1073,7 @@ impl Node {
             known_producers: Arc::new(RwLock::new(Vec::new())),
             first_peer_connected: None,
             equivocation_detector,
+            slash_reported: Default::default(),
             vdf_calibrator,
             fork_block_cache: Arc::new(RwLock::new(HashMap::new())),
             last_producer_list_change: None,
@@ -1319,6 +1325,7 @@ impl Node {
             known_producers: Arc::new(RwLock::new(Vec::new())),
             first_peer_connected: None,
             equivocation_detector: Arc::new(RwLock::new(EquivocationDetector::new())),
+            slash_reported: Default::default(),
             vdf_calibrator,
             fork_block_cache: Arc::new(RwLock::new(HashMap::new())),
             last_producer_list_change: None,
@@ -1404,21 +1411,20 @@ impl Node {
         })
     }
 
-    /// Create a headless Node for disaster recovery replay.
+    /// Create a headless Node for disaster recovery replay on `chainspec`.
     ///
     /// Uses the EXISTING block_store from `data_dir/blocks/` and a FRESH state_db.
     /// No networking, no archiver — only the state transition machinery.
     ///
     /// Genesis producers are registered from the chainspec so `maybe_complete_genesis`
     /// works correctly during replay.
-    pub async fn new_for_replay(data_dir: std::path::PathBuf, network: Network) -> Result<Self> {
-        let spec = match network {
-            Network::Mainnet => doli_core::chainspec::ChainSpec::mainnet(),
-            Network::Testnet => doli_core::chainspec::ChainSpec::testnet(),
-            Network::Devnet => doli_core::chainspec::ChainSpec::devnet(),
-        };
-        let genesis_hash = spec.genesis_hash();
-        let params = ConsensusParams::for_network(network);
+    pub async fn new_for_replay_with_chainspec(
+        data_dir: std::path::PathBuf,
+        network: Network,
+        chainspec: Option<doli_core::chainspec::ChainSpec>,
+    ) -> Result<Self> {
+        let (genesis_hash, params) =
+            super::replay_chainspec::replay_params(network, chainspec.as_ref());
 
         std::fs::create_dir_all(&data_dir)?;
         let block_store = Arc::new(BlockStore::open(&data_dir.join("blocks"))?);
@@ -1428,15 +1434,7 @@ impl Node {
         let chain_state = ChainState::new(genesis_hash);
         state_db.put_chain_state(&chain_state)?;
 
-        // Register genesis producers so maybe_complete_genesis can find them
-        let mut ps = ProducerSet::new();
-        let bond_unit = network.bond_unit();
-        if network == Network::Mainnet {
-            let genesis_producers = doli_core::genesis::mainnet_genesis_producers();
-            for (pk, bonds) in &genesis_producers {
-                let _ = ps.register_genesis_producer(*pk, *bonds, bond_unit);
-            }
-        }
+        let ps = crate::chainspec_select::genesis_producer_set(network, chainspec.as_ref());
         state_db.write_producer_set(&ps)?;
 
         let epoch_bond_snapshot: HashMap<Hash, u64> = ps
@@ -1513,7 +1511,7 @@ impl Node {
             no_dht: true,
             relay_server: false,
             genesis_time_override: Some(params.genesis_time),
-            chainspec: None,
+            chainspec,
             slot_duration_override: Some(params.slot_duration),
             external_address: None,
             no_snap_sync: false,
@@ -1548,6 +1546,7 @@ impl Node {
             known_producers: Arc::new(RwLock::new(epoch_producer_list.clone())),
             first_peer_connected: None,
             equivocation_detector: Arc::new(RwLock::new(EquivocationDetector::new())),
+            slash_reported: Default::default(),
             vdf_calibrator,
             fork_block_cache: Arc::new(RwLock::new(HashMap::new())),
             last_producer_list_change: None,

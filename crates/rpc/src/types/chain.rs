@@ -126,7 +126,10 @@ pub struct BalanceResponse {
     pub immature: u64,
     /// Bonded balance (locked in Bond UTXOs)
     pub bonded: u64,
-    /// Total balance (confirmed + unconfirmed + immature + bonded)
+    /// Withdrawn bond value in Unbonding outputs that are still locked
+    #[serde(default)]
+    pub unbonding: u64,
+    /// Total balance (confirmed + unconfirmed + immature + bonded + unbonding)
     pub total: u64,
 }
 

@@ -1,0 +1,16 @@
+[package]
+name = "doli-producer-tx"
+description = "Pure builders and signing of DOLI producer transactions, shared by the CLI, the wallet library and the GUI"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "doli_producer_tx"
+
+[dependencies]
+crypto = { workspace = true }
+doli-core = { workspace = true }
+bincode.workspace = true

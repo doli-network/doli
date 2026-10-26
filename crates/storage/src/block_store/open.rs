@@ -161,6 +161,18 @@ impl BlockStore {
         Ok(store)
     }
 
+    /// Open an existing block store read-only for offline inspection.
+    ///
+    /// Writes fail and no migration runs. Takes no lock and writes nothing
+    /// under `path`; any RocksDB info log goes to `log_dir`.
+    pub fn open_read_only(path: &Path, log_dir: &Path) -> Result<Self, StorageError> {
+        Ok(Self {
+            db: crate::read_only::open_db(path, log_dir)?,
+            block_cache: rocksdb::Cache::new_lru_cache(8 * 1024 * 1024),
+            block_cache_capacity_bytes: 8 * 1024 * 1024,
+        })
+    }
+
     /// Populate hash_to_height index from existing height_index entries.
     /// Runs once on first startup after the index is added. No-op if already populated.
     fn migrate_hash_to_height_index(&self) {

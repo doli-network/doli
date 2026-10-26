@@ -279,6 +279,15 @@ impl RpcContext {
                     "stage": "mempool",
                 }),
             ),
+            MempoolError::Busy => RpcError::with_data(
+                crate::error::codes::MEMPOOL_FULL,
+                "Node busy: producer set locked, retry later",
+                serde_json::json!({
+                    "error_code": "MEMPOOL_BUSY",
+                    "stage": "mempool",
+                    "retryable": true,
+                }),
+            ),
             _ => {
                 let data = e.to_structured_json();
                 RpcError::with_data(crate::error::codes::INVALID_TX, e.to_string(), data)

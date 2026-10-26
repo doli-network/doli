@@ -67,7 +67,7 @@ Used in `crates/rpc/src/error.rs`. Standard JSON-RPC codes plus custom applicati
 | `-32001` | `TX_NOT_FOUND` | Transaction not found (may include `data.searched_by`, `data.hash`) |
 | `-32002` | `INVALID_TX` | Transaction validation failed |
 | `-32003` | `TX_ALREADY_KNOWN` | Transaction already in mempool |
-| `-32004` | `MEMPOOL_FULL` | Mempool is full |
+| `-32004` | `MEMPOOL_FULL` | Mempool is full. Also `data.error_code = "MEMPOOL_BUSY"` (`retryable: true`): a slash met a busy producer-set lock; resubmit the same tx |
 | `-32005` | `UTXO_NOT_FOUND` | UTXO not found |
 | `-32006` | `PRODUCER_NOT_FOUND` | Producer not found |
 | `-32007` | `POOL_NOT_FOUND` | Pool not found |
@@ -231,6 +231,14 @@ Active at and above `inc_i_234_activation_height` (INC-I-234). Rules: `specs/pro
 | `ERRTX-AUTH004` | Invalid issuance: not a `Transfer`, `asset_id` not anchored on input 0, non-uniform `total_supply`, sum above `total_supply`, or a second fresh asset in one tx | `asset_id` |
 | `ERRTX-AUTH005` | Coinbase output is not `Normal` | output index, output type |
 
+### Producer Authorization (validation/producer_auth.rs)
+
+Active at and above `inc_i_182_producer_auth_activation_height` (INC-I-182), for Registration, AddBond and RequestWithdrawal only. Rules: `specs/protocol.md` §3.13.2.
+
+| Code | Description | Context Variables |
+|------|-------------|-------------------|
+| `ERRTX-PAUTH001` | `{kind} has no producer signature`; `{kind} extra_data must be the exact payload followed by a 64-byte producer signature`; `{kind} is not signed by its producer` | `kind` (tx type) |
+
 ### Block Validation (validation_checks.rs)
 
 | Code | Description | Context Variables |
@@ -238,6 +246,14 @@ Active at and above `inc_i_234_activation_height` (INC-I-234). Rules: `specs/pro
 | `ERRTX068` | missed_producers exceeds max entries per block | `count`, `max` |
 | `ERRTX069` | missed_producers contains key not in epoch producer list | `pubkey_prefix`, `list_size` |
 | `ERRTX070` | missed_producers would exceed total exclusion cap | `total_after`, `max_total`, `currently_excluded` |
+
+### Slashed Registrant (validation/slash_registration.rs)
+
+Active at and above `inc_i_255_slashing_activation_height` (the effective slashing height). One code for Registration and AddBond, on mempool admission, the block builder, apply and replay.
+
+| Code | Description | Context Variables |
+|------|-------------|-------------------|
+| `ERRTX071` | `producer is slashed or slash-queued`: the Registration key, or the producer an AddBond names, is Slashed or has a queued Slash, or a SlashProducer for the same key is in the same block or resident in the mempool. Operator action: no retry can succeed. A Slashed key is refused for life. A slash-queued key becomes Slashed at the next epoch boundary, unless a reorg removes the slash. This key cannot register or add bonds; use a new key. | `producer` (hex) |
 
 ## MPTX -- Mempool Transaction Validation
 

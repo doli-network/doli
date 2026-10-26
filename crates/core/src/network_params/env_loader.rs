@@ -80,10 +80,10 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.bootstrap_grace_period_secs,
             )
         },
-        unbonding_period: if is_mainnet {
-            defaults.unbonding_period // LOCKED for mainnet
-        } else {
+        unbonding_period: if matches!(network, Network::Devnet) {
             env_parse("DOLI_UNBONDING_PERIOD", defaults.unbonding_period)
+        } else {
+            defaults.unbonding_period
         },
         inactivity_threshold: if is_mainnet {
             defaults.inactivity_threshold
@@ -572,6 +572,39 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 "DOLI_INC_I_234_ACTIVATION_HEIGHT",
                 defaults.inc_i_234_activation_height,
             )
+        },
+        // Devnet only: mainnet and testnet always take the compiled default.
+        inc_i_236_block_signature_activation_height: if matches!(network, Network::Devnet) {
+            env_parse(
+                "DOLI_INC_I_236_BLOCK_SIGNATURE_ACTIVATION_HEIGHT",
+                defaults.inc_i_236_block_signature_activation_height,
+            )
+        } else {
+            defaults.inc_i_236_block_signature_activation_height
+        },
+        inc_i_255_slashing_activation_height: if matches!(network, Network::Devnet) {
+            env_parse(
+                "DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT",
+                defaults.inc_i_255_slashing_activation_height,
+            )
+        } else {
+            defaults.inc_i_255_slashing_activation_height
+        },
+        inc_i_257_unbonding_activation_height: if matches!(network, Network::Devnet) {
+            env_parse(
+                "DOLI_INC_I_257_UNBONDING_ACTIVATION_HEIGHT",
+                defaults.inc_i_257_unbonding_activation_height,
+            )
+        } else {
+            defaults.inc_i_257_unbonding_activation_height
+        },
+        inc_i_182_producer_auth_activation_height: if matches!(network, Network::Devnet) {
+            env_parse(
+                "DOLI_INC_I_182_PRODUCER_AUTH_ACTIVATION_HEIGHT",
+                defaults.inc_i_182_producer_auth_activation_height,
+            )
+        } else {
+            defaults.inc_i_182_producer_auth_activation_height
         },
         inc_i_233_activation_height: if is_mainnet {
             defaults.inc_i_233_activation_height

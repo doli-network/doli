@@ -1,6 +1,9 @@
 use anyhow::Result;
-use crypto::{bls_sign_pop, signature, BlsSecretKey, Hash, PublicKey};
-use doli_core::{Input, Output, Transaction};
+use crypto::{bls_sign_pop, BlsSecretKey, Hash, PublicKey};
+use doli_cli::producer_ledger::slashed_key_refusal;
+use doli_cli::producer_tx::{
+    build_registration_tx, chain_genesis_hash, finalize_producer_tx, RegistrationSpec,
+};
 
 use super::common::confirm_bond_lock;
 use crate::rpc_client::{format_balance, RpcClient};
@@ -41,6 +44,10 @@ pub(super) async fn handle_register(
             .iter()
             .find(|p| p.public_key.eq_ignore_ascii_case(pk_hex))
         {
+            let pending = info.pending_updates.iter().map(|u| u.update_type.as_str());
+            if let Err(msg) = slashed_key_refusal(&info.status, pending) {
+                anyhow::bail!("{} (pubkey: {})", msg, pk_hex);
+            }
             match info.status.to_lowercase().as_str() {
                 "active" => {
                     anyhow::bail!("This key is already registered as an active producer (pubkey: {}, bonds: {}). Use 'doli producer add-bond' to increase your bond count.", pk_hex, info.bond_count);
@@ -48,7 +55,7 @@ pub(super) async fn handle_register(
                 "pending" => {
                     anyhow::bail!("This key already has a pending registration (pubkey: {}). It will activate at the next epoch boundary.", pk_hex);
                 }
-                _ => {} // exited/slashed — allow re-registration
+                _ => {} // exited — allow re-registration
             }
         }
     }
@@ -107,11 +114,11 @@ pub(super) async fn handle_register(
     confirm_bond_lock(yes)?;
 
     // Build registration transaction
-    let mut inputs: Vec<Input> = Vec::new();
+    let mut inputs: Vec<(Hash, u32)> = Vec::new();
     for utxo in &selected_utxos {
         let prev_tx_hash =
             Hash::from_hex(&utxo.tx_hash).ok_or_else(|| anyhow::anyhow!("Invalid UTXO tx_hash"))?;
-        inputs.push(Input::new(prev_tx_hash, utxo.output_index));
+        inputs.push((prev_tx_hash, utxo.output_index));
     }
 
     // Parse public key for registration
@@ -170,45 +177,22 @@ pub(super) async fn handle_register(
             pop.as_bytes().to_vec()
         },
     };
-    let extra_data = bincode::serialize(&reg_data)
-        .map_err(|e| anyhow::anyhow!("Failed to serialize registration data: {}", e))?;
-
-    // Create one Bond UTXO per bond (each with bond_unit amount)
-    let pubkey_hash_for_bond =
-        crypto::hash::hash_with_domain(crypto::ADDRESS_DOMAIN, producer_pubkey.as_bytes());
-    let outputs: Vec<Output> = (0..bonds)
-        .map(|_| {
-            doli_core::transaction::Output::bond(
-                bond_unit,
-                pubkey_hash_for_bond,
-                lock_until,
-                0, // creation_slot stamped by node at block application
-            )
-        })
-        .collect();
-
-    let mut tx = Transaction {
-        version: 1,
-        tx_type: doli_core::transaction::TxType::Registration,
+    // One Bond UTXO per bond; creation_slot is stamped by the node at apply.
+    let change_to =
+        Hash::from_hex(pubkey_hash).ok_or_else(|| anyhow::anyhow!("Invalid change address"))?;
+    let mut tx = build_registration_tx(&RegistrationSpec {
         inputs,
-        outputs,
-        extra_data,
-    };
+        reg_data,
+        bond_unit,
+        lock_until,
+        change: total_input - required_amount - fee,
+        change_to,
+    })
+    .map_err(|e| anyhow::anyhow!(e))?;
 
-    // Add change output if needed
-    let change = total_input - required_amount - fee;
-    if change > 0 {
-        let change_hash =
-            Hash::from_hex(pubkey_hash).ok_or_else(|| anyhow::anyhow!("Invalid change address"))?;
-        tx.outputs.push(Output::normal(change, change_hash));
-    }
-
-    // Sign each input (BIP-143: per-input signing hash)
-    for i in 0..tx.inputs.len() {
-        let signing_hash = tx.signing_message_for_input(i);
-        tx.inputs[i].signature = signature::sign_hash(&signing_hash, keypair.private_key());
-        tx.inputs[i].public_key = Some(*keypair.public_key());
-    }
+    // Inputs (BIP-143) then the producer-auth signature over the chain genesis.
+    let genesis = chain_genesis_hash(&chain_info.genesis_hash).map_err(|e| anyhow::anyhow!(e))?;
+    finalize_producer_tx(&mut tx, keypair, &genesis);
 
     // Submit transaction
     let tx_hex = hex::encode(tx.serialize());

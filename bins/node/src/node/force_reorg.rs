@@ -162,6 +162,12 @@ impl Node {
         // `execute_reorg` applies forward blocks in `ValidationMode::Light` and
         // skips `check_producer_eligibility` (block_handling.rs:1040). Mirror
         // wedge_escape.rs:79 / fork_recovery.rs:210 before handing over the plan.
+        let best_height = self.chain_state.read().await.best_height;
+        let ancestor_height = best_height.saturating_sub(plan.rollback.len() as u64);
+        if let Err(e) = self.verify_fork_signed(&branch_blocks, ancestor_height + 1) {
+            warn!("[FORCE_REORG] refusing target={}: {}", target, e);
+            return ForceReorgOutcome::Ineligible;
+        }
         for block in &branch_blocks {
             if let Err(e) = self.check_producer_eligibility(block).await {
                 warn!(

@@ -36,7 +36,7 @@ pub(super) async fn run_swarm(
     peer_cache_path: Option<PathBuf>,
     mut discv5_events: Option<mpsc::Receiver<discv5::Event>>,
     discv5_service: Option<std::sync::Arc<crate::discovery::discv5_service::Discv5Service>>,
-    best_slot: Arc<std::sync::atomic::AtomicU32>,
+    local_tip: Arc<super::gossip_intake::LocalTip>,
     shed_metrics: std::sync::Arc<super::backpressure::GossipShedMetrics>,
     mut watchdog: Option<MemoryWatchdog>,
     memory_shed_flag: Arc<AtomicBool>,
@@ -145,7 +145,7 @@ pub(super) async fn run_swarm(
         tokio::select! {
             // Handle swarm events
             event = swarm.select_next_some() => {
-                handle_swarm_event(event, &mut swarm, &event_sink, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff, &mut eviction_cooldown, &mut bootstrap_peers, &mut stale_peer_ids, &best_slot, &shed_metrics, &memory_shed_flag).await;
+                handle_swarm_event(event, &mut swarm, &event_sink, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff, &mut eviction_cooldown, &mut bootstrap_peers, &mut stale_peer_ids, &local_tip, &shed_metrics, &memory_shed_flag).await;
             }
 
             Some(command) = command_rx.recv() => {

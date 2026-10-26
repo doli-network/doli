@@ -59,7 +59,7 @@ impl Node {
         // Phase 3: validation reads via batch overlay (UtxoProvider impl on BlockBatch).
         if !is_reward_tx {
             let utxo_ctx = validation::ValidationContext::new(
-                ConsensusParams::for_network(self.config.network),
+                self.params.clone(),
                 self.config.network,
                 0, // wall-clock not needed for UTXO validation
                 height,
@@ -107,6 +107,31 @@ impl Node {
             .with_inc_i_234_activation_height(
                 self.config.network.params().inc_i_234_activation_height,
             )
+            .with_inc_i_236_block_signature_activation_height(
+                self.config
+                    .network
+                    .params()
+                    .inc_i_236_block_signature_activation_height,
+            )
+            .with_inc_i_255_slashing_activation_height(
+                self.config
+                    .network
+                    .params()
+                    .effective_slashing_activation_height(),
+            )
+            .with_inc_i_257_unbonding(
+                self.config
+                    .network
+                    .params()
+                    .inc_i_257_unbonding_activation_height,
+                self.config.network.params().unbonding_period,
+            )
+            .with_inc_i_182_producer_auth(
+                self.config
+                    .network
+                    .params()
+                    .inc_i_182_producer_auth_activation_height,
+            )
             .with_oracle_activation_height(self.config.network.params().oracle_activation_height)
             .with_oracle_sunset_triggered(
                 self.oracle_sunset_triggered
@@ -139,6 +164,8 @@ impl Node {
                 }
             }
         }
+
+        self.slash_burn_in_batch(tx, height, batch, undo_spent_utxos, undo_created_utxos)?;
 
         // Reject outputs with duplicate unique IDs (reads via batch overlay)
         for output in &tx.outputs {

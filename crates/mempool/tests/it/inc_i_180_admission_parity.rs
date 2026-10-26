@@ -181,9 +181,12 @@ fn signed_withdrawal(
             inp
         })
         .collect();
-    let dest = crypto::hash::hash(b"inc-i-180-m2-admission-destination");
+    // Devnet arms INC-I-257 at 0: the payout is one locked Unbonding output to the producer.
+    let dest = addr(producer);
     let net = bond_unit() * spends.len() as u64 - bond_unit() / 100;
     let mut tx = Transaction::new_request_withdrawal(inputs, *producer, declared, dest, net);
+    tx.outputs[0].output_type = OutputType::Unbonding;
+    tx.outputs[0].lock_until = POST_AH + 1_000;
     // `spends.len() == tx.inputs.len()` by construction above; the index is the
     // pairing, not a traversal.
     #[allow(clippy::needless_range_loop)]
@@ -192,6 +195,13 @@ fn signed_withdrawal(
         tx.inputs[i].signature =
             crypto::signature::sign_hash(&signing_hash, spends[i].1.private_key());
     }
+    // INC-I-182: the devnet producer-auth gate is 0, so the producer signs the payload.
+    let (_, producer_key) = spends
+        .iter()
+        .find(|(_, k)| k.public_key() == producer)
+        .expect("fixture: the producer spends one of the inputs");
+    let genesis = ConsensusParams::devnet().genesis_hash;
+    doli_core::transaction::sign_producer_auth(&mut tx, &genesis, producer_key);
     tx
 }
 

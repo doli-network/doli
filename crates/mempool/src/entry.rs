@@ -29,6 +29,8 @@ pub struct MempoolEntry {
     pub ancestor_fee: u64,
     /// Total size including ancestors
     pub ancestor_size: usize,
+    /// Admitted as a gated, fee-exempt slash: never evicted or expired.
+    pub(crate) evict_exempt: bool,
 }
 
 impl MempoolEntry {
@@ -54,6 +56,7 @@ impl MempoolEntry {
             descendants: HashSet::new(),
             ancestor_fee: fee,
             ancestor_size: size,
+            evict_exempt: false,
         }
     }
 

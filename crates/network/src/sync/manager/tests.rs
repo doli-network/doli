@@ -716,7 +716,7 @@ fn test_start_sync_clears_header_downloader() {
     manager
         .pipeline
         .header_downloader
-        .process_headers(&chain, genesis);
+        .process_headers(&chain, genesis, 0);
     assert!(
         manager
             .pipeline

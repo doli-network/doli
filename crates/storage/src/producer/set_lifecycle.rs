@@ -105,6 +105,13 @@ impl ProducerSet {
         }
     }
 
+    /// True when `process_unbonding(current_height, unbonding_duration)` has an
+    /// index candidate, i.e. may mutate the set.
+    pub fn has_unbonding_due(&self, current_height: u64, unbonding_duration: u64) -> bool {
+        let threshold = current_height.saturating_sub(unbonding_duration);
+        self.unbonding_index.range(..=threshold).next().is_some()
+    }
+
     /// Process completed unbonding periods and mark as exited.
     ///
     /// Uses the unbonding index for O(k) lookup where k = completed producers,
@@ -162,6 +169,8 @@ impl ProducerSet {
     /// Returns the amount burned. Also records the slash in exit_history
     /// so if they ever re-register, they start fresh (maturity cooldown).
     /// Exit record expires after EXIT_HISTORY_RETENTION (~8 years).
+    /// Every status except `Slashed` is slashable: an `Exited` producer
+    /// reaches here only when admission proved burnable collateral (INC-I-259).
     pub fn slash_producer(
         &mut self,
         pubkey: &PublicKey,
@@ -174,6 +183,12 @@ impl ProducerSet {
                 pubkey
             ))
         })?;
+        if info.is_slashed() {
+            return Err(StorageError::AlreadyExists(format!(
+                "[STOR041] producer not slashable in status {:?} (pubkey={})",
+                info.status, pubkey
+            )));
+        }
 
         let slashed_amount = info.bond_amount;
         tracing::info!(

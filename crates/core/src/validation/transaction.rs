@@ -4,12 +4,13 @@ use crate::types::Amount;
 use crypto::Hash;
 
 use super::registration::{validate_registration_data, validate_registration_data_skip_vdf};
+use super::slash_evidence::{validate_slash_data, validate_slash_data_skip_vdf};
 use super::tx_types::{
     validate_add_bond_data, validate_burn_asset, validate_claim_bond_data, validate_claim_data,
     validate_delegate_bond_data, validate_epoch_reward_data, validate_exit_data,
     validate_maintainer_change_data, validate_mint_asset, validate_price_attestation_data,
-    validate_protocol_activation_data, validate_revoke_delegation_data, validate_slash_data,
-    validate_slash_data_skip_vdf, validate_withdrawal_request_data, validate_zk_settle_structure,
+    validate_protocol_activation_data, validate_revoke_delegation_data,
+    validate_withdrawal_request_data, validate_zk_settle_structure,
 };
 use super::{ValidationContext, ValidationError};
 
@@ -113,6 +114,7 @@ pub fn validate_transaction(
     // 4. Validate all outputs
     let total_output = validate_outputs(&tx.outputs, ctx)?;
     super::check_output_placement(tx, ctx)?;
+    super::producer_auth::check_producer_auth(tx, ctx)?;
 
     // 5. Total output must not exceed max supply
     if total_output > TOTAL_SUPPLY {
@@ -123,6 +125,7 @@ pub fn validate_transaction(
     }
 
     // 6. Type-specific validation
+    super::slash_registration::validate_not_slashed_registrant(tx, ctx)?;
     match tx.tx_type {
         TxType::Transfer => {
             // Transfer transactions should have empty extra_data
@@ -319,6 +322,8 @@ pub fn validate_transaction_skip_registration_vdf(
                 });
             }
             super::check_output_placement(tx, ctx)?;
+            super::producer_auth::check_producer_auth(tx, ctx)?;
+            super::slash_registration::validate_not_slashed_registrant(tx, ctx)?;
             validate_registration_data_skip_vdf(tx, ctx)?;
             Ok(())
         }
@@ -412,6 +417,7 @@ pub(super) fn validate_outputs(
                     )));
                 }
             }
+            OutputType::Unbonding => super::unbonding::check_output_shape(i, output)?,
             OutputType::Bond => {
                 // Bond outputs must have a future lock time
                 if output.lock_until == 0 {

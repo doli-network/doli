@@ -361,7 +361,7 @@ Build a desktop application for Windows and macOS that lets anyone -- including 
 | GUI-NF-010 | Should | (CI/CD -- not unit testable) | Module 5: CI/CD (signing integration points) | deferred (M6) |
 | GUI-NF-011 | Must | (frontend-only, no Rust test) | Module 3: Frontend (loading states, error handling) | LoadingSpinner.svelte @ `bins/gui/src-ui/lib/components/LoadingSpinner.svelte`, all route components |
 | GUI-NF-012 | Should | (frontend-only, no Rust test) | Module 3: Frontend (accessibility: aria labels, keyboard nav) | all .svelte components (aria-label, role attributes throughout) |
-| GUI-NF-013 | Must | TXI-008 (test_nf013_wallet_crate_no_vdf_dependency) | Module 4: VDF Feature Flag | wallet @ `crates/wallet/Cargo.toml` (no doli-core dependency) |
+| GUI-NF-013 | Must | TXI-008 (test_nf013_wallet_crate_no_vdf_dependency) | Module 4: VDF Feature Flag | wallet @ `crates/wallet/Cargo.toml` (no GMP: depends on `doli-core` + `doli-producer-tx` since INC-I-262; `vdf` is GMP-free) |
 | GUI-NF-014 | Could | (deferred to M7) | Module 3: Frontend (i18n-ready string externalization, M7) | deferred |
 
 ## Specs Drift Detected

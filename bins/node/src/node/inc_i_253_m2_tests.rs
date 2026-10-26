@@ -74,7 +74,7 @@ fn manifest_only(genesis: Hash, latest: u64) -> TempDir {
 }
 
 fn cycle(fx: &Fx, dir: &Path, backoff: &mut RepairBackoff) -> CycleOutcome {
-    scan_and_repair(&fx.store, 300, Some(dir), backoff)
+    scan_and_repair(&fx.store, 300, Some(dir), backoff, u64::MAX)
 }
 
 fn held(flag: &AtomicBool) -> bool {
@@ -345,7 +345,7 @@ fn inc_i_253_m2_repair_caps_heights_per_pass() {
     let archive = manifest_only(fx.g, 1_100);
     let mut b = RepairBackoff::default();
 
-    let out = scan_and_repair(&fx.store, 1_100, Some(archive.path()), &mut b);
+    let out = scan_and_repair(&fx.store, 1_100, Some(archive.path()), &mut b, u64::MAX);
 
     assert_eq!(out.report.missing_count, 1_050);
     let r = out.repair.expect("repair starts").expect("Ok");
@@ -385,7 +385,7 @@ fn inc_i_253_m2_no_archive_starts_no_repair() {
     assert!(!gone.exists(), "precondition: nonexistent dir");
     let mut b = RepairBackoff::default();
     for dir in [None, Some(gone.as_path())] {
-        let out = scan_and_repair(&fx.store, 300, dir, &mut b);
+        let out = scan_and_repair(&fx.store, 300, dir, &mut b, u64::MAX);
         assert!(out.repair.is_none(), "archive {dir:?}");
         assert_eq!(out.report.missing, vec![150], "archive {dir:?}");
     }

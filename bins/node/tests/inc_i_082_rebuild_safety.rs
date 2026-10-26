@@ -54,6 +54,8 @@
 //!   P4a: O1(epoch)  O2(producer_list)✓  O3(bond_snapshot)✓  O4(snap_sync_height)
 //!   P4b: O1(epoch)  O2(producer_list)✓  O3(bond_snapshot)✓  O4(snap_sync_height)
 
+#[path = "support/block_sig.rs"]
+mod block_sig;
 use crypto::{Hash, KeyPair};
 use doli_core::consensus::ConsensusParams;
 use doli_core::validation::ValidationMode;
@@ -92,7 +94,7 @@ fn build_block(
     let merkle_root = doli_core::block::compute_merkle_root(std::slice::from_ref(&coinbase));
     let genesis_hash = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
 
-    let header = BlockHeader {
+    let mut header = BlockHeader {
         version: 2,
         prev_hash,
         merkle_root,
@@ -109,6 +111,7 @@ fn build_block(
         data_root: crypto::Hash::ZERO,
         fork_id: crypto::Hash::ZERO,
     };
+    crate::block_sig::sign_header(&mut header, producer);
 
     Block::new(header, vec![coinbase])
 }

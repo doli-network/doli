@@ -3,7 +3,7 @@
 //! Re-deliveries are dropped before the app by the vendor duplicate cache
 //! ([`GOSSIP_DUPLICATE_CACHE_TIME`](super::GOSSIP_DUPLICATE_CACHE_TIME), keyed
 //! by BLAKE3 of the raw data). The verdicts live in
-//! [`relay_decision`](super::relay_decision); no path here ever `Reject`s.
+//! [`relay_decision`](super::relay_decision); no staleness path ever `Reject`s.
 
 use doli_core::Attestation;
 
@@ -52,8 +52,7 @@ pub enum GossipTopic {
     Transactions,
 }
 
-/// Read-only staleness context. Every field is already reachable at the gossip
-/// handler (`handle_behaviour_event`) with zero new node→network plumbing.
+/// Read-only per-message context the gossip handler builds for the relay table.
 pub struct StalenessCtx {
     /// Current Unix time in seconds (`now_unix_secs()`); 0 → clock unavailable.
     pub now_unix: u64,
@@ -65,6 +64,10 @@ pub struct StalenessCtx {
     /// wall-clock slot, NOT this, so a lagging node never treats fresh gossip
     /// as stale (§7.1).
     pub best_slot: u32,
+    /// Local tip height; a gossip block is gated at prospective height `best_height + 1`.
+    pub best_height: u64,
+    /// INC-I-236 block signature AH; `u64::MAX` = dormant.
+    pub block_signature_activation_height: u64,
 }
 
 #[cfg(test)]
