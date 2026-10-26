@@ -30,6 +30,9 @@ mod cmd_wallet;
 mod cmd_wallet_bls;
 mod commands;
 mod common;
+mod help_text;
+#[cfg(test)]
+mod help_text_tests;
 mod lp_select;
 mod parsers;
 mod paths;

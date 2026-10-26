@@ -247,10 +247,12 @@ pub(super) async fn handle_slash(rpc: &RpcClient, block1: String, block2: String
     println!("receive conflicting blocks for the same slot. If you have raw block");
     println!("data with VDF proofs, use the node's internal submission mechanism.");
     println!();
-    println!("The equivocating producer ({}) will be:", producer_addr);
-    println!("  - Have their entire bond burned (100% penalty)");
-    println!("  - Excluded from the producer set immediately");
-    println!("  - Can re-register like any new producer (standard registration VDF)");
+    println!("This command submits nothing.");
+    println!();
+    println!("From the slashing activation height (mainnet 806,859), the");
+    println!("equivocating producer ({}):", producer_addr);
+    println!("  - Has all bonds burned (100% penalty)");
+    println!("  - Is barred for life: the key cannot register or add bonds again");
 
     Ok(())
 }

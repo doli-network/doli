@@ -4,7 +4,11 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "doli")]
-#[command(about = "DOLI wallet CLI", long_about = None)]
+#[command(
+    about = "DOLI wallet CLI",
+    long_about = crate::help_text::ROOT_LONG_ABOUT,
+    after_long_help = crate::help_text::ROOT_AFTER_LONG_HELP
+)]
 #[command(version = env!("DOLI_VERSION_STRING"))]
 pub(crate) struct Cli {
     /// Wallet file path (default: auto-detected from network)
@@ -27,6 +31,7 @@ pub(crate) struct Cli {
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Commands {
     /// Initialize a new producer wallet (combines 'new' + 'add-bls')
+    #[command(after_long_help = crate::help_text::INIT_DANGER)]
     Init {
         /// Overwrite existing wallet (DANGEROUS: destroys existing keys)
         #[arg(long)]
@@ -38,6 +43,7 @@ pub(crate) enum Commands {
     },
 
     /// Create a new wallet
+    #[command(after_long_help = crate::help_text::NEW_DANGER)]
     New {
         /// Wallet name
         #[arg(short, long)]
@@ -45,6 +51,7 @@ pub(crate) enum Commands {
     },
 
     /// Restore a wallet from a 24-word seed phrase
+    #[command(after_long_help = crate::help_text::RESTORE_DANGER)]
     Restore {
         /// Wallet name
         #[arg(short, long)]
@@ -52,6 +59,7 @@ pub(crate) enum Commands {
     },
 
     /// Generate a new address
+    #[command(after_long_help = crate::help_text::ADDRESS_DANGER)]
     Address {
         /// Label for the address
         #[arg(short, long)]
@@ -73,6 +81,7 @@ pub(crate) enum Commands {
     },
 
     /// Send coins (optionally with a covenant condition)
+    #[command(after_long_help = crate::help_text::SEND_DANGER)]
     Send {
         /// Recipient address
         to: String,
@@ -87,7 +96,7 @@ pub(crate) enum Commands {
         /// Covenant condition on the output. Examples:
         ///   multisig(2, addr1, addr2, addr3)
         ///   hashlock(hex_hash)
-        ///   htlc(hex_hash, lock_height, expiry_height)
+        ///   htlc(hex_hash, lock_height, expiry_height, refund_pubkey_hash)
         ///   timelock(min_height)
         ///   vesting(addr, unlock_height)
         #[arg(short, long)]
@@ -99,6 +108,7 @@ pub(crate) enum Commands {
     },
 
     /// Spend a covenant-conditioned UTXO
+    #[command(after_long_help = crate::help_text::SPEND_DANGER)]
     Spend {
         /// UTXO to spend: txhash:output_index
         utxo: String,
@@ -106,7 +116,8 @@ pub(crate) enum Commands {
         /// Recipient address (legacy single-output mode)
         to: Option<String>,
 
-        /// Amount to send (legacy single-output mode, remaining goes to change)
+        /// Amount to send (legacy single-output mode: NO change output; the rest
+        /// of the input is destroyed as fee)
         amount: Option<String>,
 
         /// Witness data to satisfy the condition. Examples:
@@ -137,6 +148,7 @@ pub(crate) enum Commands {
     },
 
     /// Export wallet
+    #[command(after_long_help = crate::help_text::EXPORT_DANGER)]
     Export {
         /// Output file path
         output: PathBuf,
@@ -147,6 +159,7 @@ pub(crate) enum Commands {
     },
 
     /// Import wallet
+    #[command(after_long_help = crate::help_text::IMPORT_DANGER)]
     Import {
         /// Input file path
         input: PathBuf,
@@ -161,9 +174,11 @@ pub(crate) enum Commands {
     Info,
 
     /// Add BLS attestation key to an existing wallet
+    #[command(after_long_help = crate::help_text::ADD_BLS_DANGER)]
     AddBls,
 
     /// Import a BLS producer key you already hold (INC-I-217 recovery)
+    #[command(after_long_help = crate::help_text::IMPORT_BLS_DANGER)]
     ImportBls {
         /// BLS secret key, 64 hex characters
         secret: String,
@@ -239,6 +254,7 @@ pub(crate) enum Commands {
     },
 
     /// Upgrade doli binaries to the latest release
+    #[command(after_long_help = crate::help_text::UPGRADE_DANGER)]
     Upgrade {
         /// Target version (default: latest)
         #[arg(long)]
@@ -282,6 +298,7 @@ pub(crate) enum Commands {
     },
 
     /// NFT operations (mint, transfer, buy, sell, list, info)
+    #[command(after_long_help = crate::help_text::NFT_DANGER)]
     Nft {
         /// List NFTs owned by this wallet
         #[arg(short, long)]
@@ -395,6 +412,7 @@ pub(crate) enum Commands {
     },
 
     /// Initiate a complete cross-chain atomic swap (generates preimage, locks DOLI)
+    #[command(after_long_help = crate::help_text::BRIDGE_SWAP_DANGER)]
     BridgeSwap {
         /// Amount of DOLI to lock
         amount: String,
@@ -583,6 +601,7 @@ pub(crate) enum Commands {
     },
 
     /// Fast-sync: wipe chain data and download a verified state snapshot from the network
+    #[command(after_long_help = crate::help_text::SNAP_DANGER)]
     Snap {
         /// Data directory (for multi-node servers with custom paths)
         #[arg(short, long)]
@@ -603,6 +622,7 @@ pub(crate) enum Commands {
     },
 
     /// Wipe chain data for a fresh resync (preserves keys/ and .env)
+    #[command(after_long_help = crate::help_text::WIPE_DANGER)]
     Wipe {
         /// Network (mainnet, testnet, devnet)
         #[arg(short, long, default_value = "mainnet")]
@@ -650,6 +670,7 @@ pub(crate) enum PoolCommands {
     },
 
     /// Swap assets through a pool
+    #[command(after_long_help = crate::help_text::POOL_SWAP_DANGER)]
     Swap {
         /// Pool ID (hex)
         #[arg(long)]
@@ -673,6 +694,7 @@ pub(crate) enum PoolCommands {
     },
 
     /// Add liquidity to a pool
+    #[command(after_long_help = crate::help_text::POOL_ADD_DANGER)]
     Add {
         /// Pool ID (hex)
         #[arg(long)]
@@ -732,6 +754,7 @@ pub(crate) enum PoolCommands {
 #[derive(Subcommand)]
 pub(crate) enum ChannelCommands {
     /// Open a payment channel with a counterparty
+    #[command(after_long_help = crate::help_text::CHANNEL_OPEN_DANGER)]
     Open {
         /// Counterparty's address (doli1... or hex pubkey_hash)
         peer: String,
@@ -803,7 +826,7 @@ pub(crate) enum ChannelCommands {
 pub(crate) enum ProducerCommands {
     /// Register as a block producer (bonds lock your DOLI; early withdrawal incurs a penalty)
     Register {
-        /// Number of bonds to stake (1-10000, each bond = 1 bond_unit)
+        /// Number of bonds to stake (1-3000, each bond = 1 bond_unit)
         #[arg(short, long, default_value = "1")]
         bonds: u32,
 
@@ -814,6 +837,7 @@ pub(crate) enum ProducerCommands {
 
     /// Rotate the producer's BLS attestation key to the one in this wallet
     /// (irreversible; takes effect at the next epoch boundary)
+    #[command(after_long_help = crate::help_text::ROTATE_BLS_DANGER)]
     RotateBls {
         /// Accept the irreversible key change without an interactive prompt
         #[arg(short, long)]
@@ -854,7 +878,7 @@ pub(crate) enum ProducerCommands {
 
     /// Add more bonds to increase stake (bonds lock your DOLI; early withdrawal incurs a penalty)
     AddBond {
-        /// Number of bonds to add (1-10000)
+        /// Number of bonds to add (1-3000 bonds in total per producer)
         #[arg(short, long)]
         count: u32,
 
@@ -863,13 +887,14 @@ pub(crate) enum ProducerCommands {
         yes: bool,
     },
 
-    /// Withdraw bonds instantly (FIFO, vesting penalty applies)
+    /// Withdraw bonds now (FIFO; the vesting penalty is burned; no prompt)
+    #[command(after_long_help = crate::help_text::REQUEST_WITHDRAWAL_DANGER)]
     RequestWithdrawal {
         /// Number of bonds to withdraw
         #[arg(short, long)]
         count: u32,
 
-        /// Destination address for withdrawn funds (hex pubkey_hash)
+        /// Destination doli1... address (default: this wallet). Never a public key
         #[arg(short, long)]
         destination: Option<String>,
     },
@@ -882,13 +907,14 @@ pub(crate) enum ProducerCommands {
     },
 
     /// Exit the producer set (early exit incurs penalty)
+    #[command(after_long_help = crate::help_text::EXIT_DANGER)]
     Exit {
         /// Force early exit with penalty
         #[arg(long)]
         force: bool,
     },
 
-    /// Submit slashing evidence for double production (equivocation)
+    /// Check two blocks for double production (equivocation); submits nothing
     Slash {
         /// Block 1 hash (first conflicting block)
         #[arg(long)]
@@ -900,16 +926,18 @@ pub(crate) enum ProducerCommands {
     },
 
     /// Delegate bond weight to another producer
+    #[command(after_long_help = crate::help_text::DELEGATE_DANGER)]
     Delegate {
-        /// Delegatee's public key (hex) or address
+        /// Delegatee's public key (hex, as shown by 'doli producer list')
         delegatee: String,
 
-        /// Number of bonds to delegate (1-100)
+        /// Number of bonds to delegate (1-3000)
         #[arg(short, long)]
         bonds: u32,
     },
 
-    /// Revoke active delegation (unbonding delay applies)
+    /// Revoke active delegation (applies at the next epoch boundary)
+    #[command(after_long_help = crate::help_text::REVOKE_DELEGATION_DANGER)]
     RevokeDelegation,
 
     /// Show delegation status for a producer
@@ -925,7 +953,7 @@ pub(crate) enum RewardsCommands {
     /// List all claimable epochs with estimated rewards
     List,
 
-    /// Claim rewards for a specific epoch
+    /// No-op: rewards are paid once per epoch from the reward pool
     Claim {
         /// Epoch number to claim
         epoch: u64,
@@ -935,14 +963,14 @@ pub(crate) enum RewardsCommands {
         recipient: Option<String>,
     },
 
-    /// Claim all available rewards (one tx per epoch)
+    /// No-op: rewards are paid once per epoch from the reward pool
     ClaimAll {
         /// Recipient address (defaults to wallet address)
         #[arg(short, long)]
         recipient: Option<String>,
     },
 
-    /// Show claim history
+    /// No-op: rewards need no claim; use 'doli history'
     History {
         /// Maximum number of entries to show
         #[arg(short, long, default_value = "20")]

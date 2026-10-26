@@ -85,7 +85,7 @@ pub(crate) async fn cmd_rewards(
 
     match command {
         RewardsCommands::List => {
-            println!("Rewards are distributed automatically via coinbase (1 DOLI per block).");
+            println!("Rewards are paid automatically once per epoch from the reward pool.");
             println!("No claiming needed. Use 'doli balance' to see your rewards.");
             println!("Use 'doli rewards info' for current epoch details.");
         }
@@ -94,17 +94,17 @@ pub(crate) async fn cmd_rewards(
             epoch: _,
             recipient: _,
         } => {
-            println!("Rewards are distributed automatically via coinbase (1 DOLI per block).");
+            println!("Rewards are paid automatically once per epoch from the reward pool.");
             println!("No claiming needed. Use 'doli balance' to see your rewards.");
         }
 
         RewardsCommands::ClaimAll { recipient: _ } => {
-            println!("Rewards are distributed automatically via coinbase (1 DOLI per block).");
+            println!("Rewards are paid automatically once per epoch from the reward pool.");
             println!("No claiming needed. Use 'doli balance' to see your rewards.");
         }
 
         RewardsCommands::History { limit: _ } => {
-            println!("Rewards are distributed automatically via coinbase (1 DOLI per block).");
+            println!("Rewards are paid automatically once per epoch from the reward pool.");
             println!("No claim history — use 'doli history' to see received rewards.");
         }
 
