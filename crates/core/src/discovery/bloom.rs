@@ -149,10 +149,10 @@ impl ProducerBloomFilter {
     /// * `n` - Number of elements that were inserted
     /// * `m` - Original size in bits (needed because bytes may have padding)
     ///
-    /// Returns `None` unless `0 < m <= 8 * bytes.len()` and `1 <= k <= MAX_HASH_COUNT`.
+    /// Returns `None` unless `0 < m`, `bytes.len() == ceil(m / 8)` and `1 <= k <= MAX_HASH_COUNT`.
     #[must_use]
     pub fn from_bytes(bytes: &[u8], k: usize, n: usize, m: usize) -> Option<Self> {
-        if m == 0 || m > bytes.len().saturating_mul(8) || !(1..=MAX_HASH_COUNT).contains(&k) {
+        if m == 0 || bytes.len() != m.div_ceil(8) || !(1..=MAX_HASH_COUNT).contains(&k) {
             return None;
         }
         let bits = BitVec::<u8, Lsb0>::from_slice(bytes);

@@ -31,11 +31,11 @@ use updater::VoteMessage;
 use super::inc_i_237_m3_node_common as c;
 use super::inc_i_273_m1_vote_input as v;
 
-fn stamped(peer: PeerId) -> GossipHandle {
+pub fn stamped(peer: PeerId) -> GossipHandle {
     GossipHandle::new(GossipTopic::Votes, vec![0x73u8; 20].into(), peer)
 }
 
-fn malformed(node: &Node, peer: &PeerId) -> usize {
+pub fn malformed(node: &Node, peer: &PeerId) -> usize {
     node.vote_ingress_scorer.get_score(peer).map_or(0, |s| {
         s.infractions
             .iter()
@@ -44,14 +44,14 @@ fn malformed(node: &Node, peer: &PeerId) -> usize {
     })
 }
 
-async fn node() -> (Node, KeyPair, Receiver<VoteMessage>, tempfile::TempDir) {
+pub async fn node() -> (Node, KeyPair, Receiver<VoteMessage>, tempfile::TempDir) {
     let (mut node, member, t) = c::member_node().await;
     let (tx, rx) = tokio::sync::mpsc::channel(1_000);
     node.set_vote_tx(tx);
     (node, member, rx, t)
 }
 
-async fn event(node: &mut Node, bytes: Vec<u8>, handle: GossipHandle) {
+pub async fn event(node: &mut Node, bytes: Vec<u8>, handle: GossipHandle) {
     let ev = NetworkEvent::NewVote(bytes, handle);
     let r = tokio::time::timeout(Duration::from_secs(30), node.handle_network_event(ev)).await;
     assert!(r.is_ok(), "vote handling hung");

@@ -1868,7 +1868,7 @@ Note: struct PresenceHeartbeat (not Heartbeat) in the tpop module; this is diffe
 - fn ProducerBloomFilter::insert — insert a public key
 - fn ProducerBloomFilter::probably_contains — test membership (~1% false positive)
 - fn ProducerBloomFilter::to_bytes — serialize bit array for network transfer
-- fn ProducerBloomFilter::from_bytes — reconstruct filter from serialized bytes plus metadata
+- fn ProducerBloomFilter::from_bytes — reconstruct filter from serialized bytes plus metadata; returns None unless 0 < m, len == ceil(m/8), 1 <= k <= 16
 - fn ProducerBloomFilter::hash_count / element_count / size_bits / size_bytes
 - fn ProducerBloomFilter::false_positive_rate — theoretical FP rate
 

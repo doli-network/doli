@@ -87,8 +87,8 @@ impl Node {
     /// Hand a gossip vote to the updater and return its relay verdict: Accept
     /// iff it decodes, its signature verifies against `producer_id` and the
     /// voter is an active producer (the set the updater tally counts, X6).
-    /// A vote whose voter id or signature field is malformed is Ignored and
-    /// recorded against `source` on the record-only `vote_ingress_scorer`.
+    /// A vote whose version, voter id or signature field is malformed is Ignored
+    /// and recorded against `source` on the bounded record-only `vote_ingress_scorer`.
     pub async fn on_new_vote(&mut self, vote_data: Vec<u8>, source: Option<PeerId>) -> Verdict {
         debug!("Received vote message ({} bytes)", vote_data.len());
         let vote_msg = match serde_json::from_slice::<node_updater::VoteMessage>(&vote_data) {
@@ -140,8 +140,8 @@ impl Node {
         let window = super::vote_ingress::MALFORMED_VOTE_WINDOW;
         if let Some(peer) = source.filter(|p| self.vote_ingress_throttle.should_report(*p, window))
         {
-            self.vote_ingress_scorer.record_malformed(&peer);
-            warn!("Malformed gossip vote dropped from peer {}", peer);
+            super::vote_ingress::record_malformed_bounded(&mut self.vote_ingress_scorer, &peer);
+            warn!("Malformed gossip vote dropped (relayed by peer {})", peer);
         }
     }
 

@@ -28,7 +28,7 @@ fn varint(mut v: u64, out: &mut Vec<u8>) {
 }
 
 /// ProducerSetDigest wire bytes; zero / empty fields are omitted like prost does.
-fn digest_bytes(filter: &[u8], k: u32, count: u32, size_bits: u32) -> Vec<u8> {
+pub fn digest_bytes(filter: &[u8], k: u32, count: u32, size_bits: u32) -> Vec<u8> {
     let mut out = Vec::new();
     if !filter.is_empty() {
         out.push(0x0a);
@@ -44,13 +44,13 @@ fn digest_bytes(filter: &[u8], k: u32, count: u32, size_bits: u32) -> Vec<u8> {
     out
 }
 
-fn keypair(i: u32) -> KeyPair {
+pub fn keypair(i: u32) -> KeyPair {
     let mut seed = [0x5Cu8; 32];
     seed[..4].copy_from_slice(&i.to_le_bytes());
     KeyPair::from_seed(seed)
 }
 
-fn gset_of(ids: impl IntoIterator<Item = u32>) -> ProducerGSet {
+pub fn gset_of(ids: impl IntoIterator<Item = u32>) -> ProducerGSet {
     let mut g = ProducerGSet::new(1, Hash::ZERO);
     for i in ids {
         g.merge_one(ProducerAnnouncement::new(&keypair(i), 1, 1, Hash::ZERO))
