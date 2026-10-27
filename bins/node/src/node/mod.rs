@@ -79,6 +79,7 @@ mod tx_announcements;
 mod utxo_chunk_sink;
 pub use utxo_chunk_sink::StateDbChunkSink;
 mod validation_checks;
+mod vote_ingress;
 pub mod wedge_alarm;
 mod wedge_escape;
 pub mod wedge_outcome;
@@ -270,6 +271,9 @@ pub struct Node {
     /// Per-peer record of attestations relayed with an unverifiable BLS half.
     /// Release N records only — no peer is acted on from this score.
     pub bls_ingress_scorer: PeerScorer,
+    /// Per-peer record of malformed gossip votes; record-only, never acted on.
+    pub vote_ingress_scorer: PeerScorer,
+    vote_ingress_throttle: vote_ingress::MalformedVoteThrottle,
     // NOTE: epoch_attestation_accum, epoch_blocks_produced_accum, and
     // epoch_attested_set are now inside epoch_state: EpochState.
     /// INC-I-014: Fork tips we've already rejected (prevents re-requesting them).

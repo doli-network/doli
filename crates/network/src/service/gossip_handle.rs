@@ -38,6 +38,11 @@ impl GossipHandle {
     pub(super) fn origin(&self) -> Option<&(GossipTopic, MessageId, PeerId)> {
         self.origin.as_ref()
     }
+
+    /// Propagation source of a stamped handle; `None` when unstamped.
+    pub fn source(&self) -> Option<PeerId> {
+        self.origin.as_ref().map(|(_, _, peer)| *peer)
+    }
 }
 
 impl NetworkEvent {
