@@ -168,8 +168,12 @@ impl Node {
             warn!("[FORCE_REORG] refusing target={}: {}", target, e);
             return ForceReorgOutcome::Ineligible;
         }
-        for block in &branch_blocks {
-            if let Err(e) = self.check_producer_eligibility(block).await {
+        for (offset, block) in branch_blocks.iter().enumerate() {
+            let height = ancestor_height + 1 + offset as u64;
+            if let Err(e) = self
+                .check_producer_eligibility_at(block, Some(height))
+                .await
+            {
                 warn!(
                     "[FORCE_REORG] refusing target={}: branch block {} at slot {} is ineligible: {}",
                     target,

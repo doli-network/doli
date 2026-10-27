@@ -152,6 +152,12 @@ path = "tests/inc_i_236_m2_reorg_doors.rs"
 name = "inc_i_236_m2_reorg_doors_b"
 path = "tests/inc_i_236_m2_reorg_doors_b.rs"
 
+# INC-I-281 M2.1 recovery doors across an epoch boundary — own binary: the
+# outcome probe (.claude/scripts/inc-i-281-m2-probe.sh doors) runs it by name.
+[[test]]
+name = "inc_i_281_m2_door_epoch_list"
+path = "tests/inc_i_281_m2_door_epoch_list.rs"
+
 # INC-I-236 M2 node intake (gossip pre-filter, snap anchor) and apply-entry locks.
 [[test]]
 name = "inc_i_236_m2_intake_node"

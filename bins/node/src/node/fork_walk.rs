@@ -123,8 +123,14 @@ impl Node {
         let tip_before = self.chain_state.read().await.best_hash;
         let mut result = Ok(());
         let mut eligible = true;
-        for block in &recovery.blocks {
-            if let Err(e) = self.check_producer_eligibility(block).await {
+        let fork_base = self
+            .block_store
+            .get_height_by_hash(&recovery.connection_point)
+            .ok()
+            .flatten();
+        for (offset, block) in recovery.blocks.iter().enumerate() {
+            let height = fork_base.map(|h| h.saturating_add(offset as u64 + 1));
+            if let Err(e) = self.check_producer_eligibility_at(block, height).await {
                 warn!(
                     "[FORK] Walked block {:.16} at slot {} is ineligible ({}) — branch not reorged onto",
                     block.hash(),

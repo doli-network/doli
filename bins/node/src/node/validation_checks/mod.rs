@@ -1,21 +1,33 @@
 use super::*;
 use crate::node::attestation::{commit, width};
 
+mod door_epoch;
 mod gossip_txs;
 mod slash_facts;
 mod slash_withdrawal;
 mod withdrawal_economics;
 
 impl Node {
-    /// Check producer eligibility for a received gossip block.
+    /// Recovery-door eligibility pre-filter (membership + slot schedule) for a
+    /// block whose height is its stored parent's height + 1.
     ///
-    /// LIGHTWEIGHT CHECK: only verifies the producer is in the known set and
-    /// the time window is valid for the block's slot. Does NOT validate against
-    /// local chain state (which may be on a micro-fork).
-    ///
-    /// Full validation happens in apply_block() where the block is checked
-    /// against the actual chain state it builds on.
+    /// Reads node-local state: the producer set, GSet, liveness and known
+    /// producers, and the epoch list in force at the block's height
+    /// (`door_epoch.rs`, INC-I-281). Full validation happens in apply_block().
     pub async fn check_producer_eligibility(&self, block: &Block) -> Result<()> {
+        let parent = self.block_store.get_height_by_hash(&block.header.prev_hash);
+        let block_height = parent.ok().flatten().map(|h| h.saturating_add(1));
+        self.check_producer_eligibility_at(block, block_height)
+            .await
+    }
+
+    /// As [`Self::check_producer_eligibility`] for a block at `block_height`
+    /// (`None` = unknown: the node's current epoch list).
+    pub(crate) async fn check_producer_eligibility_at(
+        &self,
+        block: &Block,
+        block_height: Option<u64>,
+    ) -> Result<()> {
         // Use the BLOCK's slot for eligibility, not our local chain state.
         // Our local tip may be on a different micro-fork, causing us to
         // reject valid blocks from the canonical chain.
@@ -153,11 +165,7 @@ impl Node {
                 .params()
                 .inc_i_182_producer_auth_activation_height,
         )
-        .with_epoch_producer_list(if self.epoch_state.active_list.is_empty() {
-            self.epoch_state.producer_list.clone()
-        } else {
-            self.epoch_state.active_list.clone()
-        })
+        .with_epoch_producer_list(self.door_epoch_list(block_height).await)
         .with_inc_i_026_scheduler_activation_height(
             self.config
                 .network
