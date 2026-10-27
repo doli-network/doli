@@ -7,7 +7,7 @@
 use crypto::{Hash, PublicKey};
 use doli_core::{
     decode_digest, decode_producer_set, is_legacy_bincode_format, Attestation, Block,
-    ProducerAnnouncement, ProducerBloomFilter, Transaction,
+    ProducerAnnouncement, ProducerBloomFilter, ProtoError, Transaction,
 };
 use libp2p::gossipsub::MessageAcceptance;
 
@@ -174,14 +174,16 @@ fn deferred<T>(decoded: Option<T>, payload: Payload) -> (RelayDecision, Payload)
 }
 
 /// All-stale sets are Ignored first (INC-I-137); then today's decode order:
-/// bloom digest, legacy bincode, protobuf set (INC-I-002).
+/// bloom digest, legacy bincode, protobuf set (INC-I-002). A digest whose
+/// parameters do not fit its filter is Ignored, never decoded as a set.
 fn producers(data: &[u8], now_unix: u64) -> (RelayDecision, Payload) {
     let payload = match (
         classify_producer_gossip(data, now_unix),
         decode_digest(data),
     ) {
         (MessageAcceptance::Ignore, _) => Payload::None,
-        (_, Ok(bloom)) if bloom.size_bits() > 0 => Payload::Digest(bloom),
+        (_, Ok(bloom)) => Payload::Digest(bloom),
+        (_, Err(ProtoError::InvalidDigest { .. })) => Payload::None,
         _ if is_legacy_bincode_format(data) => bincode::deserialize::<Vec<PublicKey>>(data)
             .map_or(Payload::None, Payload::LegacyProducers),
         _ => decode_producer_set(data).map_or(Payload::None, Payload::Announcements),

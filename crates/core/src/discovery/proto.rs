@@ -32,6 +32,14 @@ pub enum ProtoError {
     /// Missing required field in protobuf message.
     #[error("missing required field: {0}")]
     MissingField(&'static str),
+
+    /// Bloom digest parameters do not fit its filter.
+    #[error("invalid digest: size_bits {size_bits}, hash_count {hash_count}, filter {filter_bytes} bytes")]
+    InvalidDigest {
+        size_bits: u32,
+        hash_count: u32,
+        filter_bytes: usize,
+    },
 }
 
 impl From<prost::DecodeError> for ProtoError {
@@ -110,14 +118,24 @@ impl From<&ProducerBloomFilter> for producer::ProducerSetDigest {
     }
 }
 
-impl From<producer::ProducerSetDigest> for ProducerBloomFilter {
-    fn from(proto: producer::ProducerSetDigest) -> Self {
+impl TryFrom<producer::ProducerSetDigest> for ProducerBloomFilter {
+    type Error = ProtoError;
+
+    fn try_from(proto: producer::ProducerSetDigest) -> Result<Self, Self::Error> {
+        if proto.size_bits == 0 {
+            return Err(ProtoError::MissingField("size_bits"));
+        }
         ProducerBloomFilter::from_bytes(
             &proto.bloom_filter,
             proto.bloom_k as usize,
             proto.count as usize,
             proto.size_bits as usize,
         )
+        .ok_or(ProtoError::InvalidDigest {
+            size_bits: proto.size_bits,
+            hash_count: proto.bloom_k,
+            filter_bytes: proto.bloom_filter.len(),
+        })
     }
 }
 
@@ -178,7 +196,7 @@ pub fn encode_digest(bloom: &ProducerBloomFilter) -> Vec<u8> {
 /// Decode a bloom filter digest from protobuf bytes.
 pub fn decode_digest(bytes: &[u8]) -> Result<ProducerBloomFilter, ProtoError> {
     let proto = producer::ProducerSetDigest::decode(bytes)?;
-    Ok(proto.into())
+    proto.try_into()
 }
 
 /// Check if bytes look like a legacy bincode format vs new protobuf format.

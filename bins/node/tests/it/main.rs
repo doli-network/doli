@@ -241,6 +241,7 @@ mod inc_i_262_m2_replay_epoch_reward;
 mod inc_i_262_m2_replay_tools;
 mod inc_i_273_m1_vote_input;
 mod inc_i_273_m1_vote_scorer;
+mod inc_i_273_m2_digest_input;
 mod m1_snap_install_identity;
 mod m3_common;
 mod m3_staging_install;

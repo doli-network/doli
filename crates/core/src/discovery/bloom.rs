@@ -8,6 +8,9 @@ use bitvec::prelude::*;
 use crypto::hash::hash;
 use crypto::PublicKey;
 
+/// Largest hash-function count a filter may use.
+pub const MAX_HASH_COUNT: usize = 16;
+
 /// A bloom filter for efficient producer set synchronization.
 ///
 /// This probabilistic data structure provides:
@@ -72,7 +75,7 @@ impl ProducerBloomFilter {
 
         // Ensure minimum sizes
         let m = m.max(64);
-        let k = k.clamp(1, 16); // Cap at 16 hash functions
+        let k = k.clamp(1, MAX_HASH_COUNT);
 
         Self {
             bits: bitvec![u8, Lsb0; 0; m],
@@ -145,10 +148,15 @@ impl ProducerBloomFilter {
     /// * `k` - Number of hash functions
     /// * `n` - Number of elements that were inserted
     /// * `m` - Original size in bits (needed because bytes may have padding)
+    ///
+    /// Returns `None` unless `0 < m <= 8 * bytes.len()` and `1 <= k <= MAX_HASH_COUNT`.
     #[must_use]
-    pub fn from_bytes(bytes: &[u8], k: usize, n: usize, m: usize) -> Self {
+    pub fn from_bytes(bytes: &[u8], k: usize, n: usize, m: usize) -> Option<Self> {
+        if m == 0 || m > bytes.len().saturating_mul(8) || !(1..=MAX_HASH_COUNT).contains(&k) {
+            return None;
+        }
         let bits = BitVec::<u8, Lsb0>::from_slice(bytes);
-        Self { bits, k, n, m }
+        Some(Self { bits, k, n, m })
     }
 
     /// Get the number of hash functions used.
@@ -275,7 +283,8 @@ mod tests {
         }
 
         let bytes = bloom.to_bytes();
-        let restored = ProducerBloomFilter::from_bytes(&bytes, bloom.k, bloom.n, bloom.m);
+        let restored = ProducerBloomFilter::from_bytes(&bytes, bloom.k, bloom.n, bloom.m)
+            .expect("honest parameters");
 
         for kp in &keypairs {
             assert!(restored.probably_contains(kp.public_key()));
