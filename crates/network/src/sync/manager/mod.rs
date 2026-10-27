@@ -14,6 +14,7 @@ mod fork_walk;
 mod peers;
 mod production_gate;
 pub mod recovery;
+mod rollback_memory;
 mod snap_sync;
 mod state_session;
 mod sync_engine;
@@ -236,6 +237,9 @@ pub struct SyncManager {
     /// INC-I-204 M4.1 / REQ-FORK-012: the armed `forceReorgTo` directive.
     /// Memory-only by construction — never serialized, never persisted.
     force_reorg: Option<force_reorg::ForceReorgDirective>,
+
+    /// INC-I-281: hashes removed by recent fork-remedy rollbacks.
+    rollback_memory: rollback_memory::RollbackMemory,
 }
 
 impl SyncManager {
@@ -295,6 +299,7 @@ impl SyncManager {
             needs_mass_status_refresh: false,
             recovery: recovery::RecoveryCoordinator::new(),
             force_reorg: None,
+            rollback_memory: rollback_memory::RollbackMemory::default(),
         }
     }
 

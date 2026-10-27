@@ -292,10 +292,11 @@ impl Node {
                         let _ = network.request_sync(source_peer, request).await;
                     }
                 }
-                self.sync_manager
-                    .write()
-                    .await
-                    .note_orphan_gossip_block(need_height, block_slot);
+                self.sync_manager.write().await.note_orphan_gossip_child(
+                    &block.header.prev_hash,
+                    need_height,
+                    block_slot,
+                );
                 // Cache the orphan so it's available when the missing parent arrives.
                 self.cache_block_with_eviction(block_hash, block).await;
                 return Ok(());
@@ -409,6 +410,9 @@ impl Node {
             );
             return Ok(());
         }
+        if self.hold_removed_block(&block).await {
+            return Ok(());
+        }
 
         // Apply the block — absorb errors so an invalid gossip block
         // (e.g. from a forked peer) doesn't crash the process.
@@ -448,7 +452,7 @@ impl Node {
         {
             let mut sync = self.sync_manager.write().await;
             sync.clear_awaiting_canonical_block();
-            sync.note_peer_block_applied_since_rollback();
+            sync.note_peer_applies_since_rollback(std::slice::from_ref(&block_hash));
         }
 
         self.drain_cached_children(mode).await;
@@ -1074,7 +1078,7 @@ impl Node {
             self.sync_manager
                 .write()
                 .await
-                .note_peer_block_applied_since_rollback();
+                .note_peer_applies_since_rollback(&reorg_result.new_blocks);
         }
 
         // Invalidate mempool - transactions may now be invalid

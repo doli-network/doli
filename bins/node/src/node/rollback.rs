@@ -350,7 +350,8 @@ impl Node {
         // `local_height` remains a permanent fossil — get_block_by_height keeps
         // serving it. The deleter is guarded on the stored hash, so a newer
         // branch that already overwrote the entry is not clobbered.
-        if let Some(orphan) = self.block_store.get_hash_by_height(local_height)? {
+        let removed = self.block_store.get_hash_by_height(local_height)?;
+        if let Some(orphan) = removed {
             self.block_store
                 .remove_canonical_entry(local_height, orphan)?;
         }
@@ -365,6 +366,10 @@ impl Node {
             // "applied since rollback → behind, not forked" case and skip
             // further rollback signals.
             sync.note_rollback_completed(target_height);
+            // INC-I-281: remember what a fork-remedy rollback removed.
+            if let (Some(h), RollbackAuthority::CoordinatorApproved { .. }) = (removed, authority) {
+                sync.note_fork_remedy_removed(h);
+            }
             // INC-I-081 Bug 4 / INV-SYNC-004: clear stale finality marker if
             // the post-rollback tip has dropped below the cached finality height.
             // INC-I-204 M4.2 / INV-FINALITY-001 (trap T12): never on the production

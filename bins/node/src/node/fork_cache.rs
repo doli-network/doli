@@ -73,6 +73,10 @@ impl Node {
                 let Some(cached) = self.fork_block_cache.write().await.remove(&h) else {
                     continue;
                 };
+                if self.hold_removed_block(&cached).await {
+                    self.fork_block_cache.write().await.insert(h, cached);
+                    continue;
+                }
                 attempts += 1;
                 info!(
                     "[ORPHAN_APPLY] Applying cached orphan {:.8} (slot {}) from fork cache [{}/{}]",
@@ -85,6 +89,44 @@ impl Node {
             }
             break;
         }
+    }
+
+    /// INC-I-281: true if a non-fork-choice intake must not apply `block` now.
+    /// A hash removed by a fork-remedy rollback is held for one consensus slot
+    /// after the rollback, and after that while a different child of the same
+    /// parent sits in the fork cache. Fork choice does not call this.
+    pub(super) async fn hold_removed_block(&self, block: &Block) -> bool {
+        let hash = block.hash();
+        let age = self
+            .sync_manager
+            .read()
+            .await
+            .removed_by_rollback_age(&hash);
+        let Some(age) = age else {
+            return false;
+        };
+        let held = age < Duration::from_secs(self.params.slot_duration) || {
+            let parent = block.header.prev_hash;
+            let cache = self.fork_block_cache.read().await;
+            cache
+                .iter()
+                .any(|(h, b)| *h != hash && b.header.prev_hash == parent)
+        };
+        if held
+            && self
+                .sync_manager
+                .write()
+                .await
+                .note_removed_block_held(&hash)
+        {
+            info!(
+                "[REAPPLY] Holding {:.8} (slot {}): removed by a fork-remedy rollback {}ms ago; only fork choice may re-adopt it now (INC-I-281)",
+                hash,
+                block.header.slot,
+                age.as_millis()
+            );
+        }
+        held
     }
 }
 
