@@ -87,7 +87,9 @@ impl Node {
     /// Hand a gossip vote to the updater and return its relay verdict: Accept
     /// iff it decodes, its signature verifies against `producer_id` and the
     /// voter is an active producer (the set the updater tally counts, X6).
-    pub async fn on_new_vote(&self, vote_data: Vec<u8>) -> Verdict {
+    /// A vote whose version, voter id or signature field is malformed is Ignored
+    /// and recorded against `source` on the bounded record-only `vote_ingress_scorer`.
+    pub async fn on_new_vote(&mut self, vote_data: Vec<u8>, source: Option<PeerId>) -> Verdict {
         debug!("Received vote message ({} bytes)", vote_data.len());
         let vote_msg = match serde_json::from_slice::<node_updater::VoteMessage>(&vote_data) {
             Ok(v) => v,
@@ -96,29 +98,32 @@ impl Node {
                 return Verdict::Ignore;
             }
         };
-        let voter = &vote_msg.producer_id[..16.min(vote_msg.producer_id.len())];
+        let Some(voter) = super::vote_ingress::parse_voter(&vote_msg) else {
+            self.report_malformed_vote(source);
+            return Verdict::Ignore;
+        };
         if !vote_msg.verify(&vote_msg.producer_id) {
-            debug!("Rejected gossip vote with invalid signature from {}", voter);
+            debug!(
+                "Rejected gossip vote with invalid signature from {:.16}",
+                voter.to_hex()
+            );
             return Verdict::Ignore;
         }
-        let active = match PublicKey::from_hex(&vote_msg.producer_id) {
-            Ok(pk) => self
-                .producer_set
-                .read()
-                .await
-                .get_by_pubkey(&pk)
-                .is_some_and(|p| p.is_active()),
-            Err(_) => false,
-        };
+        let active = self
+            .producer_set
+            .read()
+            .await
+            .get_by_pubkey(&voter)
+            .is_some_and(|p| p.is_active());
         info!(
-            "Vote received via gossip: {} vote for v{} from {}",
+            "Vote received via gossip: {} vote for v{} from {:.16}",
             if vote_msg.vote == node_updater::Vote::Veto {
                 "VETO"
             } else {
                 "APPROVE"
             },
             vote_msg.version,
-            voter
+            voter.to_hex()
         );
         if let Some(ref vote_tx) = self.vote_tx {
             let _ = vote_tx.try_send(vote_msg);
@@ -127,6 +132,16 @@ impl Node {
             Verdict::Accept
         } else {
             Verdict::Ignore
+        }
+    }
+
+    /// Record and log a malformed vote from `source`, at most once per peer per window.
+    fn report_malformed_vote(&mut self, source: Option<PeerId>) {
+        let window = super::vote_ingress::MALFORMED_VOTE_WINDOW;
+        if let Some(peer) = source.filter(|p| self.vote_ingress_throttle.should_report(*p, window))
+        {
+            super::vote_ingress::record_malformed_bounded(&mut self.vote_ingress_scorer, &peer);
+            warn!("Malformed gossip vote dropped (relayed by peer {})", peer);
         }
     }
 

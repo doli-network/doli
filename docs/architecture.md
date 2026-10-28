@@ -309,6 +309,7 @@ peer ─► gossipsub (dup cache 300 s, id = BLAKE3(raw)[..20]) ─► mcache (h
             (tx bucket charged per tx: 500/s burst 2,000 per peer, 1,000/s burst 4,000 global;
              own RPC txs: origin_tx_bucket 500/s burst 2,000, empty → Busy)
           tx announce, digest, legacy producer list: LocalOnly → report Ignore, process
+            (digest out of encoder bounds: filter ≠ ceil(size_bits/8) bytes or hash count ∉ 1..=16 → Ignore, not processed)
           everything else: Ignore (undecodable block bytes: Reject)
      ─► EventSink (service/event_sink.rs; never awaits)
           consensus lane: blocks, attestations, control events     (64 MiB + count bound)

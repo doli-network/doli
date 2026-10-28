@@ -377,7 +377,7 @@ impl Node {
                 self.on_producer_digest(peer_id, digest).await;
             }
             NetworkEvent::NewVote(vote_data, handle) => {
-                let verdict = self.on_new_vote(vote_data).await;
+                let verdict = self.on_new_vote(vote_data, handle.source()).await;
                 self.relay_verdict(handle, verdict);
             }
             NetworkEvent::TxAnnouncement {
