@@ -129,10 +129,11 @@ impl Node {
             .get_height_by_hash(&recovery.connection_point)
             .ok()
             .flatten();
+        let mut anchor = None;
         for (offset, block) in recovery.blocks.iter().enumerate() {
             let height = fork_base.map(|h| h.saturating_add(offset as u64 + 1));
             if let Err(e) = self
-                .check_producer_eligibility_at(block, height, fork_base)
+                .check_producer_eligibility_at(block, height, fork_base, anchor)
                 .await
             {
                 warn!(
@@ -144,6 +145,10 @@ impl Node {
                 eligible = false;
                 break;
             }
+            anchor = self
+                .refused_reorg_blocks
+                .anchor_of(block, height)
+                .or(anchor);
         }
         if eligible {
             result = self.evaluate_recovered_fork(recovery).await;

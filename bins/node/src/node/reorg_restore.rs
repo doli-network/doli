@@ -48,14 +48,19 @@ impl ReorgStop {
 
 impl Node {
     /// Execute a chain reorganization. Not atomic: when the schedule check or
-    /// apply_block refuses a fork block the node is restored to its prior tip
-    /// and the branch is rejected.
+    /// apply_block refuses a fork block the node is restored to its prior tip,
+    /// with its Light-window flags, and the branch is rejected.
     pub async fn execute_reorg(
         &mut self,
         reorg_result: ReorgResult,
         triggering_block: Block,
     ) -> Result<()> {
         let tip_before = self.chain_state.read().await.best_hash;
+        let window = (
+            self.snap_sync_height,
+            self.floor_fallback_window,
+            self.floor_fallback_boundaries,
+        );
         let old_blocks = reorg_result.rollback.clone();
         let ancestor = reorg_result.common_ancestor;
         let stop = self
@@ -70,13 +75,20 @@ impl Node {
                 branch_tip,
             }) => {
                 self.refused_reorg_blocks.insert(refusal);
+                self.learn_anchor(&applied).await;
                 let plan = ReorgResult {
                     rollback: applied,
                     common_ancestor: ancestor,
                     new_blocks: old_blocks,
                     weight_delta: 0,
                 };
-                self.restore_tip(plan, tip_before).await;
+                if self.restore_tip(plan, tip_before).await {
+                    (
+                        self.snap_sync_height,
+                        self.floor_fallback_window,
+                        self.floor_fallback_boundaries,
+                    ) = window;
+                }
                 branch_tip
             }
         };
@@ -88,20 +100,25 @@ impl Node {
         Ok(())
     }
 
-    /// Rolls back the applied fork blocks and re-applies the node's own.
-    async fn restore_tip(&mut self, plan: ReorgResult, tip_before: Hash) {
+    /// Rolls back the applied fork blocks and re-applies the node's own; true
+    /// when the node is back on `tip_before`.
+    async fn restore_tip(&mut self, plan: ReorgResult, tip_before: Hash) -> bool {
         let result = Box::pin(self.run_reorg(plan, None, ReorgMode::Restore)).await;
         let tip = self.chain_state.read().await.best_hash;
         match result {
             Ok(_) if tip == tip_before => {
                 info!("[REORG_RESTORE] restored tip {:.16}", tip);
+                true
             }
-            other => error!(
-                "[REORG_RESTORE] failed: tip {:.16}, not the prior tip {:.16} ({:?}) — header-first sync recovers",
-                tip,
-                tip_before,
-                other.err()
-            ),
+            other => {
+                error!(
+                    "[REORG_RESTORE] failed: tip {:.16}, not the prior tip {:.16} ({:?}) — header-first sync recovers",
+                    tip,
+                    tip_before,
+                    other.err()
+                );
+                false
+            }
         }
     }
 }

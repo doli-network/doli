@@ -4,8 +4,17 @@
 //! genesis-phase height the bootstrap arm accepts any producer, as the Light
 //! apply did. A door cannot derive the list after a boundary block that only
 //! the walked branch holds; here that boundary block is already applied.
+//! Doors that judge a block under a learned anchor call the same
+//! [`Node::schedule_verdict`] with the anchor's inputs.
 
 use super::*;
+
+/// The Full-apply list and producer weights the schedule check reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ScheduleInputs {
+    pub(super) list: Vec<PublicKey>,
+    pub(super) weights: Vec<(PublicKey, u64)>,
+}
 
 impl Node {
     /// False (and a warn) when a Full apply on the current tip would refuse
@@ -21,7 +30,8 @@ impl Node {
             return true;
         }
         let height = self.chain_state.read().await.best_height + 1;
-        let Err(e) = self.schedule_verdict(block, height).await else {
+        let inputs = self.schedule_inputs(height).await;
+        let Err(e) = self.schedule_verdict(block, &inputs, height) else {
             return true;
         };
         warn!(
@@ -36,14 +46,8 @@ impl Node {
         false
     }
 
-    /// `validate_producer_eligibility` at `height` with the Full-apply list and
-    /// producer weights; no bootstrap list, so the genesis-phase arm accepts any
-    /// producer, as the Light apply did.
-    async fn schedule_verdict(
-        &self,
-        block: &Block,
-        height: u64,
-    ) -> Result<(), validation::ValidationError> {
+    /// The schedule inputs at `height` on the node's current state.
+    pub(super) async fn schedule_inputs(&self, height: u64) -> ScheduleInputs {
         let active: Vec<PublicKey> = {
             let producers = self.producer_set.read().await;
             producers
@@ -52,12 +56,23 @@ impl Node {
                 .map(|p| p.public_key)
                 .collect()
         };
-        let weighted = self.bond_weights_for_scheduling(active).await;
+        let weights = self.bond_weights_for_scheduling(active).await;
         let list = if self.epoch_state.active_list.is_empty() {
             self.epoch_state.producer_list.clone()
         } else {
             self.epoch_state.active_list.clone()
         };
+        ScheduleInputs { list, weights }
+    }
+
+    /// `validate_producer_eligibility` at `height` with `inputs`; no bootstrap
+    /// list, so the genesis-phase arm accepts any producer, as the Light apply did.
+    pub(super) fn schedule_verdict(
+        &self,
+        block: &Block,
+        inputs: &ScheduleInputs,
+        height: u64,
+    ) -> Result<(), validation::ValidationError> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -65,8 +80,8 @@ impl Node {
         let net = self.config.network;
         let mut ctx =
             validation::ValidationContext::new(ConsensusParams::for_network(net), net, now, height)
-                .with_producers_weighted(weighted)
-                .with_epoch_producer_list(list)
+                .with_producers_weighted(inputs.weights.clone())
+                .with_epoch_producer_list(inputs.list.clone())
                 .with_inc_i_026_scheduler_activation_height(
                     net.params().inc_i_026_scheduler_activation_height,
                 );

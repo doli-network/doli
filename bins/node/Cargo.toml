@@ -200,10 +200,19 @@ path = "tests/inc_i_281_m24_refused_reorg.rs"
 name = "inc_i_281_m24_light_window"
 path = "tests/inc_i_281_m24_light_window.rs"
 
-# INC-I-281 M2.5 apply-failure restore (P1-A) — own binary: inc-i-281-m2-probe.sh applyfail runs it by name.
+# INC-I-281 M2.5 apply-failure restore (P1-A), refusal variants (P1-B) and restore
+# window flags (P2) — own binaries: inc-i-281-m2-probe.sh applyfail|variants runs them by name.
 [[test]]
 name = "inc_i_281_m25_apply_failure"
 path = "tests/inc_i_281_m25_apply_failure.rs"
+
+[[test]]
+name = "inc_i_281_m25_variants"
+path = "tests/inc_i_281_m25_variants.rs"
+
+[[test]]
+name = "inc_i_281_m25_restore_flags"
+path = "tests/inc_i_281_m25_restore_flags.rs"
 
 # INC-I-236 M2 node intake (gossip pre-filter, snap anchor) and apply-entry locks.
 [[test]]

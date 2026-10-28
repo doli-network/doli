@@ -18,20 +18,24 @@ impl Node {
         let parent = self.block_store.get_height_by_hash(&block.header.prev_hash);
         let parent = parent.ok().flatten();
         let block_height = parent.map(|h| h.saturating_add(1));
-        self.check_producer_eligibility_at(block, block_height, parent)
+        self.check_producer_eligibility_at(block, block_height, parent, None)
             .await
     }
 
     /// As [`Self::check_producer_eligibility`] for a block at `block_height`
     /// (`None` = unknown: the node's current epoch list) on a branch that
     /// leaves the node's chain after `fork_point`. The round-robin arm runs
-    /// only when that block's list is derivable (`door_epoch.rs`).
+    /// only when that block's list is derivable or `anchor`, the learned
+    /// anchor on its branch, covers it (`door_epoch.rs`). A block a reorg
+    /// refused before is refused.
     pub(crate) async fn check_producer_eligibility_at(
         &self,
         block: &Block,
         block_height: Option<u64>,
         fork_point: Option<u64>,
+        anchor: Option<&crate::node::reorg_refusals::LearnedAnchor>,
     ) -> Result<()> {
+        self.door_refusal(block)?;
         // Use the BLOCK's slot for eligibility, not our local chain state.
         // Our local tip may be on a different micro-fork, causing us to
         // reject valid blocks from the canonical chain.
@@ -62,11 +66,7 @@ impl Node {
         }
 
         if !self.door_judges_schedule(block_height, fork_point) {
-            debug!(
-                "[DOOR_EPOCH] h={:?} follows a boundary only its branch holds — round-robin left to execute_reorg (INC-I-281)",
-                block_height
-            );
-            return Ok(());
+            return self.door_anchor_verdict(block, block_height, anchor);
         }
 
         // Bond weights from epoch-locked snapshot (single source of truth).

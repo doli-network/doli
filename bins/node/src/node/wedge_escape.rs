@@ -85,6 +85,14 @@ impl Node {
     /// FIX B) may seed a descendant reroute — see the module header.
     pub(crate) async fn retain_sibling_and_try_escape(&mut self, block: Block) -> Result<()> {
         let fork_tip_hash = block.hash();
+        let local_tip = self.chain_state.read().await.best_hash;
+        if (self.sync_manager.read().await).is_fork_branch_rejected(fork_tip_hash, local_tip) {
+            debug!(
+                "[REORG] Gossip sibling {:.16} is a branch tip already rejected on tip {:.16} — skipped (INC-I-281)",
+                fork_tip_hash, local_tip
+            );
+            return Ok(());
+        }
 
         // FIX A (AUDIT-P0-001/P1-001 net-new slice): eligibility-gate the block
         // against the epoch-frozen schedule BEFORE it can enter the reorg graph.
@@ -107,8 +115,9 @@ impl Node {
             Some((h, f)) => (h, Some(f)),
             None => (sibling_height, None),
         };
+        let anchor = self.door_cached_anchor(&block, door_height).await;
         if let Err(e) = self
-            .check_producer_eligibility_at(&block, Some(door_height), fork_point)
+            .check_producer_eligibility_at(&block, Some(door_height), fork_point, anchor)
             .await
         {
             if should_warn_drop(fork_tip_hash, Instant::now()) {

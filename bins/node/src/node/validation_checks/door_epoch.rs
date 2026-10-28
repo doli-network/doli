@@ -6,13 +6,16 @@
 //! node's own branch: the pre-rotation snapshot in the undo record of the
 //! node's boundary block. A block after a boundary block that only its branch
 //! holds has no locally derivable list: the door skips its round-robin arm and
-//! execute_reorg checks it at its parent (`reorg_schedule.rs`).
+//! execute_reorg checks it at its parent (`reorg_schedule.rs`), unless that
+//! boundary block is a learned anchor (`reorg_refusals.rs`): then the door
+//! judges it with the anchor's inputs, as execute_reorg would.
 //! In the Light window, where that check is skipped, the door judges it with the current list.
 
 use crypto::{Hash, PublicKey};
 use doli_core::{Block, EpochState};
 use tracing::{debug, warn};
 
+use crate::node::reorg_refusals::LearnedAnchor;
 use crate::node::Node;
 
 /// True when the list for a block at `height` on a branch that leaves the
@@ -40,6 +43,26 @@ fn position_via(
     for depth in 1..=max_depth {
         if let Some(h) = canonical_height(&prev) {
             return Some((h.saturating_add(depth), h));
+        }
+        prev = cached(&prev)?;
+    }
+    None
+}
+
+/// (hash, height) of the nearest boundary ancestor, within one epoch, of a
+/// block at `height`, through `cached` parent links; `None` when the chain
+/// leaves the cache first.
+fn boundary_ancestor(
+    block: &Block,
+    height: u64,
+    blocks_per_epoch: u64,
+    cached: impl Fn(&Hash) -> Option<Hash>,
+) -> Option<(Hash, u64)> {
+    let mut prev = block.header.prev_hash;
+    for depth in 1..=blocks_per_epoch.min(height) {
+        let h = height - depth;
+        if h.is_multiple_of(blocks_per_epoch) {
+            return Some((prev, h));
         }
         prev = cached(&prev)?;
     }
@@ -126,6 +149,56 @@ impl Node {
             (Some(h), Some(f)) => schedule_derivable(f, h, bpe),
             _ => true,
         }
+    }
+
+    /// The skip arm of a door: a block after a boundary only its branch holds
+    /// is judged with `anchor`'s inputs when it lies in the epoch after that
+    /// anchor; otherwise its round-robin is left to execute_reorg.
+    pub(super) fn door_anchor_verdict(
+        &self,
+        block: &Block,
+        height: Option<u64>,
+        anchor: Option<&LearnedAnchor>,
+    ) -> anyhow::Result<()> {
+        let bpe = self.config.network.blocks_per_reward_epoch();
+        let Some((h, a)) = height.zip(anchor).filter(|(h, a)| a.covers(*h, bpe)) else {
+            debug!(
+                "[DOOR_EPOCH] h={:?} follows a boundary only its branch holds — round-robin left to execute_reorg (INC-I-281)",
+                height
+            );
+            return Ok(());
+        };
+        if let Err(e) = self.schedule_verdict(block, &a.inputs, h) {
+            debug!(
+                "[DOOR_EPOCH] Fork block {:.16} at h={} is not scheduled under learned anchor {:.16}: {} (INC-I-281)",
+                block.hash(),
+                h,
+                a.hash,
+                e
+            );
+            anyhow::bail!("not scheduled under learned anchor {:.16}: {}", a.hash, e);
+        }
+        Ok(())
+    }
+
+    /// The learned anchor that a gossip sibling at `height` follows within one
+    /// epoch, through fork-cache bodies.
+    pub(crate) async fn door_cached_anchor(
+        &self,
+        block: &Block,
+        height: u64,
+    ) -> Option<&LearnedAnchor> {
+        if !self.refused_reorg_blocks.has_anchors() {
+            return None;
+        }
+        let bpe = self.config.network.blocks_per_reward_epoch();
+        let (hash, h) = {
+            let cache = self.fork_block_cache.read().await;
+            boundary_ancestor(block, height, bpe, |h| {
+                cache.get(h).map(|b| b.header.prev_hash)
+            })?
+        };
+        self.refused_reorg_blocks.anchor(&hash, h)
     }
 
     /// (height, fork point) of a gossip sibling: its parent is in the node's
@@ -218,6 +291,35 @@ mod tests {
         assert_eq!(position_via(&c2, parent, stored, 1), None, "depth bound");
         let orphan = blk(crypto::hash::hash(b"unknown"), 3);
         assert_eq!(position_via(&orphan, parent, stored, 4), None);
+    }
+
+    #[test]
+    fn boundary_ancestor_walks_cached_parents_within_one_epoch() {
+        // bpe = 4, F = 7 on the chain: c8 is the branch's boundary block.
+        let f = crypto::hash::hash(b"f");
+        let c8 = blk(f, 8);
+        let c9 = blk(c8.hash(), 9);
+        let c10 = blk(c9.hash(), 10);
+        let cache =
+            std::collections::HashMap::from([(c8.hash(), c8.clone()), (c9.hash(), c9.clone())]);
+        let parent = |h: &Hash| cache.get(h).map(|b| b.header.prev_hash);
+        assert_eq!(boundary_ancestor(&c9, 9, 4, parent), Some((c8.hash(), 8)));
+        assert_eq!(boundary_ancestor(&c10, 10, 4, parent), Some((c8.hash(), 8)));
+        assert_eq!(
+            boundary_ancestor(&c8, 8, 4, parent),
+            None,
+            "parent 7 is not cached"
+        );
+        assert_eq!(
+            boundary_ancestor(&c10, 10, 4, |_| None),
+            None,
+            "chain leaves the cache"
+        );
+        assert_eq!(
+            boundary_ancestor(&c9, 9, 0, parent),
+            None,
+            "degenerate epoch length"
+        );
     }
 
     #[test]

@@ -167,10 +167,11 @@ impl Node {
             warn!("[FORCE_REORG] refusing target={}: {}", target, e);
             return ForceReorgOutcome::Ineligible;
         }
+        let mut anchor = None;
         for (offset, block) in branch_blocks.iter().enumerate() {
-            let height = ancestor_height + 1 + offset as u64;
+            let height = Some(ancestor_height + 1 + offset as u64);
             if let Err(e) = self
-                .check_producer_eligibility_at(block, Some(height), Some(ancestor_height))
+                .check_producer_eligibility_at(block, height, Some(ancestor_height), anchor)
                 .await
             {
                 warn!(
@@ -182,6 +183,10 @@ impl Node {
                 );
                 return ForceReorgOutcome::Ineligible;
             }
+            anchor = self
+                .refused_reorg_blocks
+                .anchor_of(block, height)
+                .or(anchor);
         }
 
         warn!(
