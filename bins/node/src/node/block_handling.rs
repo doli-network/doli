@@ -1,3 +1,4 @@
+use super::reorg_restore::{ReorgMode, ReorgStop};
 use super::*;
 
 // =============================================================================
@@ -476,16 +477,13 @@ impl Node {
         Ok(())
     }
 
-    /// Execute a chain reorganization
-    ///
-    /// This function is atomic: either the full reorg succeeds, or the chain
-    /// remains unchanged. We build new state in temporary structures and only
-    /// swap them in on success.
-    pub async fn execute_reorg(
+    /// Reorg machinery behind `execute_reorg`; `Some` = stopped on a refused block.
+    pub(super) async fn run_reorg(
         &mut self,
         reorg_result: ReorgResult,
-        triggering_block: Block,
-    ) -> Result<()> {
+        triggering_block: Option<Block>,
+        mode: ReorgMode,
+    ) -> Result<Option<ReorgStop>> {
         let rollback_count = reorg_result.rollback.len();
         let new_block_count = reorg_result.new_blocks.len();
 
@@ -496,12 +494,13 @@ impl Node {
 
         // Collect all new blocks we need to apply
         let mut new_blocks: Vec<Block> = Vec::new();
+        let trigger = triggering_block.as_ref().map(|b| (b.hash(), b));
 
         {
             let cache = self.fork_block_cache.read().await;
             for block_hash in &reorg_result.new_blocks {
-                if *block_hash == triggering_block.hash() {
-                    new_blocks.push(triggering_block.clone());
+                if let Some((_, t)) = trigger.filter(|(h, _)| h == block_hash) {
+                    new_blocks.push(t.clone());
                 } else if let Some(cached_block) = cache.get(block_hash) {
                     new_blocks.push(cached_block.clone());
                 } else if let Ok(Some(stored_block)) = self.block_store.get_block(block_hash) {
@@ -515,7 +514,7 @@ impl Node {
                         "Cannot execute reorg: missing block {} (need to sync from peers)",
                         block_hash
                     );
-                    return Ok(());
+                    return Ok(None);
                 }
             }
         }
@@ -534,7 +533,7 @@ impl Node {
                     first.header.prev_hash,
                     reorg_result.common_ancestor
                 );
-                return Ok(());
+                return Ok(None);
             }
         }
         for i in 1..new_blocks.len() {
@@ -544,8 +543,11 @@ impl Node {
                     new_blocks[i].hash(),
                     new_blocks[i - 1].hash()
                 );
-                return Ok(());
+                return Ok(None);
             }
+        }
+        if let Some(stop) = self.remembered_refusal(&new_blocks, mode) {
+            return Ok(Some(stop));
         }
 
         // Get current state
@@ -1034,9 +1036,12 @@ impl Node {
         // state at its parent, where the branch's own boundary has rotated the list.
         info!("Applying {} new blocks from fork", new_blocks.len());
         let pre_reorg_height = current_height;
+        let hashes: Vec<Hash> = new_blocks.iter().map(Block::hash).collect();
         for (i, block) in new_blocks.into_iter().enumerate() {
-            if !self.reorg_block_scheduled(&block, i, new_block_count).await {
-                return Ok(());
+            if mode == ReorgMode::Normal
+                && !self.reorg_block_scheduled(&block, i, new_block_count).await
+            {
+                return Ok(Some(ReorgStop::unscheduled(&hashes, i)));
             }
             if let Err(e) = self.apply_block(block, ValidationMode::Light).await {
                 let post_height = self.chain_state.read().await.best_height;
@@ -1061,7 +1066,7 @@ impl Node {
                         post_height
                     );
                 }
-                return Ok(());
+                return Ok(None);
             }
         }
 
@@ -1075,7 +1080,7 @@ impl Node {
 
         // INC-I-138 D5: reorg blocks are peer-received — mark peer-confirmed
         // progress so the suppression guard can distinguish BEHIND from SELF-FORK.
-        if new_block_count > 0 {
+        if new_block_count > 0 && mode == ReorgMode::Normal {
             self.sync_manager
                 .write()
                 .await
@@ -1097,6 +1102,6 @@ impl Node {
 
         info!("Reorg complete: now at height {}", new_tip_height);
 
-        Ok(())
+        Ok(None)
     }
 }

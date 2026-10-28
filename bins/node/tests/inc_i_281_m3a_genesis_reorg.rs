@@ -350,16 +350,16 @@ async fn post_genesis_unscheduled() {
     );
     assert!(!fx.applied(&br[1]), "U' applied on a refused parent");
     result.expect("reorg: a schedule refusal is Ok");
-    let parent = fx.parent();
+    let own = fx.a.hash();
     assert_eq!(
         st,
         State {
-            best_hash: parent,
-            best_height: fork_h - 1,
-            at_h: None,
+            best_hash: own,
+            best_height: fork_h,
+            at_h: Some(own),
             at_h1: None,
-            persisted: Some(parent),
+            persisted: Some(own),
         },
-        "the reorg keeps its verified prefix (empty): tip = fork parent"
+        "a schedule refusal restores the node's own tip A at fork_h"
     );
 }

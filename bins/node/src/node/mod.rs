@@ -57,6 +57,7 @@ pub use init::{cleanup_orphan_utxo_store, recover_body_gaps};
 mod periodic;
 mod producer_merge;
 mod production;
+mod reorg_restore;
 mod reorg_schedule;
 mod replay_chainspec;
 mod rewards;
@@ -285,6 +286,8 @@ pub struct Node {
     /// forks (AUDIT-P2-001/P2-002). Bounded by WEDGE_RETAINED_CAP to cap
     /// gossip-sourced descendant chain depth well below MAX_REORG_DEPTH.
     pub wedge_retained_tips: HashSet<Hash>,
+    /// Fork blocks the in-reorg schedule check refused; a reorg onto one is refused.
+    refused_reorg_blocks: reorg_restore::RefusedReorgBlocks,
     /// ORPHAN_CHASE requests decided (sent, or due when no network is attached).
     orphan_chase_requests: u64,
     orphan_chase_guard: orphan_chase::OrphanChaseGuard,
