@@ -130,7 +130,10 @@ impl Node {
             .flatten();
         for (offset, block) in recovery.blocks.iter().enumerate() {
             let height = fork_base.map(|h| h.saturating_add(offset as u64 + 1));
-            if let Err(e) = self.check_producer_eligibility_at(block, height).await {
+            if let Err(e) = self
+                .check_producer_eligibility_at(block, height, fork_base)
+                .await
+            {
                 warn!(
                     "[FORK] Walked block {:.16} at slot {} is ineligible ({}) — branch not reorged onto",
                     block.hash(),

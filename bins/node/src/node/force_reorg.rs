@@ -159,9 +159,8 @@ impl Node {
             return ForceReorgOutcome::Uncorroborated;
         }
 
-        // `execute_reorg` applies forward blocks in `ValidationMode::Light` and
-        // skips `check_producer_eligibility` (block_handling.rs:1040). Mirror
-        // wedge_escape.rs:79 / fork_recovery.rs:210 before handing over the plan.
+        // Signature + eligibility before any rollback, as the other doors do;
+        // execute_reorg re-checks each block's schedule at its parent.
         let best_height = self.chain_state.read().await.best_height;
         let ancestor_height = best_height.saturating_sub(plan.rollback.len() as u64);
         if let Err(e) = self.verify_fork_signed(&branch_blocks, ancestor_height + 1) {
@@ -171,7 +170,7 @@ impl Node {
         for (offset, block) in branch_blocks.iter().enumerate() {
             let height = ancestor_height + 1 + offset as u64;
             if let Err(e) = self
-                .check_producer_eligibility_at(block, Some(height))
+                .check_producer_eligibility_at(block, Some(height), Some(ancestor_height))
                 .await
             {
                 warn!(

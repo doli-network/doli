@@ -91,9 +91,8 @@ impl Node {
         // Mirrors try_apply_cached_chain (fork_recovery.rs:210). A block whose
         // producer is not the deterministically-scheduled slot leader is DROPPED
         // here — never recorded, cached, or reorged — so a spoofed-weight forged
-        // sibling cannot displace the tip. This does NOT re-architect the shared
-        // Light-mode execute_reorg (a pre-existing, separately-filed surface); it
-        // stops F2 from newly widening that surface to the tip.
+        // sibling cannot displace the tip. A block after a boundary only its
+        // branch holds passes on membership; execute_reorg checks its schedule.
         let height = self.chain_state.read().await.best_height + 1;
         // INC-I-204 M5: `BlockHeader` carries no height, so the sibling's REAL chain
         // height is its parent's stored height plus one — chain-derived, never the
@@ -104,14 +103,18 @@ impl Node {
             .ok()
             .flatten()
             .map_or(height, |h| h.saturating_add(1));
+        let (door_height, fork_point) = match self.door_position(&block).await {
+            Some((h, f)) => (h, Some(f)),
+            None => (sibling_height, None),
+        };
         if let Err(e) = self
-            .check_producer_eligibility_at(&block, Some(sibling_height))
+            .check_producer_eligibility_at(&block, Some(door_height), fork_point)
             .await
         {
             if should_warn_drop(fork_tip_hash, Instant::now()) {
                 warn!(
                     "[WEDGE_ESCAPE] Dropping ineligible fork block {:.8} at h={} slot {}: {} (INC-I-143, INC-I-281)",
-                    fork_tip_hash, sibling_height, block.header.slot, e
+                    fork_tip_hash, door_height, block.header.slot, e
                 );
             }
             return Ok(());

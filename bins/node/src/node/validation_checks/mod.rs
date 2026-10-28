@@ -16,17 +16,21 @@ impl Node {
     /// (`door_epoch.rs`, INC-I-281). Full validation happens in apply_block().
     pub async fn check_producer_eligibility(&self, block: &Block) -> Result<()> {
         let parent = self.block_store.get_height_by_hash(&block.header.prev_hash);
-        let block_height = parent.ok().flatten().map(|h| h.saturating_add(1));
-        self.check_producer_eligibility_at(block, block_height)
+        let parent = parent.ok().flatten();
+        let block_height = parent.map(|h| h.saturating_add(1));
+        self.check_producer_eligibility_at(block, block_height, parent)
             .await
     }
 
     /// As [`Self::check_producer_eligibility`] for a block at `block_height`
-    /// (`None` = unknown: the node's current epoch list).
+    /// (`None` = unknown: the node's current epoch list) on a branch that
+    /// leaves the node's chain after `fork_point`. The round-robin arm runs
+    /// only when that block's list is derivable (`door_epoch.rs`).
     pub(crate) async fn check_producer_eligibility_at(
         &self,
         block: &Block,
         block_height: Option<u64>,
+        fork_point: Option<u64>,
     ) -> Result<()> {
         // Use the BLOCK's slot for eligibility, not our local chain state.
         // Our local tip may be on a different micro-fork, causing us to
@@ -55,6 +59,14 @@ impl Node {
                     active.len()
                 );
             }
+        }
+
+        if !self.door_judges_schedule(block_height, fork_point) {
+            debug!(
+                "[DOOR_EPOCH] h={:?} follows a boundary only its branch holds — round-robin left to execute_reorg (INC-I-281)",
+                block_height
+            );
+            return Ok(());
         }
 
         // Bond weights from epoch-locked snapshot (single source of truth).

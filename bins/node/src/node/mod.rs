@@ -56,6 +56,7 @@ pub use init::{cleanup_orphan_utxo_store, recover_body_gaps};
 mod periodic;
 mod producer_merge;
 mod production;
+mod reorg_schedule;
 mod replay_chainspec;
 mod rewards;
 #[allow(unused_imports)]

@@ -4,14 +4,46 @@
 //! already rotated to the next list. A competing block at a height of the
 //! closing epoch is judged with the list that judged that height on the
 //! node's own branch: the pre-rotation snapshot in the undo record of the
-//! node's boundary block. Heights after the node's boundary keep the current
-//! list (a later canonical boundary's list is not derivable here).
+//! node's boundary block. A block after a boundary block that only its branch
+//! holds has no locally derivable list: the door skips its round-robin arm and
+//! execute_reorg checks it at its parent (`reorg_schedule.rs`).
 
-use crypto::PublicKey;
-use doli_core::EpochState;
+use crypto::{Hash, PublicKey};
+use doli_core::{Block, EpochState};
 use tracing::{debug, warn};
 
 use crate::node::Node;
+
+/// True when the list for a block at `height` on a branch that leaves the
+/// node's chain after `fork_point` is derivable: no boundary in
+/// `(fork_point, height)`.
+fn schedule_derivable(fork_point: u64, height: u64, blocks_per_epoch: u64) -> bool {
+    if blocks_per_epoch == 0 {
+        return true;
+    }
+    let next_boundary = (fork_point / blocks_per_epoch)
+        .saturating_add(1)
+        .saturating_mul(blocks_per_epoch);
+    next_boundary >= height
+}
+
+/// (height, fork point) of a block whose ancestors down to the node's chain
+/// are in `cached`; `None` when the chain does not connect.
+fn position_via(
+    block: &Block,
+    cached: impl Fn(&Hash) -> Option<Hash>,
+    canonical_height: impl Fn(&Hash) -> Option<u64>,
+    max_depth: u64,
+) -> Option<(u64, u64)> {
+    let mut prev = block.header.prev_hash;
+    for depth in 1..=max_depth {
+        if let Some(h) = canonical_height(&prev) {
+            return Some((h.saturating_add(depth), h));
+        }
+        prev = cached(&prev)?;
+    }
+    None
+}
 
 /// Why the closing-epoch list could not be read from the undo record.
 #[derive(Debug, PartialEq, Eq)]
@@ -76,6 +108,32 @@ impl Node {
             }
         }
     }
+
+    /// Whether a door judges the round-robin of a block at `height` whose
+    /// branch leaves the node's chain after `fork_point` (unknown: judged).
+    pub(super) fn door_judges_schedule(
+        &self,
+        height: Option<u64>,
+        fork_point: Option<u64>,
+    ) -> bool {
+        let bpe = self.config.network.blocks_per_reward_epoch();
+        match (height, fork_point) {
+            (Some(h), Some(f)) => schedule_derivable(f, h, bpe),
+            _ => true,
+        }
+    }
+
+    /// (height, fork point) of a gossip sibling: its parent is in the node's
+    /// chain or, through fork-cache bodies, descends from a block that is.
+    pub(crate) async fn door_position(&self, block: &Block) -> Option<(u64, u64)> {
+        let cache = self.fork_block_cache.read().await;
+        position_via(
+            block,
+            |h| cache.get(h).map(|b| b.header.prev_hash),
+            |h| self.block_store.get_height_by_hash(h).ok().flatten(),
+            cache.len() as u64 + 1,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -107,6 +165,54 @@ mod tests {
             None,
             "degenerate epoch length"
         );
+    }
+
+    #[test]
+    fn schedule_derivable_until_a_branch_only_boundary() {
+        // bpe = 4, fork point F = 7: the branch's boundary block is at 8.
+        assert!(schedule_derivable(7, 8, 4), "boundary block: closing list");
+        assert!(!schedule_derivable(7, 9, 4), "after the branch's boundary");
+        assert!(!schedule_derivable(7, 13, 4), "two boundaries later");
+        assert!(schedule_derivable(8, 9, 4), "boundary is the fork point");
+        assert!(schedule_derivable(8, 12, 4), "next boundary block");
+        assert!(!schedule_derivable(8, 13, 4), "after the next boundary");
+        assert!(schedule_derivable(5, 6, 4), "mid-epoch");
+        assert!(schedule_derivable(7, 9, 0), "degenerate epoch length");
+        assert!(schedule_derivable(u64::MAX - 1, u64::MAX, 4), "no overflow");
+    }
+
+    fn blk(prev: Hash, slot: u32) -> Block {
+        let header = doli_core::BlockHeader {
+            version: 1,
+            prev_hash: prev,
+            merkle_root: Hash::ZERO,
+            presence_root: Hash::ZERO,
+            genesis_hash: Hash::ZERO,
+            timestamp: slot as u64 * 10,
+            slot,
+            producer: PublicKey::from_bytes([0u8; 32]),
+            vdf_output: vdf::VdfOutput { value: vec![] },
+            vdf_proof: vdf::VdfProof::empty(),
+            missed_producers: Vec::new(),
+            data_root: Hash::ZERO,
+            fork_id: Hash::ZERO,
+        };
+        Block::new(header, vec![])
+    }
+
+    #[test]
+    fn position_walks_cached_ancestors_to_the_chain() {
+        let f = crypto::hash::hash(b"f");
+        let c1 = blk(f, 1);
+        let c2 = blk(c1.hash(), 2);
+        let cache = std::collections::HashMap::from([(c1.hash(), c1.clone())]);
+        let parent = |h: &Hash| cache.get(h).map(|b| b.header.prev_hash);
+        let stored = |h: &Hash| (*h == f).then_some(7);
+        assert_eq!(position_via(&c1, parent, stored, 2), Some((8, 7)));
+        assert_eq!(position_via(&c2, parent, stored, 2), Some((9, 7)));
+        assert_eq!(position_via(&c2, parent, stored, 1), None, "depth bound");
+        let orphan = blk(crypto::hash::hash(b"unknown"), 3);
+        assert_eq!(position_via(&orphan, parent, stored, 4), None);
     }
 
     #[test]

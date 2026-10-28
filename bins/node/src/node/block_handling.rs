@@ -1030,13 +1030,14 @@ impl Node {
             sync.clear_finality_if_below_tip(target_height);
         }
 
-        // Now apply the new blocks through normal path
-        // Note: we skip check_producer_eligibility here because the fork blocks were
-        // validated when originally produced, and re-validating against rolled-back
-        // state uses the wrong producer set (common ancestor, not fork chain).
+        // Apply in Light mode; each block's slot schedule is checked first on the
+        // state at its parent, where the branch's own boundary has rotated the list.
         info!("Applying {} new blocks from fork", new_blocks.len());
         let pre_reorg_height = current_height;
         for (i, block) in new_blocks.into_iter().enumerate() {
+            if !self.reorg_block_scheduled(&block, i, new_block_count).await {
+                return Ok(());
+            }
             if let Err(e) = self.apply_block(block, ValidationMode::Light).await {
                 let post_height = self.chain_state.read().await.best_height;
                 error!(

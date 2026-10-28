@@ -168,6 +168,12 @@ path = "tests/inc_i_281_m2_rollback_memory.rs"
 name = "inc_i_281_m2_suppressors"
 path = "tests/inc_i_281_m2_suppressors.rs"
 
+# INC-I-281 M2.3 post-boundary schedule (P1) — own binary: the outcome probe
+# (inc-i-281-m2-probe.sh postboundary) runs it by name.
+[[test]]
+name = "inc_i_281_m23_post_boundary"
+path = "tests/inc_i_281_m23_post_boundary.rs"
+
 # INC-I-236 M2 node intake (gossip pre-filter, snap anchor) and apply-entry locks.
 [[test]]
 name = "inc_i_236_m2_intake_node"
