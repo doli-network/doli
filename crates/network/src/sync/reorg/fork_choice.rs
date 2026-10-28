@@ -71,6 +71,20 @@ impl ReorgHandler {
         self.resolve_weight(our_w, cand_w, our_tip, cand_tip, post)
     }
 
+    /// [`Self::weigh_branches`] when our side is a block the handler does not
+    /// track (a rollback cleared it): the caller supplies its accumulated weight.
+    pub fn weigh_untracked(
+        &self,
+        our_tip: &Hash,
+        our_w: u64,
+        cand_tip: &Hash,
+        finality: ForkChoiceFinality,
+    ) -> WeightVerdict {
+        let post = self.fork_choice_active(finality.local_tip_height);
+        let cand_w = self.chain_weight(cand_tip);
+        self.resolve_weight(our_w, cand_w, our_tip, cand_tip, post)
+    }
+
     /// The shared weight/tie comparison. `allow_tie_switch` is the ONLY thing that
     /// differs between callers: `weigh_branches` passes the activation gate, the
     /// gossip door passes `true` because its pre-M5 rule already switched on a tie.

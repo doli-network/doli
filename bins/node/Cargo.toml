@@ -174,6 +174,12 @@ path = "tests/inc_i_281_m2_suppressors.rs"
 name = "inc_i_281_m23_post_boundary"
 path = "tests/inc_i_281_m23_post_boundary.rs"
 
+# INC-I-281 M2.3 false-rollback hold (P2) — own binary: the outcome probe
+# (inc-i-281-m2-probe.sh falserollback) runs it by name.
+[[test]]
+name = "inc_i_281_m23_false_rollback"
+path = "tests/inc_i_281_m23_false_rollback.rs"
+
 # INC-I-236 M2 node intake (gossip pre-filter, snap anchor) and apply-entry locks.
 [[test]]
 name = "inc_i_236_m2_intake_node"

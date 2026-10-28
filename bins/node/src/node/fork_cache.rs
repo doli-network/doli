@@ -91,26 +91,47 @@ impl Node {
         }
     }
 
-    /// INC-I-281: true if a non-fork-choice intake must not apply `block` now.
-    /// A hash removed by a fork-remedy rollback is held for one consensus slot
-    /// after the rollback, and after that while a different child of the same
-    /// parent sits in the fork cache. Fork choice does not call this.
+    /// INC-I-281: true if a non-fork-choice intake must not apply `block` (a
+    /// child of the tip) now: a fork-remedy rollback removed it and a cached
+    /// sibling would win fork choice against it. Decided by fork choice, not a
+    /// timer. Fork choice does not call this.
     pub(super) async fn hold_removed_block(&self, block: &Block) -> bool {
         let hash = block.hash();
-        let age = self
-            .sync_manager
-            .read()
-            .await
-            .removed_by_rollback_age(&hash);
-        let Some(age) = age else {
+        if !self.sync_manager.read().await.removed_by_rollback(&hash) {
             return false;
-        };
-        let held = age < Duration::from_secs(self.params.slot_duration) || {
-            let parent = block.header.prev_hash;
+        }
+        let parent = block.header.prev_hash;
+        let siblings: Vec<Hash> = {
             let cache = self.fork_block_cache.read().await;
             cache
                 .iter()
-                .any(|(h, b)| *h != hash && b.header.prev_hash == parent)
+                .filter(|(h, b)| **h != hash && b.header.prev_hash == parent)
+                .map(|(h, _)| *h)
+                .collect()
+        };
+        if siblings.is_empty() {
+            return false;
+        }
+        // The rollback cleared the reorg handler: weigh the block as the wedge
+        // escape weighs a sibling (parent weight + producer weight).
+        let height = self.chain_state.read().await.best_height + 1;
+        let weight = {
+            let ps = self.producer_set.read().await;
+            ps.get_by_pubkey(&block.header.producer)
+                .map(|p| p.effective_weight(height))
+                .unwrap_or(1)
+        };
+        let held = {
+            let sync = self.sync_manager.read().await;
+            let rh = sync.reorg_handler();
+            let finality = sync.fork_choice_finality();
+            let ours = rh.chain_weight(&parent).saturating_add(weight);
+            siblings.iter().any(|s| {
+                matches!(
+                    rh.weigh_untracked(&hash, ours, s, finality),
+                    network::WeightVerdict::Heavier | network::WeightVerdict::TieSwitch
+                )
+            })
         };
         if held
             && self
@@ -120,10 +141,8 @@ impl Node {
                 .note_removed_block_held(&hash)
         {
             info!(
-                "[REAPPLY] Holding {:.8} (slot {}): removed by a fork-remedy rollback {}ms ago; only fork choice may re-adopt it now (INC-I-281)",
-                hash,
-                block.header.slot,
-                age.as_millis()
+                "[REAPPLY] Holding {:.8} (slot {}): removed by a fork-remedy rollback and a cached sibling wins fork choice; only fork choice may adopt a branch here (INC-I-281)",
+                hash, block.header.slot
             );
         }
         held

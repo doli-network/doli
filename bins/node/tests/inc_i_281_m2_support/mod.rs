@@ -261,6 +261,48 @@ pub async fn serve_sync(node: &mut Node, peer: PeerId, chain: &[Block]) -> Vec<&
     served
 }
 
+/// Far above any producer weight: a sibling recorded with it out-weighs the removed block.
+pub const HEAVY: u64 = 1_000_000;
+
+/// INC-I-281 M2.3: a competing sibling as fork choice holds it — cached, weight recorded.
+pub async fn cache_sibling(r: &Rig, s: &Block, height: u64, weight: u64) {
+    r.node
+        .fork_block_cache
+        .write()
+        .await
+        .insert(s.hash(), s.clone());
+    r.node.sync_manager.write().await.record_fork_block_weight(
+        s.hash(),
+        s.header.prev_hash,
+        weight,
+        height,
+    );
+}
+
+pub async fn chain_weight(r: &Rig, h: &Hash) -> u64 {
+    r.node
+        .sync_manager
+        .read()
+        .await
+        .reorg_handler()
+        .chain_weight(h)
+}
+
+/// (weight the recorded sibling `s` adds over its parent, producer weight of `t` at
+/// `height`). The rollback clears the reorg handler, so T's own entry is not a source.
+pub async fn sibling_vs_removed(r: &Rig, s: &Block, t: &Block, height: u64) -> (u64, u64) {
+    let added = chain_weight(r, &s.hash()).await - chain_weight(r, &s.header.prev_hash).await;
+    let w_t = r
+        .node
+        .producer_set
+        .read()
+        .await
+        .get_by_pubkey(&t.header.producer)
+        .map(|p| p.effective_weight(height))
+        .expect("fixture: T's producer is registered");
+    (added, w_t)
+}
+
 pub fn probe_reapply(path: &str, readopted: bool) {
     println!("INC281_PROBE reapply={path} readopted={}", readopted as u8);
 }

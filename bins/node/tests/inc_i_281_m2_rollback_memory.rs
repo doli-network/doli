@@ -16,15 +16,16 @@
 //   O5 sync_manager local tip height
 // PATHS: gossip/chase | cached drain | synced bodies | fork choice (walk/wedge/reorg)
 // INPUT PARTITIONS: block = {removed by the rollback (D1, D2), never removed (C1)}
-//   x {sibling known, no sibling} x {within the hold window, after it}
+//   x {heavier sibling cached, no sibling} (INC-I-281 M2.3: no time window; a lighter
+//   sibling is in inc_i_281_m23_false_rollback.rs)
 // MATRIX (O1-O5 in every built cell):
-//   gossip/chase  x removed x no sibling x within -> stay F; then C1 -> tip C1 (test 1)
-//   cached drain  x removed x no sibling x within -> stay F; then C1 -> tip C1 (test 2)
-//   synced bodies x removed x no sibling x within -> stay F; then C1 -> tip C1 (test 3)
-//   gossip        x removed x no sibling x within -> stay F; after -> tip D1, D2 (test 6)
-//   gossip        x removed x sibling known x after -> stay F (test 7)
-//   fork choice   x removed x sibling known x after -> tip D2 (test 7)
-//   cached drain  x removed x sibling known x after -> D2 held, back in cache (test 8)
+//   gossip/chase  x removed x heavier sibling -> stay F; then C1 -> tip C1 (test 1)
+//   cached drain  x removed x heavier sibling -> stay F; then C1 -> tip C1 (test 2)
+//   synced bodies x removed x heavier sibling -> stay F; then C1 -> tip C1 (test 3)
+//   gossip        x removed x no sibling      -> tip D1, D2 at once (test 6)
+//   gossip        x removed x heavier sibling, after 1 slot -> stay F (test 7)
+//   fork choice   x removed x heavier sibling -> tip D2 (test 7)
+//   cached drain  x removed x heavier sibling -> D2 held, back in cache (test 8)
 // O6 fork cache content and O7 the reported-hold mark are read in test 8 only.
 // refs: R-3b, INC-I-281; INC-I-147 D4 stays in inc_i_147_d4_rollback_reapply.rs.
 // covers: block_handling fork_cache rollback rollback_memory block_lifecycle peers recovery sync_manager periodic network_events
@@ -52,7 +53,10 @@ use network::PeerId;
 #[tokio::test]
 async fn inc_i_281_rollback_not_undone_by_gossip_of_removed_block() {
     let mut r = rig().await;
-    let t0 = roll_back_to_f(&mut r).await;
+    roll_back_to_f(&mut r).await;
+    let c1 = r.canon[0].clone();
+    // INC-I-281 M2.3: held because a heavier sibling is cached, not by a time window.
+    cache_sibling(&r, &c1, F + 1, HEAVY).await;
     let d1 = r.dead[0].clone();
     gossip(&mut r, &d1).await;
     let after_gossip = obs(&r).await;
@@ -61,7 +65,6 @@ async fn inc_i_281_rollback_not_undone_by_gossip_of_removed_block() {
         .await
         .expect("chase reply: Ok");
     let after_chase = obs(&r).await;
-    assert_within_window(&r, t0);
     let held = at_fork_point(&r, &after_gossip) && at_fork_point(&r, &after_chase);
     probe_reapply("gossip", !held);
     assert!(
@@ -72,7 +75,6 @@ async fn inc_i_281_rollback_not_undone_by_gossip_of_removed_block() {
         at_fork_point(&r, &after_chase),
         "the orphan-chase reply of the removed D1 re-adopted it: {after_chase:?}"
     );
-    let c1 = r.canon[0].clone();
     gossip(&mut r, &c1).await;
     assert_on(&r, &c1, F + 1, "canonical C1 after the held D1").await;
 }
@@ -81,12 +83,14 @@ async fn inc_i_281_rollback_not_undone_by_gossip_of_removed_block() {
 #[tokio::test]
 async fn inc_i_281_rollback_not_undone_by_cached_child_drain() {
     let mut r = rig().await;
-    let t0 = roll_back_to_f(&mut r).await;
+    roll_back_to_f(&mut r).await;
     seed_cache(&r.node, &r.dead[1..2]).await;
+    let c1 = r.canon[0].clone();
+    // INC-I-281 M2.3: held because a heavier sibling is cached, not by a time window.
+    cache_sibling(&r, &c1, F + 1, HEAVY).await;
     let d1 = r.dead[0].clone();
     gossip(&mut r, &d1).await;
     let after = obs(&r).await;
-    assert_within_window(&r, t0);
     let d2 = r.dead[1].hash();
     let drained = after.at_f2 == Some(d2) || after.best_hash == d2;
     probe_reapply("cached_drain", drained || !at_fork_point(&r, &after));
@@ -98,7 +102,6 @@ async fn inc_i_281_rollback_not_undone_by_cached_child_drain() {
         at_fork_point(&r, &after),
         "the removed branch came back through the drain intake: {after:?}"
     );
-    let c1 = r.canon[0].clone();
     gossip(&mut r, &c1).await;
     assert_on(&r, &c1, F + 1, "canonical C1 with the dead D2 still cached").await;
 }
@@ -107,7 +110,10 @@ async fn inc_i_281_rollback_not_undone_by_cached_child_drain() {
 #[tokio::test]
 async fn inc_i_281_rollback_not_undone_by_synced_bodies() {
     let mut r = rig().await;
-    let t0 = roll_back_to_f(&mut r).await;
+    roll_back_to_f(&mut r).await;
+    let c1 = r.canon[0].clone();
+    // INC-I-281 M2.3: held because a heavier sibling is cached, not by a time window.
+    cache_sibling(&r, &c1, F + 1, HEAVY).await;
     // The dead peer is one block ahead (D3): header-first sync needs a gap of 3.
     let d3 = r.dead[2].clone();
     let peer = PeerId::random();
@@ -126,7 +132,6 @@ async fn inc_i_281_rollback_not_undone_by_synced_bodies() {
         "precondition: header-first sync fetched the dead headers and bodies; served {served:?}"
     );
     assert!(tick.is_ok(), "run_periodic_tasks: {:?}", tick.err());
-    assert_within_window(&r, t0);
     let held = at_fork_point(&r, &after_intake) && at_fork_point(&r, &after_tick);
     probe_reapply("synced_bodies", !held);
     assert!(
@@ -137,42 +142,22 @@ async fn inc_i_281_rollback_not_undone_by_synced_bodies() {
         at_fork_point(&r, &after_tick),
         "the periodic pending-sync loop re-adopted the removed branch: {after_tick:?}"
     );
-    let c1 = r.canon[0].clone();
     gossip(&mut r, &c1).await;
     assert_on(&r, &c1, F + 1, "canonical C1 after the held sync bodies").await;
 }
 
-// R-3b (Must) — Decision: a failure means either a removed block is re-adopted inside the hold window (the race stays open) or a falsely removed block with no competing sibling can never return (INC-I-147 D4 recovery lost).
+// R-3b (Must) — Decision: a failure means a falsely removed block with no competing sibling does not return at once (INC-I-147 D4 recovery lost; the lab majority wedge).
 #[tokio::test]
-async fn inc_i_281_false_rollback_readopts_removed_block_after_window() {
+async fn inc_i_281_false_rollback_readopts_removed_block_at_once() {
     let mut r = rig().await;
-    let t0 = roll_back_to_f(&mut r).await;
+    roll_back_to_f(&mut r).await;
     let d1 = r.dead[0].clone();
+    // INC-I-281 M2.3: no competing sibling cached, so re-adopted at once (no hold window).
     gossip(&mut r, &d1).await;
-    let early = obs(&r).await;
-    assert_within_window(&r, t0);
-    assert!(
-        at_fork_point(&r, &early),
-        "a removed hash with no known sibling was re-adopted inside the hold window: {early:?}"
-    );
-    tokio::time::sleep(past_window(&r)).await;
-    gossip(&mut r, &d1).await;
-    assert_on(
-        &r,
-        &d1,
-        F + 1,
-        "removed D1 after the window, no sibling known",
-    )
-    .await;
+    assert_on(&r, &d1, F + 1, "removed D1 at once, no sibling known").await;
     let d2 = r.dead[1].clone();
     gossip(&mut r, &d2).await;
-    assert_on(
-        &r,
-        &d2,
-        F + 2,
-        "removed D2 after the window, no sibling known",
-    )
-    .await;
+    assert_on(&r, &d2, F + 2, "removed D2 at once, no sibling known").await;
 }
 
 // R-3b (Must) — Decision: a failure means a removed block is re-adopted outside fork choice after the window although a competing sibling is known, or the hold leaks into fork choice and blocks a walked branch.
@@ -180,7 +165,9 @@ async fn inc_i_281_false_rollback_readopts_removed_block_after_window() {
 async fn inc_i_281_removed_block_held_while_sibling_known_after_window() {
     let mut r = rig().await;
     roll_back_to_f(&mut r).await;
-    seed_cache(&r.node, &r.canon[..1]).await;
+    // INC-I-281 M2.3: the cached sibling holds D1 only because it would win fork choice.
+    let c1 = r.canon[0].clone();
+    cache_sibling(&r, &c1, F + 1, HEAVY).await;
     tokio::time::sleep(past_window(&r)).await;
     let d1 = r.dead[0].clone();
     gossip(&mut r, &d1).await;
@@ -215,7 +202,9 @@ async fn inc_i_281_cached_drain_holds_removed_child() {
     let (d1, d2) = (r.dead[0].clone(), r.dead[1].clone());
     // Higher slot than D2, so the drain offers D2 first.
     let d2b = child_of(&r, &d1, F + 2, 208);
-    seed_cache(&r.node, &[d2.clone(), d2b.clone()]).await;
+    seed_cache(&r.node, std::slice::from_ref(&d2)).await;
+    // INC-I-281 M2.3: D2 is held only because the cached D2b would win fork choice.
+    cache_sibling(&r, &d2b, F + 2, HEAVY).await;
     tokio::time::sleep(past_window(&r)).await;
     gossip(&mut r, &d1).await;
     let after = obs(&r).await;

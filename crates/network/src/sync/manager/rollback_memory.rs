@@ -3,6 +3,8 @@
 //! A rollback removes index rows only; the bodies stay in the store. This is the
 //! one owner of "which hashes did recent fork-remedy rollbacks remove", read by
 //! the node's non-fork-choice intakes and by the post-rollback progress gates.
+//! Whether an intake holds a removed hash is decided by fork choice against
+//! its cached siblings, not by a timer.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -100,9 +102,11 @@ impl SyncManager {
         self.rollback_memory.record(hash, Instant::now());
     }
 
-    /// Time since a fork-remedy rollback removed `hash`, while remembered.
-    pub fn removed_by_rollback_age(&self, hash: &Hash) -> Option<Duration> {
-        self.rollback_memory.removed_age(hash, Instant::now())
+    /// True while `hash` is remembered as removed by a fork-remedy rollback.
+    pub fn removed_by_rollback(&self, hash: &Hash) -> bool {
+        self.rollback_memory
+            .removed_age(hash, Instant::now())
+            .is_some()
     }
 
     /// True the first time an intake holds `hash`.
@@ -113,7 +117,7 @@ impl SyncManager {
     /// Orphan accounting, except for a child of a remembered removed hash: the
     /// node left that branch on purpose, so it is not evidence against the tip.
     pub fn note_orphan_gossip_child(&mut self, parent: &Hash, need_height: u64, slot: u32) {
-        if self.removed_by_rollback_age(parent).is_none() {
+        if !self.removed_by_rollback(parent) {
             self.note_orphan_gossip_block(need_height, slot);
         }
     }

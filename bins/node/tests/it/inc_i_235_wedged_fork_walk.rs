@@ -304,10 +304,7 @@ async fn lock_fixture_converges_once_walk_result_reaches_fork_choice() {
     };
     fx.node.handle_completed_fork_recovery(done).await.unwrap();
     let after_reorg = fx.node.chain_state.read().await.best_height;
-    let _ = fx.drive(12, true).await;
-    // INC-I-281: a falsely rolled-back block is re-adopted after the hold window
-    let hold = std::time::Duration::from_secs(fx.node.params.slot_duration + 1);
-    tokio::time::sleep(hold).await;
+    // INC-I-281 M2.3: a falsely rolled-back block is re-adopted at once (no hold window).
     let _ = fx.drive(12, true).await;
     let end = fx.node.chain_state.read().await.best_height;
     assert_eq!(

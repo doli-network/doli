@@ -193,12 +193,7 @@ async fn rolled_back_block_can_be_re_applied() {
 
     // The network re-delivers the block we discarded (measured: n7 saw this 159 times).
     let peer = network::PeerId::random();
-    node.handle_new_block(tip_block.clone(), peer)
-        .await
-        .expect("handle_new_block returned Err");
-    assert_eq!(node.chain_state.read().await.best_height, 4, "held");
-    // INC-I-281: re-adopted after the hold window
-    tokio::time::sleep(std::time::Duration::from_secs(params.slot_duration + 1)).await;
+    // INC-I-281 M2.3: no competing sibling cached, so re-adopted at once (no hold window).
     node.handle_new_block(tip_block, peer)
         .await
         .expect("handle_new_block returned Err");
