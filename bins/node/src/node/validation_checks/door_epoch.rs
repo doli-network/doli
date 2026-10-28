@@ -7,6 +7,7 @@
 //! node's boundary block. A block after a boundary block that only its branch
 //! holds has no locally derivable list: the door skips its round-robin arm and
 //! execute_reorg checks it at its parent (`reorg_schedule.rs`).
+//! In the Light window, where that check is skipped, the door judges it with the current list.
 
 use crypto::{Hash, PublicKey};
 use doli_core::{Block, EpochState};
@@ -111,11 +112,15 @@ impl Node {
 
     /// Whether a door judges the round-robin of a block at `height` whose
     /// branch leaves the node's chain after `fork_point` (unknown: judged).
+    /// Always judged in the INC-I-010 layer-3 Light window.
     pub(super) fn door_judges_schedule(
         &self,
         height: Option<u64>,
         fork_point: Option<u64>,
     ) -> bool {
+        if self.snap_sync_height.is_some() || self.floor_fallback_window {
+            return true;
+        }
         let bpe = self.config.network.blocks_per_reward_epoch();
         match (height, fork_point) {
             (Some(h), Some(f)) => schedule_derivable(f, h, bpe),

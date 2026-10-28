@@ -196,6 +196,10 @@ path = "tests/inc_i_281_m3a_genesis_reorg.rs"
 name = "inc_i_281_m24_refused_reorg"
 path = "tests/inc_i_281_m24_refused_reorg.rs"
 
+[[test]]
+name = "inc_i_281_m24_light_window"
+path = "tests/inc_i_281_m24_light_window.rs"
+
 # INC-I-236 M2 node intake (gossip pre-filter, snap anchor) and apply-entry locks.
 [[test]]
 name = "inc_i_236_m2_intake_node"

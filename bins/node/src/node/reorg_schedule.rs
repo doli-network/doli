@@ -1,7 +1,9 @@
 //! INC-I-281: execute_reorg checks each fork block's slot schedule on the
-//! node state at the block's parent, with the predicate and list a Full apply
-//! uses. A door cannot derive the list after a boundary block that only the
-//! walked branch holds; here that boundary block is already applied.
+//! node state at the block's parent. The round-robin arm uses the Full-apply
+//! list and producer weights; the context carries no bootstrap list, so at a
+//! genesis-phase height the bootstrap arm accepts any producer, as the Light
+//! apply did. A door cannot derive the list after a boundary block that only
+//! the walked branch holds; here that boundary block is already applied.
 
 use super::*;
 
@@ -34,7 +36,9 @@ impl Node {
         false
     }
 
-    /// `validate_producer_eligibility` with the Full-apply inputs at `height`.
+    /// `validate_producer_eligibility` at `height` with the Full-apply list and
+    /// producer weights; no bootstrap list, so the genesis-phase arm accepts any
+    /// producer, as the Light apply did.
     async fn schedule_verdict(
         &self,
         block: &Block,
