@@ -34,10 +34,7 @@ impl Node {
         false
     }
 
-    /// `validate_producer_eligibility` with the Full-apply inputs at `height`,
-    /// except the predicate height: the block's slot, as at the doors. Past
-    /// genesis both route to the round-robin; while `slot` is in the genesis
-    /// phase the bootstrap arm accepts (no bootstrap list), as Light did.
+    /// `validate_producer_eligibility` with the Full-apply inputs at `height`.
     async fn schedule_verdict(
         &self,
         block: &Block,
@@ -62,17 +59,13 @@ impl Node {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let net = self.config.network;
-        let mut ctx = validation::ValidationContext::new(
-            ConsensusParams::for_network(net),
-            net,
-            now,
-            block.header.slot as u64,
-        )
-        .with_producers_weighted(weighted)
-        .with_epoch_producer_list(list)
-        .with_inc_i_026_scheduler_activation_height(
-            net.params().inc_i_026_scheduler_activation_height,
-        );
+        let mut ctx =
+            validation::ValidationContext::new(ConsensusParams::for_network(net), net, now, height)
+                .with_producers_weighted(weighted)
+                .with_epoch_producer_list(list)
+                .with_inc_i_026_scheduler_activation_height(
+                    net.params().inc_i_026_scheduler_activation_height,
+                );
         if let Some(ref spec) = self.config.chainspec {
             ctx.params.apply_chainspec(spec);
         }

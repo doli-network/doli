@@ -186,6 +186,10 @@ path = "tests/inc_i_281_m23_false_rollback.rs"
 name = "inc_i_281_m3a_stub_serve"
 path = "tests/inc_i_281_m3a_stub_serve.rs"
 
+[[test]]
+name = "inc_i_281_m3a_genesis_reorg"
+path = "tests/inc_i_281_m3a_genesis_reorg.rs"
+
 # INC-I-236 M2 node intake (gossip pre-filter, snap anchor) and apply-entry locks.
 [[test]]
 name = "inc_i_236_m2_intake_node"

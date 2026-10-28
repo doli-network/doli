@@ -27,6 +27,8 @@
 //            -> doors refuse; direct execute_reorg refuses (Full) | applies (Light gate)
 // MATRIX: walk x {C, C', X, Y, Z}; wedge x {C, X, Y, Z}; execute_reorg x Z x {Full, Light}.
 //   O2-O4 in every cell; O5 on walk cells; O6 on wedge cells; O7 in reorg_lands.
+//   The execute_reorg schedule cells (C' walk, Z Full, Z Light) run at heights shifted past
+//   the genesis phase, where a Full apply takes the round-robin arm.
 //   C_{B+2} / C'_{B+2} / X_{B+2} / Z_{B+2}: slot s2 where both lists name the same leader,
 //   so only the B+1 block discriminates; a 3-block branch outweighs the node's 2 blocks.
 // covers: door_epoch validation_checks wedge_escape fork_walk force_reorg block_handling reorg_schedule
@@ -44,7 +46,7 @@ mod inc_i_236_m2_reorg_support;
 use crypto::{Hash, KeyPair, PublicKey};
 use doli_core::consensus::ConsensusParams;
 use doli_core::validation::ValidationMode;
-use doli_core::{Block, EpochState};
+use doli_core::{Block, EpochState, Network};
 use doli_node::node::Node;
 use inc_i_236_m2_reorg_support::{block, seed_cache, weight_recorded, Sig};
 use network::sync::{CompletedRecovery, ReorgResult};
@@ -75,6 +77,8 @@ struct Fx {
     s1: u32,
     /// First slot after `s1` where they name the same leader.
     s2: u32,
+    /// Height offset (a multiple of blocks_per_reward_epoch): F, B sit at F + o, B + o.
+    o: u64,
     _tmp: TempDir,
 }
 
@@ -106,16 +110,33 @@ fn key_of<'a>(keys: &'a [KeyPair], pk: &PublicKey) -> &'a KeyPair {
         .expect("fixture: producer key")
 }
 
-/// Base h=1..=F by three of four producers; the fourth (largest key) never produces.
-async fn base_node(tmp: &TempDir, keys: &[KeyPair]) -> (Node, ConsensusParams, Hash) {
+/// First offset that puts F + o past the genesis phase and its completion block.
+fn post_genesis_offset() -> u64 {
+    let net = Network::Devnet;
+    let mut o = 0;
+    while F + o <= net.genesis_blocks() + 1 {
+        o += net.blocks_per_reward_epoch();
+    }
+    o
+}
+
+/// Base h=1..=F+o by three of four producers; the fourth (largest key) is silent from
+/// h=o-3 on: in L_close, outside the three-epoch window that derives the list at B+o.
+async fn base_node(tmp: &TempDir, keys: &[KeyPair], o: u64) -> (Node, ConsensusParams, Hash) {
     let mut node = Node::new_for_test(tmp.path().to_path_buf(), keys.to_vec())
         .await
         .expect("Node::new_for_test");
     let params = node.params.clone();
     let mut prev = Hash::ZERO;
-    for h in 1..=F {
-        let by = &keys[(h as usize - 1) % 3];
-        let b = block(h, 100 + h as u32, prev, by, Sig::Valid, &params);
+    for h in 1..=F + o {
+        let (by, slot) = if h > o {
+            (&keys[(h - o - 1) as usize % 3], 100 + (h - o) as u32)
+        } else if h + 4 <= o {
+            (&keys[(h - 1) as usize % 4], h as u32)
+        } else {
+            (&keys[(h - 1) as usize % 3], h as u32)
+        };
+        let b = block(h, slot, prev, by, Sig::Valid, &params);
         prev = b.hash();
         node.apply_block(b, ValidationMode::Light)
             .await
@@ -127,27 +148,32 @@ async fn base_node(tmp: &TempDir, keys: &[KeyPair]) -> (Node, ConsensusParams, H
 /// The node: base, then its own D_B (by the silent producer) and D_{B+1}. L_new(C_B) is
 /// read from a twin node that applies the same base and C_B.
 async fn fixture() -> Fx {
+    fixture_at(0).await
+}
+
+async fn fixture_at(o: u64) -> Fx {
     let mut keys: Vec<KeyPair> = (0..4).map(|_| KeyPair::generate()).collect();
     keys.sort_by(|a, b| a.public_key().as_bytes().cmp(b.public_key().as_bytes()));
     let tmp = TempDir::new().unwrap();
-    let (mut node, params, f_hash) = base_node(&tmp, &keys).await;
+    let (mut node, params, f_hash) = base_node(&tmp, &keys, o).await;
+    let b = B + o;
     let l_close = active(&node.epoch_state);
     let by_d_b = key_of(&keys, &at(&l_close, D_B_SLOT));
-    let d_b = block(B, D_B_SLOT, f_hash, by_d_b, Sig::Valid, &params);
+    let d_b = block(b, D_B_SLOT, f_hash, by_d_b, Sig::Valid, &params);
     node.apply_block(d_b.clone(), ValidationMode::Light)
         .await
         .expect("fixture: D_B");
     let l_dead = active(&node.epoch_state);
     let by_d_b1 = key_of(&keys, &at(&l_dead, D_B1_SLOT));
-    let d_b1 = block(B + 1, D_B1_SLOT, d_b.hash(), by_d_b1, Sig::Valid, &params);
+    let d_b1 = block(b + 1, D_B1_SLOT, d_b.hash(), by_d_b1, Sig::Valid, &params);
     node.apply_block(d_b1.clone(), ValidationMode::Light)
         .await
         .expect("fixture: D_B+1");
     let by_c_b = key_of(&keys, &at(&l_close, C_B_SLOT));
-    let c_b = block(B, C_B_SLOT, f_hash, by_c_b, Sig::Valid, &params);
+    let c_b = block(b, C_B_SLOT, f_hash, by_c_b, Sig::Valid, &params);
     let l_canon = {
         let twin_tmp = TempDir::new().unwrap();
-        let (mut twin, _, _) = base_node(&twin_tmp, &keys).await;
+        let (mut twin, _, _) = base_node(&twin_tmp, &keys, o).await;
         twin.apply_block(c_b.clone(), ValidationMode::Light)
             .await
             .expect("fixture: twin C_B");
@@ -173,6 +199,7 @@ async fn fixture() -> Fx {
         c_b,
         s1,
         s2,
+        o,
         _tmp: tmp,
     };
     assert_preconditions(&fx).await;
@@ -198,7 +225,7 @@ async fn assert_preconditions(fx: &Fx) {
     let undo = fx
         .node
         .state_db
-        .get_undo(B)
+        .get_undo(fx.b())
         .expect("precondition: undo(D_B)");
     let snap = EpochState::deserialize(&undo.epoch_state_snapshot.expect("undo snapshot"))
         .expect("precondition: undo(D_B) epoch state decodes");
@@ -215,6 +242,20 @@ async fn assert_preconditions(fx: &Fx) {
 }
 
 impl Fx {
+    fn b(&self) -> u64 {
+        B + self.o
+    }
+
+    fn assert_past_genesis(&self) {
+        let net = self.node.config.network;
+        assert!(
+            !net.is_in_genesis(F + self.o),
+            "precondition: F={} past a genesis phase of {} blocks",
+            F + self.o,
+            net.genesis_blocks()
+        );
+    }
+
     fn key(&self, pk: &PublicKey) -> &KeyPair {
         key_of(&self.keys, pk)
     }
@@ -225,9 +266,9 @@ impl Fx {
 
     /// [C_B, b1, b2]: b1 at s1 by `by1`, b2 at s2 by its leader under both lists.
     fn after_c_b(&self, by1: &KeyPair) -> Vec<Block> {
-        let b1 = self.mk(self.c_b.hash(), B + 1, self.s1, by1);
+        let b1 = self.mk(self.c_b.hash(), self.b() + 1, self.s1, by1);
         let by2 = self.key(&at(&self.l_canon, self.s2));
-        let b2 = self.mk(b1.hash(), B + 2, self.s2, by2);
+        let b2 = self.mk(b1.hash(), self.b() + 2, self.s2, by2);
         vec![self.c_b.clone(), b1, b2]
     }
 
@@ -249,16 +290,16 @@ impl Fx {
     /// Y_B on F at C_B's slot by a registered producer that is not L_close[slot].
     fn closing_ineligible(&self) -> Vec<Block> {
         let y_by = self.key(&at(&self.l_close, C_B_SLOT + 1));
-        let y_b = self.mk(self.f_hash, B, C_B_SLOT, y_by);
+        let y_b = self.mk(self.f_hash, self.b(), C_B_SLOT, y_by);
         let y1 = self.mk(
             y_b.hash(),
-            B + 1,
+            self.b() + 1,
             self.s1,
             self.key(&at(&self.l_canon, self.s1)),
         );
         let y2 = self.mk(
             y1.hash(),
-            B + 2,
+            self.b() + 2,
             self.s2,
             self.key(&at(&self.l_canon, self.s2)),
         );
@@ -268,10 +309,10 @@ impl Fx {
     /// Z_{B+1} on the node's own D_B by L_new(C_B)[s1], which is not L_new(D_B)[s1].
     fn on_own_boundary(&self) -> Vec<Block> {
         let z1_by = self.key(&at(&self.l_canon, self.s1));
-        let z1 = self.mk(self.d[0].hash(), B + 1, self.s1, z1_by);
+        let z1 = self.mk(self.d[0].hash(), self.b() + 1, self.s1, z1_by);
         let z2 = self.mk(
             z1.hash(),
-            B + 2,
+            self.b() + 2,
             self.s2,
             self.key(&at(&self.l_dead, self.s2)),
         );
@@ -287,9 +328,9 @@ impl Fx {
         State {
             best_hash,
             best_height,
-            at_b: at_h(B),
-            at_b1: at_h(B + 1),
-            at_b2: at_h(B + 2),
+            at_b: at_h(self.b()),
+            at_b1: at_h(self.b() + 1),
+            at_b2: at_h(self.b() + 2),
             persisted: self.node.state_db.get_chain_state().map(|c| c.best_hash),
         }
     }
@@ -341,7 +382,7 @@ async fn assert_landed(fx: &Fx, br: &[Block], first_h: u64, label: &str) {
     let st = fx.state().await;
     let tip = br.last().unwrap().hash();
     assert_eq!(st.best_hash, tip, "{label}: tip ({st:?})");
-    assert_eq!(st.best_height, B + 2, "{label}: height");
+    assert_eq!(st.best_height, fx.b() + 2, "{label}: height");
     for (i, b) in br.iter().enumerate() {
         let h = first_h + i as u64;
         let got = fx.node.block_store.get_hash_by_height(h).expect("store");
@@ -416,7 +457,8 @@ async fn reorg_lands_on_post_boundary_block() {
 // P1 (Must) — Decision: a failure means execute_reorg still applies a block after the walked boundary whose producer is not scheduled under L_new(C_B), i.e. the door skip opened an unscheduled-branch hole.
 #[tokio::test]
 async fn reorg_refuses_ineligible_post_boundary_block() {
-    let mut fx = fixture().await;
+    let mut fx = fixture_at(post_genesis_offset()).await;
+    fx.assert_past_genesis();
     let br = fx.ineligible();
     let f = fx.f_hash;
     let result = run_walk(&mut fx, &br, f).await;
@@ -433,7 +475,7 @@ async fn reorg_refuses_ineligible_post_boundary_block() {
         fx.c_b.hash(),
         "the reorg keeps the verified prefix C_B ({result:?})"
     );
-    assert_eq!(st.best_height, B, "height of the kept prefix");
+    assert_eq!(st.best_height, fx.b(), "height of the kept prefix");
     assert_eq!(st.at_b, Some(fx.c_b.hash()), "canonical C_B at B");
     assert_eq!(
         (st.at_b1, st.at_b2),
@@ -522,7 +564,8 @@ async fn nonderivable_block_unknown_producer_refused() {
 // P1 (Must) — Decision: a failure means execute_reorg still applies an unscheduled block that reached it without a door (Light apply never checks the schedule).
 #[tokio::test]
 async fn reorg_refuses_unscheduled_block_without_door() {
-    let mut fx = fixture().await;
+    let mut fx = fixture_at(post_genesis_offset()).await;
+    fx.assert_past_genesis();
     let br = fx.on_own_boundary();
     let result = run_direct_reorg(&mut fx, &br).await;
     let st = fx.state().await;
@@ -538,7 +581,7 @@ async fn reorg_refuses_unscheduled_block_without_door() {
         fx.d[0].hash(),
         "the reorg keeps its verified prefix (empty): tip = D_B"
     );
-    assert_eq!(st.best_height, B, "height of the kept prefix");
+    assert_eq!(st.best_height, fx.b(), "height of the kept prefix");
     assert_eq!(st.at_b1, None, "nothing canonical above D_B");
     assert_eq!(st.persisted, Some(fx.d[0].hash()), "persisted tip = D_B");
 }
@@ -548,18 +591,19 @@ async fn reorg_refuses_unscheduled_block_without_door() {
 async fn reorg_light_gating_skips_schedule_check() {
     let mut refused = Vec::new();
     for gate in ["floor_fallback_window", "snap_sync_height"] {
-        let mut fx = fixture().await;
+        let mut fx = fixture_at(post_genesis_offset()).await;
+        fx.assert_past_genesis();
         if gate == "floor_fallback_window" {
             fx.node.floor_fallback_window = true;
         } else {
-            fx.node.snap_sync_height = Some(F);
+            fx.node.snap_sync_height = Some(F + fx.o);
         }
         let br = fx.on_own_boundary();
         let result = run_direct_reorg(&mut fx, &br).await;
         let st = fx.state().await;
         let tip = br[1].hash();
         let landed = st.best_hash == tip
-            && st.best_height == B + 2
+            && st.best_height == fx.b() + 2
             && (st.at_b1, st.at_b2) == (Some(br[0].hash()), Some(tip))
             && st.persisted == Some(tip);
         if !landed {
