@@ -1297,6 +1297,36 @@ Exit code 2 means the URL or file could not be read. Read the lines:
 
 ---
 
+### 4.8. Node Stuck on a Short Dead Branch at an Epoch Boundary (INC-I-281)
+
+**Symptom:** A node is a few blocks off the network near an epoch boundary. Its branch holds an epoch-boundary block that the network did not keep, and the node does not reorg onto the network chain. Before the fix, the logs showed the network's blocks refused as `invalid producer for slot`, or a rollback followed within seconds by a re-apply of the same dead block.
+
+**Cause:** The dead boundary block rotated the node's schedule list. The recovery doors judged the network's blocks with that rotated list and refused them. After a fork-remedy rollback, the node took the removed dead blocks back from gossip or an orphan-chase reply without fork choice, and counted that re-apply as peer progress. Design: `docs/architecture.md`, "Fork Recovery Across an Epoch Boundary".
+
+**Log lines:**
+
+| Line | Level | Meaning |
+|------|-------|---------|
+| `[FORK] Walked block … at slot … is ineligible (…) — branch not reorged onto` | warn | The fork-walk door refused a walked block. The door now uses the list at the block's own height, so a correct branch does not show this line. |
+| `[WEDGE_ESCAPE] Dropping ineligible fork block … at h=… slot …: … (INC-I-143, INC-I-281)` | warn | The wedge-escape door refused a sibling. Logged once per hash per 60 s (was debug). |
+| `[FORCE_REORG] refusing target=…: branch block … at slot … is ineligible: …` | warn | The `forceReorgTo` door refused a branch block. Outcome `ineligible`. |
+| `[DOOR_EPOCH] h=… follows a boundary only its branch holds — round-robin left to execute_reorg (INC-I-281)` | debug | The node cannot derive the list for this block. The door checked signature and membership only; `execute_reorg` checks the schedule. |
+| `[DOOR_EPOCH] no undo epoch state at boundary h=… for h=… — current list (INC-I-281)` | debug | The undo record of the node's boundary block is gone. The door uses the current list (old behaviour). |
+| `[DOOR_EPOCH] undo epoch state at boundary h=… undecodable (…) — current list (INC-I-281)` | warn | The undo record does not decode. The door uses the current list. Report it. |
+| `[REORG] Fork block … at h=… slot … is not scheduled at its parent: … — reorg stops after i/n blocks (INC-I-281)` | warn | `execute_reorg` refused a fork block at its parent. The node keeps the first i blocks. A `forceReorgTo` then ends as `reorg_did_not_land`. |
+| `[REAPPLY] Holding … (slot …): removed by a fork-remedy rollback and a cached sibling wins fork choice; only fork choice may adopt a branch here (INC-I-281)` | info | The node does not take back a block that its rollback removed, because a heavier cached sibling exists. Logged once per hash. Fork choice adopts the winner. |
+
+**What to do:**
+- `[REAPPLY] Holding`, then a reorg onto the sibling: the fix works. No action.
+- `[REORG] … not scheduled at its parent` again for the same block: that branch has a block its own schedule refuses. Do not force it. Compare the tip with other nodes (§4.2).
+- The node stays on the dead branch and shows none of these lines: make sure it runs a build with INC-I-281. Then use `forceReorgTo` with the network tip hash (`docs/rpc_reference.md`).
+
+The fix is node-local: no activation height, safe for a rolling restart.
+
+**Snap anchor answers.** A snap-synced node stores its anchor block header-only. Since INC-I-281 it answers "not found" when a peer asks for that block by height, by hash or in a `GetBodies` batch, and the peer asks another node (debug log: `sync serve: withholding header-only block …`). The `getBlockByHeight` RPC still returns the stored header with an empty transaction list at the anchor height. This is expected and is not corruption.
+
+---
+
 ## 5. Update Issues
 
 ### 5.1. Auto-Update Failed
