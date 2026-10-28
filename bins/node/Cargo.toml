@@ -180,6 +180,12 @@ path = "tests/inc_i_281_m23_post_boundary.rs"
 name = "inc_i_281_m23_false_rollback"
 path = "tests/inc_i_281_m23_false_rollback.rs"
 
+# INC-I-281 M3a stub-body serve (M3a.1) and genesis-phase reorg schedule (M3a.2) —
+# own binaries: the outcome probe (inc-i-281-m3a-probe.sh) runs them by name.
+[[test]]
+name = "inc_i_281_m3a_stub_serve"
+path = "tests/inc_i_281_m3a_stub_serve.rs"
+
 # INC-I-236 M2 node intake (gossip pre-filter, snap anchor) and apply-entry locks.
 [[test]]
 name = "inc_i_236_m2_intake_node"

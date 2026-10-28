@@ -11,6 +11,7 @@ mod attestation_authority_tests;
 #[allow(unused_imports)]
 pub use apply_block::state_fp_sr_field;
 mod block_handling;
+mod block_serve;
 pub mod bootstrap_redial;
 #[cfg(test)]
 mod bootstrap_redial_tests;

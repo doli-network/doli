@@ -1115,7 +1115,6 @@ impl Node {
 
     /// Handle a sync request from a peer.
     /// Called by on_sync_request() in network_events.rs (the production path).
-    /// Note: handle_sync_request_bg() in event_loop.rs is dead code.
     pub async fn handle_sync_request(
         &self,
         request: network::protocols::SyncRequest,
@@ -1187,27 +1186,9 @@ impl Node {
                 SyncResponse::Headers(headers)
             }
 
-            SyncRequest::GetBodies { hashes } => {
-                let mut bodies = Vec::new();
-                for hash in hashes {
-                    if let Ok(Some(block)) = self.block_store.get_block(&hash) {
-                        bodies.push(block);
-                    }
-                }
-                SyncResponse::Bodies(bodies)
-            }
-
-            SyncRequest::GetBlockByHeight { height } => {
-                match self.block_store.get_block_by_height(height) {
-                    Ok(Some(block)) => SyncResponse::Block(Some(block)),
-                    _ => SyncResponse::Block(None),
-                }
-            }
-
-            SyncRequest::GetBlockByHash { hash } => match self.block_store.get_block(&hash) {
-                Ok(Some(block)) => SyncResponse::Block(Some(block)),
-                _ => SyncResponse::Block(None),
-            },
+            SyncRequest::GetBodies { hashes } => self.serve_bodies(hashes),
+            SyncRequest::GetBlockByHeight { height } => self.serve_block_by_height(height),
+            SyncRequest::GetBlockByHash { hash } => self.serve_block_by_hash(&hash),
 
             // INC-I-012 F1: Height-based header request. Used after snap sync
             // when the node's local_hash is unrecognizable by peers. The server
