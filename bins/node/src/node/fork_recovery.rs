@@ -50,12 +50,8 @@ impl Node {
         }
 
         // 2. Move fork blocks to fork_block_cache (execute_reorg reads from here)
-        {
-            let mut cache = self.fork_block_cache.write().await;
-            for block in &recovery.blocks {
-                cache.insert(block.hash(), block.clone());
-            }
-        }
+        self.cache_walked(&recovery.blocks, &recovery.connection_point)
+            .await;
 
         // 3. Try simple reorg first (works for single-block forks within recent_blocks)
         let fork_tip = recovery.blocks.last().unwrap();
@@ -752,8 +748,7 @@ impl Node {
         // Use Light validation — consistent with execute_reorg (block_handling.rs).
         // Light still checks the INC-I-236 block signature at h >= AH; the VDF
         // does not prove authorship.
-        self.apply_block(candidate.clone(), ValidationMode::Light)
-            .await?;
+        self.apply_fork_successor(candidate).await?;
         Ok(true)
     }
 }

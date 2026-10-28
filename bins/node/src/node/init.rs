@@ -771,6 +771,10 @@ impl Node {
                 .network
                 .params()
                 .inc_i_236_block_signature_activation_height,
+            inc_i_178_attestation_bls_activation_height: config
+                .network
+                .params()
+                .inc_i_178_attestation_bls_activation_height,
             ..SyncConfig::default()
         };
         let sync_manager = Arc::new(RwLock::new(SyncManager::new(sync_config, genesis_hash)));

@@ -17,6 +17,8 @@
 //   signed / below-AH controls -> O1,O2,O3,O4,O5; unrequested / no request -> O1,O2,O3,O4;
 //   walk forged/unsigned/boundary -> O6; walk signed / below-AH -> O4,O6.
 // HEIGHT: a walk block has no known height; the walk gates on local_height + 1 (as node header_auth).
+// INC-I-281 M-A: BLS AH {unset u64::MAX (default), real above the heights} x post-AH-shaped
+//   bodies at known heights -> accepted (O1..O5) | refused (O1,O2,O3,O4).
 
 use crypto::{Hash, KeyPair};
 use doli_core::{Block, BlockHeader};
@@ -28,6 +30,7 @@ use crate::protocols::{SyncRequest, SyncResponse};
 
 const AH: u64 = 3;
 const WALK_AH: u64 = 100;
+const POST_AH_AGG: [u8; 4] = [7; 4];
 const PEER_H: u64 = 1_000;
 const GENESIS: Hash = Hash::ZERO;
 
@@ -60,14 +63,25 @@ fn pi(h: &BlockHeader, kp: &KeyPair, s: Sig) -> Vec<u8> {
 
 /// Linked headers from `prev`; header i has slot `first_slot + i`, producer `kp`.
 fn link(prev: Hash, first_slot: u32, kp: &KeyPair, sigs: &[Sig]) -> Vec<BlockHeader> {
+    link_shaped(prev, first_slot, kp, sigs, Hash::ZERO)
+}
+
+/// As `link`, every header carrying `presence_root`.
+fn link_shaped(
+    prev: Hash,
+    first_slot: u32,
+    kp: &KeyPair,
+    sigs: &[Sig],
+    presence_root: Hash,
+) -> Vec<BlockHeader> {
     let mut out = Vec::new();
     let mut prev_hash = prev;
     for (i, s) in sigs.iter().enumerate() {
         let mut h = BlockHeader {
             version: 1,
             prev_hash,
-            merkle_root: Hash::ZERO,
-            presence_root: Hash::ZERO,
+            merkle_root: doli_core::block::compute_merkle_root(&[]),
+            presence_root,
             genesis_hash: Hash::ZERO,
             timestamp: now(),
             slot: first_slot + i as u32,
@@ -111,6 +125,17 @@ fn body_stage(sigs: &[Sig]) -> BodyStage {
         inc_i_236_block_signature_activation_height: AH,
         ..SyncConfig::default()
     };
+    body_stage_shaped(config, sigs, &[])
+}
+
+/// As `body_stage` under `config`; every body carries `bitfield` and `POST_AH_AGG`,
+/// committed by its header in the post-AH presence root.
+fn body_stage_shaped(config: SyncConfig, sigs: &[Sig], bitfield: &[u8]) -> BodyStage {
+    let root = if bitfield.is_empty() {
+        Hash::ZERO
+    } else {
+        doli_core::presence_commitment(bitfield, &POST_AH_AGG)
+    };
     let mut m = SyncManager::new(config, GENESIS);
     let peers: Vec<PeerId> = (0..3).map(|_| PeerId::random()).collect();
     for (i, p) in peers.iter().enumerate() {
@@ -123,7 +148,7 @@ fn body_stage(sigs: &[Sig]) -> BodyStage {
     }
     assert!(m.state().is_syncing(), "setup: sync started");
     let kp = KeyPair::generate();
-    let headers = link(GENESIS, 1, &kp, sigs);
+    let headers = link_shaped(GENESIS, 1, &kp, sigs, root);
     let _ = m.handle_response(peers[0], SyncResponse::Headers(headers.clone()));
     assert_eq!(
         m.pipeline.pending_headers.len(),
@@ -136,7 +161,17 @@ fn body_stage(sigs: &[Sig]) -> BodyStage {
         panic!("setup: expected GetBodies, got {req:?}");
     };
     assert_eq!(asked, headers.iter().map(|h| h.hash()).collect::<Vec<_>>());
-    let blocks = headers.into_iter().map(|h| Block::new(h, vec![])).collect();
+    let blocks = headers
+        .into_iter()
+        .map(|h| {
+            let mut b = Block::new(h, vec![]);
+            if !bitfield.is_empty() {
+                b.attestation_bitfield = bitfield.to_vec();
+                b.aggregate_bls_signature = POST_AH_AGG.to_vec();
+            }
+            b
+        })
+        .collect();
     let others = peers.into_iter().filter(|p| *p != peer).collect();
     BodyStage {
         m,
@@ -269,6 +304,38 @@ fn req_auth_016_p4_unsigned_bodies_below_ah_accepted() {
     let out =
         s.m.handle_response(s.peer, SyncResponse::Bodies(s.blocks.clone()));
     assert_all_accepted(&mut s, &out);
+}
+
+// INC-I-281 M-A (Must) — Decision: a failure means a node whose BLS AH is unset (the
+// SyncConfig default) refuses honest post-AH bodies at known heights and cannot sync.
+#[test]
+fn inc_i_281_ma_default_config_accepts_post_ah_bodies() {
+    let mut s = body_stage_shaped(SyncConfig::default(), &[Sig::None, Sig::None], &[0b01]);
+    let out =
+        s.m.handle_response(s.peer, SyncResponse::Bodies(s.blocks.clone()));
+    assert_all_accepted(&mut s, &out);
+}
+
+// INC-I-281 M-A (Must, control) — Decision: a failure means a real BLS AH above the
+// heights no longer judges a post-AH-shaped body by the pre-AH rule.
+#[test]
+fn inc_i_281_ma_real_ah_refuses_post_ah_bodies_below_it() {
+    let config = SyncConfig {
+        inc_i_178_attestation_bls_activation_height: PEER_H,
+        ..SyncConfig::default()
+    };
+    let mut s = body_stage_shaped(config, &[Sig::None, Sig::None], &[0b01]);
+    let out =
+        s.m.handle_response(s.peer, SyncResponse::Bodies(s.blocks.clone()));
+    assert!(out.is_empty(), "O4: refused bodies handed on");
+    for b in &s.blocks {
+        assert!(!s.m.pipeline.pending_blocks.contains_key(&b.hash()), "O1");
+        assert!(
+            s.m.pipeline.headers_needing_bodies.contains(&b.hash()),
+            "O3"
+        );
+    }
+    assert_eq!(s.m.pipeline.body_downloader.total_downloaded(), 0, "O2");
 }
 
 // REQ-AUTH-016 (Must) — Decision: a failure means a peer can inject a body for a hash it was never asked for.

@@ -144,8 +144,16 @@ async fn failed_walk_wrongs(fx: &mut Fx, br: &[Block], bad: &Block) -> Vec<Strin
         wrong.push("no `[REORG_RESTORE] restored` line".to_string());
     }
     let tip = br.last().unwrap().hash();
-    if !rejected(fx, tip, fx.d[1].hash()).await {
-        wrong.push("LB-9 memo does not hold the branch on D_B+1".to_string());
+    if rejected(fx, tip, fx.d[1].hash()).await {
+        wrong.push(
+            "LB-9 memo holds the branch on D_B+1 after a body-level apply failure".to_string(),
+        );
+    }
+    if inc_i_236_m2_reorg_support::cached(&fx.node, &bad.hash())
+        .await
+        .is_some()
+    {
+        wrong.push("the failing body is still in the fork cache".to_string());
     }
     wrong
 }

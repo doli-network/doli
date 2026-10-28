@@ -1,4 +1,5 @@
-//! INC-I-236: a sync body at or above the AH must carry a valid producer signature.
+//! A sync body must match its header commitments (merkle root, presence root) and,
+//! at or above the INC-I-236 AH, carry a valid producer signature.
 
 use std::collections::{HashMap, HashSet};
 
@@ -10,37 +11,34 @@ use libp2p::PeerId;
 use crate::sync::manager::SyncManager;
 
 impl SyncManager {
-    /// Requested bodies only; one at height >= AH whose signature fails stays needed.
+    /// Requested bodies only; a refused one (bad signature at h >= AH, or a body
+    /// that does not match its header at its height) stays needed. With the BLS AH
+    /// unset (`u64::MAX`) the body is judged at an unknown height (either arm).
     pub(super) fn take_requested_bodies(&mut self, peer: PeerId, bodies: Vec<Block>) -> Vec<Block> {
-        let ah = self.config.inc_i_236_block_signature_activation_height;
-        let heights = self.pending_heights_from_ah(&bodies);
+        let sig_ah = self.config.inc_i_236_block_signature_activation_height;
+        let bls_ah = self.config.inc_i_178_attestation_bls_activation_height;
+        let heights = self.pending_heights(&bodies);
         self.pipeline
             .body_downloader
             .process_response_refusing(peer, bodies, |hash, b| {
-                heights
-                    .get(hash)
-                    .is_some_and(|h| verify_block_signature_at(&b.header, *h, ah).is_err())
+                let height = heights.get(hash).copied();
+                let body_height = height.filter(|_| bls_ah != u64::MAX);
+                height.is_some_and(|h| verify_block_signature_at(&b.header, h, sig_ah).is_err())
+                    || !b.body_matches_header(bls_ah, body_height)
             })
     }
 
-    /// Heights of the pending headers named by `bodies` at or above the AH.
-    /// The pending list ends at the header downloader's continuation height.
-    fn pending_heights_from_ah(&self, bodies: &[Block]) -> HashMap<Hash, u64> {
+    /// Heights of the pending headers named by `bodies`. The pending list ends at
+    /// the header downloader's continuation height.
+    fn pending_heights(&self, bodies: &[Block]) -> HashMap<Hash, u64> {
         let pending = &self.pipeline.pending_headers;
         let first = match self.pipeline.header_downloader.next_height() {
             Some(next) => next.saturating_sub(pending.len() as u64),
             None => self.local_height.saturating_add(1),
         };
-        let skip = self
-            .config
-            .inc_i_236_block_signature_activation_height
-            .saturating_sub(first);
         let mut out = HashMap::new();
-        if skip >= pending.len() as u64 {
-            return out;
-        }
         let mut wanted: HashSet<Hash> = bodies.iter().map(Block::hash).collect();
-        for (i, header) in pending.iter().enumerate().skip(skip as usize) {
+        for (i, header) in pending.iter().enumerate() {
             if wanted.is_empty() {
                 break;
             }

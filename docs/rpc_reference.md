@@ -1880,7 +1880,7 @@ Trigger hot backfill of missing blocks from a remote seed/archive node. Admin-ga
 
 **Behavior:**
 - Scans every height 1..tip of the local block store and fetches each missing one. There is no range parameter. When nothing is missing and the source answers `verifyChainIntegrity` with a different `chainCommitment`, it re-fetches the divergent heights from the tip down.
-- Fetches with `getBlockRaw` and checks the BLAKE3 checksum that the same source supplies. This detects accidental corruption only: it is not an authenticity check, and it is skipped when the source sends no checksum. Backfill does not validate the blocks (no signature, VDF or merkle-root check).
+- Fetches with `getBlockRaw` and checks the BLAKE3 checksum that the same source supplies. This detects accidental corruption only: it is not an authenticity check, and it is skipped when the source sends no checksum. Backfill does not apply the blocks and runs no VDF check. It skips (logs `Backfill: rejected block at height …`) a block whose producer signature fails at or above the signature activation height, or whose body does not match its header (merkle root, and presence root at that height); run it again with another source to fill such a height.
 - Writes the block store only. It does not apply state and never writes the `--archive-to` directory (one node restart refills it from the block store).
 - A height the source lacks is skipped with a log warning; `backfillStatus.error` stays `null`.
 - Verify the result against a second node that is not the source: `verifyChainIntegrity [H]` compares the header hashes 1..H, and a per-height `getBlockRaw` `blake3` compare proves the block bytes (header and body). Runbook: [archiver.md §5.3](./archiver.md#53-hot-backfill-fill-and-verify-a-height-hole).
@@ -2403,7 +2403,7 @@ curl -X POST http://127.0.0.1:8500 \
 | `uncorroborated` | Branch producers hold less than 2/3 of local producer weight | spent |
 | `ineligible` | A branch block was produced by an unscheduled producer | spent |
 | `plan_refused` | No common ancestor, or the reorg depth bound was hit | spent |
-| `reorg_did_not_land` | The reorg was attempted and the tip did not reach the target (e.g. a missing intermediate body, or a branch block refused at its parent: `[REORG] … not scheduled at its parent`, or one that fails `apply_block`; the node goes back to its prior tip and rejects the branch) | spent |
+| `reorg_did_not_land` | The reorg was attempted and the tip did not reach the target (e.g. a missing intermediate body; a branch body that does not match its header, dropped before any rollback; a branch block refused at its parent: `[REORG] … not scheduled at its parent`, after which the node goes back to its prior tip and rejects the branch; or one that fails `apply_block`, after which the node goes back to its prior tip and drops that body, and the branch stays open). Branch bodies are read from the block store first, then the fork cache | spent |
 | `expired` | The TTL or the height span ended the directive before it decided | spent |
 
 ---

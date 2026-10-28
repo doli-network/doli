@@ -61,6 +61,8 @@ pub struct SyncConfig {
     pub genesis_blocks: u64,
     /// INC-I-236 header signature AH; `u64::MAX` (dormant) unless overridden.
     pub inc_i_236_block_signature_activation_height: u64,
+    /// INC-I-178 attestation AH (presence-root arm); `u64::MAX` unless overridden.
+    pub inc_i_178_attestation_bls_activation_height: u64,
 }
 
 impl SyncConfig {
@@ -85,6 +87,7 @@ impl Default for SyncConfig {
             inc_i_204_fork_choice_activation_height: u64::MAX, // dormant unless overridden
             genesis_blocks: 0,                       // window disabled unless overridden
             inc_i_236_block_signature_activation_height: u64::MAX,
+            inc_i_178_attestation_bls_activation_height: u64::MAX,
         }
     }
 }

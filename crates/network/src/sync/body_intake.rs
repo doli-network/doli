@@ -40,7 +40,7 @@ impl BodyDownloader {
             }
             if refuse(&hash, &block) {
                 warn!(
-                    "Refusing body {} from {}: invalid block signature",
+                    "Refusing body {} from {}: invalid block signature or a body that does not match its header",
                     hash, peer
                 );
                 refused.insert(hash);

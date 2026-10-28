@@ -113,47 +113,8 @@ impl Node {
         let apply_start = Instant::now();
         info!("[APPLY_START] slot={} hash={}", block_slot, block_hash);
 
-        // Pre-check: already known?
-        //
-        // INC-I-147 D4: "we have the body" is NOT the same as "it is on our chain".
-        // `remove_canonical_entry` (storage/block_store/writes.rs:203-218) deletes only
-        // CF_HEIGHT_INDEX and CF_HASH_TO_HEIGHT on rollback/reorg — the body is left in
-        // place. A bare possession check therefore refuses a rolled-back block FOREVER,
-        // which is how a transient poison-rollback became a durable fork: the node that
-        // discarded the canonical block could never re-adopt it. MEASURED 2026-07-31:
-        // n7 logged 159 `status=already_known` refusals while stranded on the losing
-        // fork, and the layer below (apply_block/mod.rs:80-108) — which handles this
-        // case correctly — was never reached.
-        //
-        // Gated by `inc_i_147_activation_height` (Q1=NO on the merits, Q2=NO: this is
-        // node-local re-adoption and changes no block content). Pre-activation the
-        // possession check stands unchanged.
-        let already_known = if self.block_store.get_block(&block_hash)?.is_some() {
-            let inc_i_147_ah = self.config.network.params().inc_i_147_activation_height;
-            let block_height = self.block_store.get_height_by_hash(&block_hash)?;
-            match block_height {
-                // Canonical at some height: genuinely already known — no-op.
-                Some(_) => true,
-                // Body present but NOT canonical (rolled back). Post-activation, fall
-                // through and let the normal path re-adopt it.
-                None => {
-                    let post_activation = self.chain_state.read().await.best_height >= inc_i_147_ah;
-                    if post_activation {
-                        info!(
-                            "[REAPPLY] block {} has a body but no canonical entry (rolled back) — re-evaluating instead of short-circuiting (INC-I-147 D4)",
-                            block_hash
-                        );
-                        false
-                    } else {
-                        true
-                    }
-                }
-            }
-        } else {
-            false
-        };
-
-        if already_known {
+        // A stored block is evaluated with its stored body, never the peer copy.
+        let Some(block) = self.intake_body(block).await? else {
             debug!("Block {} already known", block_hash);
             info!(
                 "[APPLY_END] slot={} apply_ms={} status=already_known",
@@ -161,7 +122,7 @@ impl Node {
                 apply_start.elapsed().as_millis()
             );
             return Ok(());
-        }
+        };
 
         let (best_hash, best_height, genesis_hash) = {
             let state = self.chain_state.read().await;
@@ -307,8 +268,12 @@ impl Node {
             BlockClass::ForkBlock(ForkBlockKind::ReorgCandidate) => {
                 // Parent is in our store but block doesn't extend our tip.
                 // Cache it for potential reorg evaluation.
-                self.cache_block_with_eviction(block_hash, block.clone())
-                    .await;
+                if !self
+                    .cache_block_with_eviction(block_hash, block.clone())
+                    .await
+                {
+                    return Ok(());
+                }
 
                 debug!(
                     "Block {} doesn't build on tip {} (builds on {}), cached for potential reorg",
@@ -502,7 +467,9 @@ impl Node {
             for block_hash in &reorg_result.new_blocks {
                 if let Some((_, t)) = trigger.filter(|(h, _)| h == block_hash) {
                     new_blocks.push(t.clone());
-                } else if let Some(cached_block) = cache.get(block_hash) {
+                } else if let Some(cached_block) =
+                    cache.get(block_hash).filter(|_| mode == ReorgMode::Normal)
+                {
                     new_blocks.push(cached_block.clone());
                 } else if let Ok(Some(stored_block)) = self.block_store.get_block(block_hash) {
                     debug!(

@@ -8,7 +8,7 @@ use super::*;
 
 use crypto::{BlsPublicKey, BlsSignature};
 use doli_core::attestation::bls_attest_msg;
-use doli_core::presence_commitment;
+use doli_core::presence_root_matches;
 use tracing::debug;
 
 use crate::metrics::{
@@ -39,7 +39,7 @@ pub(crate) enum Outcome {
 /// `Err` carries the stable reason label, which is both the Prometheus `reason`
 /// value and the `reason` field of the returned `ValidationError`.
 pub(crate) fn decide_attestation(
-    presence_root: &Hash,
+    root_matches: bool,
     bitfield: &[u8],
     aggregate: &[u8],
     parent_hash: &Hash,
@@ -48,7 +48,7 @@ pub(crate) fn decide_attestation(
 ) -> Result<Outcome, &'static str> {
     // Unconditional, empty bitfield included: the commitment needs no universe,
     // so it is the one check a divergent node can still make.
-    if *presence_root != presence_commitment(bitfield, aggregate) {
+    if !root_matches {
         return Err(REASON_ROOT_MISMATCH);
     }
     if universe_divergent {
@@ -106,10 +106,12 @@ impl Node {
             keys::set_bit_bls_pubkeys(&universe, &block.attestation_bitfield, &producers)
         };
 
+        let root = &block.header.presence_root;
+        let (bf, agg) = (&block.attestation_bitfield, &block.aggregate_bls_signature);
         match decide_attestation(
-            &block.header.presence_root,
-            &block.attestation_bitfield,
-            &block.aggregate_bls_signature,
+            presence_root_matches(ah, Some(height), root, bf, agg),
+            bf,
+            agg,
             &block.header.prev_hash,
             divergent,
             set_bit_keys,

@@ -310,6 +310,7 @@ impl RpcContext {
         let state = self.backfill_state.clone();
         let rpc_url = params.rpc_url.clone();
         let sig_ah = self.inc_i_236_block_signature_activation_height;
+        let bls_ah = self.inc_i_178_attestation_bls_activation_height;
 
         tokio::spawn(async move {
             info!(
@@ -419,6 +420,14 @@ impl RpcContext {
 
                 if let Err(e) = verify_block_signature_at(&block.header, h, sig_ah) {
                     error!("Backfill: rejected block at height {}: {}", h, e);
+                    skipped += 1;
+                    continue;
+                }
+                if !block.body_matches_header(bls_ah, Some(h)) {
+                    error!(
+                        "Backfill: rejected block at height {}: body does not match its header",
+                        h
+                    );
                     skipped += 1;
                     continue;
                 }

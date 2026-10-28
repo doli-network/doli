@@ -513,16 +513,14 @@ impl Node {
         // carried aggregate is bound too and the denominator is the universe width.
         if !block.attestation_bitfield.is_empty() {
             let ah = self.inc_i_178_attestation_bls_activation_height;
-            let bf = &block.attestation_bitfield;
-            if height < ah {
-                let expected =
-                    commit::block_presence_root_at(ah, height, bf, &block.aggregate_bls_signature);
-                if block.header.presence_root != expected {
-                    return Err(validation::ValidationError::InvalidTransaction(format!(
-                        "presence_root mismatch: expected {}, got {}",
-                        expected, block.header.presence_root,
-                    )));
-                }
+            let (bf, agg) = (&block.attestation_bitfield, &block.aggregate_bls_signature);
+            let root = block.header.presence_root;
+            if height < ah && !doli_core::presence_root_matches(ah, Some(height), &root, bf, agg) {
+                return Err(validation::ValidationError::InvalidTransaction(format!(
+                    "presence_root mismatch: expected {}, got {}",
+                    commit::block_presence_root_at(ah, height, bf, agg),
+                    root,
+                )));
             }
             let active: Vec<crypto::PublicKey> = {
                 let producers = self.producer_set.read().await;

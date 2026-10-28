@@ -375,6 +375,10 @@ finalized block, or in the background catch-up after a restart. If the node was 
 snap-synced, start it once on a release with the INC-I-248 fix before the backfill: the
 backfill fills the hole that the start-time trust-root check looks for (§5.4).
 
+The log line `Backfill: rejected block at height …: body does not match its header` means the
+source served a body that its header does not commit to (merkle root or presence root at that
+height). The height is skipped, not stored; run `backfillFromPeer` again with another source.
+
 ---
 
 ### 1.13. `[INTEGRITY]` Repeats `missing blocks` on an Archive Node (INC-I-253)
@@ -1317,10 +1321,15 @@ Exit code 2 means the URL or file could not be read. Read the lines:
 | `[DOOR_EPOCH] no undo epoch state at boundary h=… for h=… — current list (INC-I-281)` | debug | The undo record of the node's boundary block is gone. The door uses the current list (old behaviour). |
 | `[DOOR_EPOCH] undo epoch state at boundary h=… undecodable (…) — current list (INC-I-281)` | warn | The undo record does not decode. The door uses the current list. Report it. |
 | `[REORG] Fork block … at h=… slot … is not scheduled at its parent: … — reorg stops after i/n blocks (INC-I-281)` | warn | `execute_reorg` refused a fork block at its parent. The node goes back to its prior tip, with its Light-window flags, rejects the branch and refuses that block by its header hash in later reorgs until restart. A `forceReorgTo` then ends as `reorg_did_not_land`. |
-| `Reorg apply_block failed at block i: … — rolled back from … to …` | error | A fork block failed `apply_block` after the rollback. The node goes back to its prior tip, rejects the branch and refuses that exact block (header and body) in later reorgs until restart. |
+| `Reorg apply_block failed at block i: … — rolled back from … to …` | error | A fork block failed `apply_block` after the rollback. The node goes back to its prior tip, drops that body from the fork cache and refuses that exact block (header and body) in later reorgs until restart. It does not reject the branch and learns no anchor: a correct copy of the same header can still reorg. |
 | `[REORG_RESTORE] restored tip …` / `[REORG_RESTORE] failed: tip …, not the prior tip … — header-first sync recovers` | info / error | The result of the return to the prior tip after a refused reorg. On `failed`, report it; header-first sync moves the node on. |
-| `[REORG] Fork block … has a body that does not match its header (n such) — dropped, nothing changed (INC-I-281)` | warn | A cached fork block has a junk body (transactions do not match the merkle root). The node drops that copy before any rollback and does not reject the branch, so the correct copy can still reorg. |
-| `[REORG] Branch tip … holds fork block … that a reorg refused before — reorg refused, nothing changed (INC-I-281)` | warn | The branch holds a block that an earlier reorg refused (schedule or apply). No rollback. The doors refuse such a block earlier, with the reason `fork block … was refused by a reorg before` in their warn line. |
+| `[REORG] Fork block … has a body that does not match its header (n such) — dropped, nothing changed (INC-I-281)` | warn | A fork block has a body that does not match its header commitments (merkle root or presence root at its height). The node drops that copy before any rollback and does not reject the branch, so the correct copy can still reorg. |
+| `[REORG] Fork block … has a body a reorg refused before — dropped, nothing changed (INC-I-281)` | warn | The branch holds a body that an earlier reorg refused at apply (same header and body). No rollback. The node drops that cached copy and does not reject the branch, so a correct copy can still reorg. |
+| `[REORG] Branch tip … holds fork block … that a reorg refused before — reorg refused, nothing changed (INC-I-281)` | warn | The branch holds a block that an earlier reorg refused by its schedule. No rollback; the branch is rejected. The doors refuse such a block earlier, with the reason `fork block … was refused by a reorg before` in their warn line. |
+| `[FORK_CACHE] Fork block … not cached: its body does not match its header (INC-I-281)` | debug | A peer sent a fork body that does not match its header commitments. It is not cached and never replaces a cached body; the correct copy is fetched again. No action. |
+| `[FORK_CACHE] Fork block … not cached: a different body is cached under its hash (INC-I-281)` | debug | The fork cache keeps the first body that passes the header check. The new copy is dropped. If the kept body later fails `apply_block`, it is dropped and the next copy is cached. No action. |
+| `[FORK] RECOVERY_DONE fork tip …: no reorg (a fork body was refused)` | warn | A walked fork body failed apply. The node is on its prior tip and the branch is not rejected, so a correct copy can still reorg. No action. |
+| `Refusing body … from …: invalid block signature or a body that does not match its header` | warn | Header-first sync refused a body: a bad producer signature, or a body that does not match its header at its height. The hash stays needed and is asked of another peer. No action unless it repeats for every peer. |
 | `[REAPPLY] Holding … (slot …): removed by a fork-remedy rollback and a cached sibling wins fork choice; only fork choice may adopt a branch here (INC-I-281)` | info | The node does not take back a block that its rollback removed, because a heavier cached sibling exists. Logged once per hash. Fork choice adopts the winner. |
 
 **What to do:**

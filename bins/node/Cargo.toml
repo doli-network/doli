@@ -214,6 +214,16 @@ path = "tests/inc_i_281_m25_variants.rs"
 name = "inc_i_281_m25_restore_flags"
 path = "tests/inc_i_281_m25_restore_flags.rs"
 
+# INC-I-281 run 619 M-A same-header body variants — own binary: inc-i-281-m2-probe.sh bodyvariant runs it by name.
+[[test]]
+name = "inc_i_281_ma_body_commitments"
+path = "tests/inc_i_281_ma_body_commitments.rs"
+
+# INC-I-281 run 619 M-A body sweep (walk, reapply, forceReorgTo, GetBodies) — own binary.
+[[test]]
+name = "inc_i_281_ma_body_sweep"
+path = "tests/inc_i_281_ma_body_sweep.rs"
+
 # INC-I-236 M2 node intake (gossip pre-filter, snap anchor) and apply-entry locks.
 [[test]]
 name = "inc_i_236_m2_intake_node"

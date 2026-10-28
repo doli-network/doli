@@ -220,12 +220,12 @@ impl Node {
         self.block_store.get_hash_by_height(height).ok().flatten() == Some(*hash)
     }
 
-    /// Resolve a branch body from the same sources `execute_reorg` uses.
+    /// Resolve a branch body: the stored body first, else the fork-cache copy.
     async fn resolve_branch_block(&self, hash: &Hash) -> Option<Block> {
-        if let Some(block) = self.fork_block_cache.read().await.get(hash) {
-            return Some(block.clone());
+        if let Some(block) = self.block_store.get_block(hash).ok().flatten() {
+            return Some(block);
         }
-        self.block_store.get_block(hash).ok().flatten()
+        self.fork_block_cache.read().await.get(hash).cloned()
     }
 
     /// REQ-FORK-012 §4 — the branch's own DISTINCT block producers must hold at

@@ -19,6 +19,37 @@ pub(super) fn drain_order(cache: &HashMap<Hash, Block>, parent: Hash) -> Vec<Has
     kids.into_iter().map(|(_, _, h)| h).collect()
 }
 
+/// The fork-cache gate. A body that does not match its header at `height` is not
+/// cached. A different body cached under the hash is kept, unless `height` is
+/// known and the cached body does not match its header there.
+pub(super) fn admit(
+    cache: &mut HashMap<Hash, Block>,
+    ah: u64,
+    height: Option<u64>,
+    block: Block,
+) -> bool {
+    let hash = block.hash();
+    if !block.body_matches_header(ah, height) {
+        debug!(
+            "[FORK_CACHE] Fork block {:.16} not cached: its body does not match its header (INC-I-281)",
+            hash
+        );
+        return false;
+    }
+    let keep_cached = cache
+        .get(&hash)
+        .is_some_and(|c| *c != block && (height.is_none() || c.body_matches_header(ah, height)));
+    if keep_cached {
+        debug!(
+            "[FORK_CACHE] Fork block {:.16} not cached: a different body is cached under its hash (INC-I-281)",
+            hash
+        );
+        return false;
+    }
+    cache.insert(hash, block);
+    true
+}
+
 /// The walk seed and its longest cached descendant chain, fork-nearest first,
 /// capped at `MAX_PINNED`.
 fn seed_chain(cache: &HashMap<Hash, Block>, is_canonical: impl Fn(&Hash) -> bool) -> HashSet<Hash> {
@@ -39,13 +70,19 @@ fn seed_chain(cache: &HashMap<Hash, Block>, is_canonical: impl Fn(&Hash) -> bool
 }
 
 impl Node {
-    /// Insert a block into the fork cache. Past `CACHE_CAP`, evict the
-    /// `EVICT_BATCH` lowest-slot entries that are not on the walk-seed chain.
-    pub(super) async fn cache_block_with_eviction(&self, hash: Hash, block: Block) {
+    /// Insert a block into the fork cache through `admit`; false when it was not
+    /// cached. Past `CACHE_CAP`, evict the `EVICT_BATCH` lowest-slot entries that
+    /// are not on the walk-seed chain.
+    pub(super) async fn cache_block_with_eviction(&self, hash: Hash, block: Block) -> bool {
+        debug_assert_eq!(hash, block.hash());
+        let height = self.door_position(&block).await.map(|(h, _)| h);
+        let ah = self.inc_i_178_attestation_bls_activation_height;
         let mut cache = self.fork_block_cache.write().await;
-        cache.insert(hash, block);
+        if !admit(&mut cache, ah, height, block) {
+            return false;
+        }
         if cache.len() <= CACHE_CAP {
-            return;
+            return true;
         }
         let pinned = seed_chain(&cache, |h| self.is_canonical(h));
         let mut by_slot: Vec<(u32, Hash)> = cache
@@ -57,6 +94,7 @@ impl Node {
         for (_, h) in by_slot.into_iter().take(EVICT_BATCH) {
             cache.remove(&h);
         }
+        true
     }
 
     /// Apply cached blocks that chain on the tip, in `drain_order`. A child
@@ -74,7 +112,14 @@ impl Node {
                     continue;
                 };
                 if self.hold_removed_block(&cached).await {
-                    self.fork_block_cache.write().await.insert(h, cached);
+                    let height = self.chain_state.read().await.best_height + 1;
+                    let ah = self.inc_i_178_attestation_bls_activation_height;
+                    admit(
+                        &mut *self.fork_block_cache.write().await,
+                        ah,
+                        Some(height),
+                        cached,
+                    );
                     continue;
                 }
                 attempts += 1;
@@ -170,6 +215,34 @@ mod tests {
             fork_id: Hash::ZERO,
         };
         Block::new(header, vec![])
+    }
+
+    // OUTPUT CONTRACT: admit -> bool, cache entry under the hash.
+    // INPUT PARTITIONS: junk body (known | unknown height) | first body | identical body |
+    //   different passing body at unknown height | at a known height where the cached
+    //   body passes | at a known height where the cached body fails.
+    #[test]
+    fn admit_refuses_junk_and_keeps_a_cached_body_that_matches_its_header() {
+        let mut honest = blk(Hash::ZERO, 7);
+        honest.header.merkle_root = doli_core::block::compute_merkle_root(&[]);
+        let hash = honest.hash();
+        let mut junk = honest.clone();
+        junk.attestation_bitfield = vec![1];
+        let mut other = honest.clone();
+        other.aggregate_bls_signature = vec![9];
+        let mut cache = HashMap::new();
+        assert!(!admit(&mut cache, u64::MAX, Some(5), junk.clone()));
+        assert!(!admit(&mut cache, u64::MAX, None, junk.clone()));
+        assert!(cache.is_empty());
+        assert!(admit(&mut cache, u64::MAX, None, honest.clone()));
+        assert!(admit(&mut cache, u64::MAX, Some(5), honest.clone()));
+        assert!(!admit(&mut cache, u64::MAX, None, other.clone()));
+        assert!(!admit(&mut cache, u64::MAX, Some(5), other.clone()));
+        assert_eq!(cache.get(&hash), Some(&honest));
+        cache.insert(hash, junk);
+        assert!(!admit(&mut cache, u64::MAX, None, honest.clone()));
+        assert!(admit(&mut cache, u64::MAX, Some(5), honest.clone()));
+        assert_eq!(cache.get(&hash), Some(&honest));
     }
 
     #[test]

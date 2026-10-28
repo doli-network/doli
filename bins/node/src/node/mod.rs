@@ -12,6 +12,7 @@ mod attestation_authority_tests;
 pub use apply_block::state_fp_sr_field;
 mod block_handling;
 mod block_serve;
+mod body_commitments;
 pub mod bootstrap_redial;
 #[cfg(test)]
 mod bootstrap_redial_tests;

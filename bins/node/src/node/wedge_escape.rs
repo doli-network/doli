@@ -152,8 +152,12 @@ impl Node {
         );
 
         // c. Cache the body (execute_reorg fetches new-block bodies from here).
-        self.cache_block_with_eviction(fork_tip_hash, block.clone())
-            .await;
+        if !self
+            .cache_block_with_eviction(fork_tip_hash, block.clone())
+            .await
+        {
+            return Ok(());
+        }
 
         // FIX B (AUDIT-P2-001/P2-002): mark this hash as an eligibility-VALIDATED
         // retained fork block. ONLY descendants whose parent is in this set may be

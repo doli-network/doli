@@ -121,7 +121,6 @@ impl Node {
             return Ok(());
         };
         let tip_before = self.chain_state.read().await.best_hash;
-        let junk_body = super::reorg_refusals::has_junk_body(&recovery.blocks);
         let mut result = Ok(());
         let mut eligible = true;
         let fork_base = self
@@ -129,6 +128,9 @@ impl Node {
             .get_height_by_hash(&recovery.connection_point)
             .ok()
             .flatten();
+        let junk = self.drop_junk_bodies(&recovery.blocks, fork_base).await;
+        let junk_body = !junk.is_empty();
+        let body_refusals = self.refused_reorg_blocks.body_refusals();
         let mut anchor = None;
         for (offset, block) in recovery.blocks.iter().enumerate() {
             let height = fork_base.map(|h| h.saturating_add(offset as u64 + 1));
@@ -150,22 +152,25 @@ impl Node {
                 .anchor_of(block, height)
                 .or(anchor);
         }
-        if eligible {
+        if eligible && !junk_body {
             result = self.evaluate_recovered_fork(recovery).await;
         }
+        let body_refused = self.refused_reorg_blocks.body_refusals() != body_refusals;
         let tip_after = self.chain_state.read().await.best_hash;
         if tip_after == tip_before {
             let reason = match (&result, eligible) {
                 (_, false) => "ineligible walked block".to_string(),
                 (Err(e), _) => format!("reorg failed: {}", e),
                 _ if junk_body => "a walked body does not match its header".to_string(),
+                _ if body_refused => "a fork body was refused".to_string(),
                 _ => "not heavier or refused by finality".to_string(),
             };
             warn!(
                 "[FORK] RECOVERY_DONE fork tip {:.16}: no reorg ({})",
                 fork_tip, reason
             );
-            if !junk_body && !super::header_auth::is_fork_signature_rejection(&result) {
+            let body_level = junk_body || body_refused;
+            if !body_level && !super::header_auth::is_fork_signature_rejection(&result) {
                 let branch_tip = {
                     let cache = self.fork_block_cache.read().await;
                     cached_branch_tip(&cache, fork_tip)

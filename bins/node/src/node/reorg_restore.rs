@@ -1,6 +1,6 @@
 //! A Normal reorg that refuses a fork block, by its schedule check or by an
-//! apply failure, returns the node to the tip it had before the reorg, and the
-//! refused block stays refused.
+//! apply failure, returns the node to the tip it had before the reorg. Only a
+//! schedule refusal rejects the branch; an apply failure refuses that body only.
 
 use super::reorg_refusals::Refusal;
 use super::*;
@@ -16,13 +16,15 @@ pub(super) enum ReorgMode {
 pub(super) enum ReorgStop {
     /// A new block was refused before; nothing was rolled back.
     Remembered { branch_tip: Hash },
-    /// A new block's body does not match its header; nothing was rolled back.
+    /// A new block's body was refused (it does not match its header, or a
+    /// reorg refused that body before); nothing was rolled back.
     JunkBody,
-    /// `refusal` was refused after `applied` fork blocks landed.
+    /// `refusal` of `block` was refused after `applied` fork blocks landed.
     Refused {
         refusal: Refusal,
         applied: Vec<Hash>,
         branch_tip: Hash,
+        block: Hash,
     },
 }
 
@@ -42,6 +44,7 @@ impl ReorgStop {
             refusal,
             applied: hashes[..i].to_vec(),
             branch_tip: hashes[hashes.len() - 1],
+            block: hashes[i],
         }
     }
 }
@@ -49,7 +52,7 @@ impl ReorgStop {
 impl Node {
     /// Execute a chain reorganization. Not atomic: when the schedule check or
     /// apply_block refuses a fork block the node is restored to its prior tip,
-    /// with its Light-window flags, and the branch is rejected.
+    /// with its Light-window flags; only a schedule refusal rejects the branch.
     pub async fn execute_reorg(
         &mut self,
         reorg_result: ReorgResult,
@@ -67,15 +70,23 @@ impl Node {
             .run_reorg(reorg_result, Some(triggering_block), ReorgMode::Normal)
             .await?;
         let branch_tip = match stop {
-            None | Some(ReorgStop::JunkBody) => return Ok(()),
+            None => return Ok(()),
+            Some(ReorgStop::JunkBody) => {
+                self.refused_reorg_blocks.note_body_refusal();
+                return Ok(());
+            }
             Some(ReorgStop::Remembered { branch_tip }) => branch_tip,
             Some(ReorgStop::Refused {
                 refusal,
                 applied,
                 branch_tip,
+                block,
             }) => {
                 self.refused_reorg_blocks.insert(refusal);
-                self.learn_anchor(&applied).await;
+                let body = self.refused_body(refusal, &block).await;
+                if !body {
+                    self.learn_anchor(&applied).await;
+                }
                 let plan = ReorgResult {
                     rollback: applied,
                     common_ancestor: ancestor,
@@ -88,6 +99,9 @@ impl Node {
                         self.floor_fallback_window,
                         self.floor_fallback_boundaries,
                     ) = window;
+                }
+                if body {
+                    return Ok(());
                 }
                 branch_tip
             }

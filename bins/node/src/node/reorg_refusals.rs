@@ -1,5 +1,5 @@
 //! What a Normal reorg refuses before its rollback: a fork block whose body
-//! does not match its header, and a fork block that a reorg refused before.
+//! does not match its header commitments, and a fork block that a reorg refused before.
 //! Also the boundary blocks those refused reorgs had applied (learned anchors).
 
 use std::collections::VecDeque;
@@ -48,6 +48,7 @@ pub(super) fn content_key(block: &Block) -> Hash {
 pub struct RefusedReorgBlocks {
     refused: VecDeque<Refusal>,
     anchors: VecDeque<LearnedAnchor>,
+    body_refusals: u64,
 }
 
 impl RefusedReorgBlocks {
@@ -62,15 +63,33 @@ impl RefusedReorgBlocks {
     }
 
     fn refuses(&self, block: &Block) -> bool {
-        if self.refused.contains(&Refusal::Unscheduled(block.hash())) {
-            return true;
+        self.refusal_of(block).is_some()
+    }
+
+    /// The refusal that holds `block`: by its header hash, else by its content.
+    fn refusal_of(&self, block: &Block) -> Option<Refusal> {
+        let unscheduled = Refusal::Unscheduled(block.hash());
+        if self.refused.contains(&unscheduled) {
+            return Some(unscheduled);
         }
-        self.refused
+        if !self
+            .refused
             .iter()
             .any(|r| matches!(r, Refusal::ApplyFailed(_)))
-            && self
-                .refused
-                .contains(&Refusal::ApplyFailed(content_key(block)))
+        {
+            return None;
+        }
+        let failed = Refusal::ApplyFailed(content_key(block));
+        self.refused.contains(&failed).then_some(failed)
+    }
+
+    /// Counts a reorg or walk stopped by a fork body, not by its header or branch.
+    pub(super) fn note_body_refusal(&mut self) {
+        self.body_refusals = self.body_refusals.wrapping_add(1);
+    }
+
+    pub(super) fn body_refusals(&self) -> u64 {
+        self.body_refusals
     }
 
     /// False when an anchor with this hash is already held.
@@ -118,11 +137,6 @@ fn last_boundary(applied: &[Hash], tip_height: u64, blocks_per_epoch: u64) -> Op
         .rev()
         .map(|(k, h)| (*h, first + k as u64))
         .find(|(_, h)| h.is_multiple_of(blocks_per_epoch))
-}
-
-/// `true` when some block's body does not match its header's merkle root.
-pub(super) fn has_junk_body(blocks: &[Block]) -> bool {
-    blocks.iter().any(|b| !b.verify_merkle_root())
 }
 
 impl Node {
@@ -174,16 +188,10 @@ impl Node {
         if mode != ReorgMode::Normal {
             return None;
         }
-        let junk: Vec<Hash> = new_blocks
-            .iter()
-            .filter(|b| !b.verify_merkle_root())
-            .map(Block::hash)
-            .collect();
+        let parent = new_blocks.first()?.header.prev_hash;
+        let base = self.block_store.get_height_by_hash(&parent).ok().flatten();
+        let junk = self.drop_junk_bodies(new_blocks, base).await;
         if let Some(first) = junk.first() {
-            let mut cache = self.fork_block_cache.write().await;
-            for hash in &junk {
-                cache.remove(hash);
-            }
             warn!(
                 "[REORG] Fork block {:.16} has a body that does not match its header ({} such) — dropped, nothing changed (INC-I-281)",
                 first,
@@ -191,9 +199,18 @@ impl Node {
             );
             return Some(ReorgStop::JunkBody);
         }
-        let hit = new_blocks
-            .iter()
-            .find(|b| self.refused_reorg_blocks.refuses(b))?;
+        let (hit, refusal) = new_blocks.iter().find_map(|b| {
+            let r = self.refused_reorg_blocks.refusal_of(b)?;
+            Some((b, r))
+        })?;
+        if let Refusal::ApplyFailed(key) = refusal {
+            self.evict_cached_body(&hit.hash(), key).await;
+            warn!(
+                "[REORG] Fork block {:.16} has a body a reorg refused before — dropped, nothing changed (INC-I-281)",
+                hit.hash()
+            );
+            return Some(ReorgStop::JunkBody);
+        }
         let branch_tip = new_blocks.last()?.hash();
         warn!(
             "[REORG] Branch tip {:.16} holds fork block {:.16} that a reorg refused before — reorg refused, nothing changed (INC-I-281)",
