@@ -2365,7 +2365,7 @@ The call does not perform a reorg. It arms a directive that the node evaluates o
 - **expiring** — it dies after `FORCE_REORG_TTL_SECS` (300s) of wall clock, or once the local tip has advanced more than `FORCE_REORG_MAX_HEIGHT_SPAN` (50) blocks past the height it was armed at.
 - **single-shot** — spent on the first evaluation that reaches a decision. Arming again replaces the pending directive; there is never more than one.
 - **corroboration-gated** — refused unless the DISTINCT block producers of the target branch hold at least two thirds of the local `ProducerSet` weight. The evidence is the branch's own signed block headers joined to the local producer set; no peer-advertised quantity is consulted.
-- **eligibility-gated** — refused unless every block on the target branch was produced by its deterministically-scheduled slot leader. Each block is judged with the epoch list in force at its own height (INC-I-281). A block after an epoch boundary that only the target branch holds is checked here for signature and membership only; the reorg then checks its schedule at its parent and stops at a refused block (outcome `reorg_did_not_land`).
+- **eligibility-gated** — refused unless every block on the target branch was produced by its deterministically-scheduled slot leader. Each block is judged with the epoch list in force at its own height (INC-I-281). A block after an epoch boundary that only the target branch holds is checked here for signature and membership only; the reorg then checks its schedule at its parent and stops at a refused block (outcome `reorg_did_not_land`). If an earlier refused reorg applied that boundary block (a learned anchor), the block is judged here with the anchor's list, and an unscheduled block gives `ineligible` with no rollback. A branch that holds a block a reorg refused before also gives `ineligible`.
 
 It crosses the finality **marker** (`ReorgHandler.last_finality_height`) under audit — this is the capability the wedge escape exists for, and the reason the call is admin-only and counted. It never mutates the `FinalityTracker` (the monotone record of what the node finalized), never invokes snap sync, and never discards the losing branch's block bodies.
 
@@ -2403,7 +2403,7 @@ curl -X POST http://127.0.0.1:8500 \
 | `uncorroborated` | Branch producers hold less than 2/3 of local producer weight | spent |
 | `ineligible` | A branch block was produced by an unscheduled producer | spent |
 | `plan_refused` | No common ancestor, or the reorg depth bound was hit | spent |
-| `reorg_did_not_land` | The reorg was attempted and the tip did not reach the target (e.g. a missing intermediate body, or a branch block refused at its parent: `[REORG] … not scheduled at its parent`; the node keeps the blocks applied before it) | spent |
+| `reorg_did_not_land` | The reorg was attempted and the tip did not reach the target (e.g. a missing intermediate body, or a branch block refused at its parent: `[REORG] … not scheduled at its parent`, or one that fails `apply_block`; the node goes back to its prior tip and rejects the branch) | spent |
 | `expired` | The TTL or the height span ended the directive before it decided | spent |
 
 ---
