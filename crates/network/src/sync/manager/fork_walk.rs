@@ -58,6 +58,14 @@ impl SyncManager {
             .mark_branch_rejected(branch_tip, local_tip);
     }
 
+    /// (peer, reported best height) of every peer with a known status.
+    pub fn peer_heights(&self) -> Vec<(PeerId, u64)> {
+        self.peers
+            .iter()
+            .map(|(p, s)| (*p, s.best_height))
+            .collect()
+    }
+
     /// Was this branch already walked and not adopted on this local tip?
     pub fn is_fork_branch_rejected(&self, branch_tip: Hash, local_tip: Hash) -> bool {
         self.fork

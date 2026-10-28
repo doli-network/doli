@@ -60,7 +60,7 @@ pub(super) fn select_walk_seed(
 }
 
 /// Tip of the cached chain that descends from `from` (itself when it has none).
-fn cached_branch_tip(cache: &HashMap<Hash, Block>, from: Hash) -> Hash {
+pub(super) fn cached_branch_tip(cache: &HashMap<Hash, Block>, from: Hash) -> Hash {
     cached_branches(cache)
         .get(&from)
         .map_or(from, |(_, tip)| *tip)
@@ -129,10 +129,12 @@ impl Node {
             .ok()
             .flatten();
         let junk = self.drop_junk_bodies(&recovery.blocks, fork_base).await;
+        self.walk_bodies_failed(&recovery, &junk, fork_base).await;
         let junk_body = !junk.is_empty();
         let body_refusals = self.refused_reorg_blocks.body_refusals();
+        let replayed = self.walk_replays_refused(&recovery, fork_base).await;
         let mut anchor = None;
-        for (offset, block) in recovery.blocks.iter().enumerate() {
+        for (offset, block) in recovery.blocks.iter().enumerate().filter(|_| !replayed) {
             let height = fork_base.map(|h| h.saturating_add(offset as u64 + 1));
             if let Err(e) = self
                 .check_producer_eligibility_at(block, height, fork_base, anchor)
@@ -152,7 +154,7 @@ impl Node {
                 .anchor_of(block, height)
                 .or(anchor);
         }
-        if eligible && !junk_body {
+        if eligible && !junk_body && !replayed {
             result = self.evaluate_recovered_fork(recovery).await;
         }
         let body_refused = self.refused_reorg_blocks.body_refusals() != body_refusals;

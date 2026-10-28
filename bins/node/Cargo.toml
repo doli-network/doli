@@ -224,6 +224,15 @@ path = "tests/inc_i_281_ma_body_commitments.rs"
 name = "inc_i_281_ma_body_sweep"
 path = "tests/inc_i_281_ma_body_sweep.rs"
 
+# INC-I-281 run 620 M-B variant-first body retry — own binary: inc-i-281-m2-probe.sh bodyretry runs it by name.
+[[test]]
+name = "inc_i_281_mb_body_retry"
+path = "tests/inc_i_281_mb_body_retry.rs"
+
+[[test]]
+name = "inc_i_281_mb_body_sites"
+path = "tests/inc_i_281_mb_body_sites.rs"
+
 # INC-I-236 M2 node intake (gossip pre-filter, snap anchor) and apply-entry locks.
 [[test]]
 name = "inc_i_236_m2_intake_node"

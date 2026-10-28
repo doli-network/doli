@@ -331,6 +331,8 @@ pub(crate) struct SyncPipeline {
     pub body_downloader: BodyDownloader,
     /// Body stall retry counter
     pub body_stall_retries: u32,
+    /// (supplier, slot) of bodies refused on content, drained by the node
+    pub refused_body_suppliers: VecDeque<(PeerId, u32)>,
 }
 
 impl SyncPipeline {
@@ -350,6 +352,7 @@ impl SyncPipeline {
                 config.request_timeout,
             ),
             body_stall_retries: 0,
+            refused_body_suppliers: VecDeque::new(),
         }
     }
 }

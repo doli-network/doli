@@ -394,6 +394,10 @@ impl Logs {
             .count()
     }
 
+    pub fn lines(&self) -> Vec<String> {
+        self.0.lock().unwrap().clone()
+    }
+
     pub fn subscriber(&self) -> impl tracing::Subscriber + Send + Sync {
         tracing_subscriber::registry().with(self.clone())
     }

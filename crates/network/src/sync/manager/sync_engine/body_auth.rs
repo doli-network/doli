@@ -1,6 +1,7 @@
 //! A sync body must match its header commitments (merkle root, presence root) and,
 //! at or above the INC-I-236 AH, carry a valid producer signature.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use crypto::Hash;
@@ -10,6 +11,8 @@ use libp2p::PeerId;
 
 use crate::sync::manager::SyncManager;
 
+const REFUSED_SUPPLIERS_CAP: usize = 64;
+
 impl SyncManager {
     /// Requested bodies only; a refused one (bad signature at h >= AH, or a body
     /// that does not match its header at its height) stays needed. With the BLS AH
@@ -18,14 +21,34 @@ impl SyncManager {
         let sig_ah = self.config.inc_i_236_block_signature_activation_height;
         let bls_ah = self.config.inc_i_178_attestation_bls_activation_height;
         let heights = self.pending_heights(&bodies);
-        self.pipeline
-            .body_downloader
-            .process_response_refusing(peer, bodies, |hash, b| {
-                let height = heights.get(hash).copied();
-                let body_height = height.filter(|_| bls_ah != u64::MAX);
-                height.is_some_and(|h| verify_block_signature_at(&b.header, h, sig_ah).is_err())
-                    || !b.body_matches_header(bls_ah, body_height)
-            })
+        let refused = RefCell::new(Vec::new());
+        let accepted =
+            self.pipeline
+                .body_downloader
+                .process_response_refusing(peer, bodies, |hash, b| {
+                    let height = heights.get(hash).copied();
+                    let body_height = height.filter(|_| bls_ah != u64::MAX);
+                    let bad = height
+                        .is_some_and(|h| verify_block_signature_at(&b.header, h, sig_ah).is_err())
+                        || !b.body_matches_header(bls_ah, body_height);
+                    if bad {
+                        refused.borrow_mut().push(b.header.slot);
+                    }
+                    bad
+                });
+        let queue = &mut self.pipeline.refused_body_suppliers;
+        for slot in refused.into_inner() {
+            queue.push_back((peer, slot));
+            if queue.len() > REFUSED_SUPPLIERS_CAP {
+                queue.pop_front();
+            }
+        }
+        accepted
+    }
+
+    /// (supplier, slot) of every sync body refused since the last call.
+    pub fn take_refused_body_suppliers(&mut self) -> Vec<(PeerId, u32)> {
+        self.pipeline.refused_body_suppliers.drain(..).collect()
     }
 
     /// Heights of the pending headers named by `bodies`. The pending list ends at

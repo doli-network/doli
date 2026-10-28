@@ -73,13 +73,20 @@ impl Node {
     /// Insert a block into the fork cache through `admit`; false when it was not
     /// cached. Past `CACHE_CAP`, evict the `EVICT_BATCH` lowest-slot entries that
     /// are not on the walk-seed chain.
-    pub(super) async fn cache_block_with_eviction(&self, hash: Hash, block: Block) -> bool {
+    pub(super) async fn cache_block_with_eviction(&mut self, hash: Hash, block: Block) -> bool {
         debug_assert_eq!(hash, block.hash());
         let height = self.door_position(&block).await.map(|(h, _)| h);
+        if !self.screen_peer_copy(&block, height).await {
+            return false;
+        }
+        let copy = self.intake_copy(&block);
         let ah = self.inc_i_178_attestation_bls_activation_height;
         let mut cache = self.fork_block_cache.write().await;
         if !admit(&mut cache, ah, height, block) {
             return false;
+        }
+        if let Some(c) = copy {
+            self.body_retry.note_cached(c);
         }
         if cache.len() <= CACHE_CAP {
             return true;
@@ -127,7 +134,7 @@ impl Node {
                     "[ORPHAN_APPLY] Applying cached orphan {:.8} (slot {}) from fork cache [{}/{}]",
                     h, cached.header.slot, attempts, MAX_DRAIN
                 );
-                match self.apply_block(cached, mode).await {
+                match self.apply_peer_body(cached, mode).await {
                     Ok(()) => continue 'tip,
                     Err(e) => warn!("[ORPHAN_APPLY] Cached orphan {:.8} rejected: {}", h, e),
                 }

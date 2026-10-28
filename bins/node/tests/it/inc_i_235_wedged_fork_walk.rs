@@ -301,6 +301,7 @@ async fn lock_fixture_converges_once_walk_result_reaches_fork_choice() {
     let done = network::sync::CompletedRecovery {
         blocks: vec![fx.canon[0].clone(), fx.canon[1].clone()],
         connection_point: fx.base[4].hash(),
+        suppliers: Vec::new(),
     };
     fx.node.handle_completed_fork_recovery(done).await.unwrap();
     let after_reorg = fx.node.chain_state.read().await.best_height;

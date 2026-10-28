@@ -13,6 +13,7 @@ pub use apply_block::state_fp_sr_field;
 mod block_handling;
 mod block_serve;
 mod body_commitments;
+mod body_retry;
 pub mod bootstrap_redial;
 #[cfg(test)]
 mod bootstrap_redial_tests;
@@ -290,6 +291,8 @@ pub struct Node {
     pub wedge_retained_tips: HashSet<Hash>,
     /// Fork blocks a reorg refused (schedule or apply); a reorg onto one is refused.
     refused_reorg_blocks: reorg_refusals::RefusedReorgBlocks,
+    /// Supplier, failure and by-hash refetch record of fork body copies (INC-I-281).
+    pub(crate) body_retry: body_retry::BodyRetry,
     /// ORPHAN_CHASE requests decided (sent, or due when no network is attached).
     orphan_chase_requests: u64,
     orphan_chase_guard: orphan_chase::OrphanChaseGuard,

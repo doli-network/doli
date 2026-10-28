@@ -103,8 +103,8 @@ pub(crate) fn classify_gossip_block(
 pub(super) const ORPHAN_CHASE_REPEAT_WINDOW: Duration = Duration::from_secs(3);
 
 impl Node {
-    /// Handle a new block from the network
-    pub async fn handle_new_block(&mut self, block: Block, source_peer: PeerId) -> Result<()> {
+    /// Handle a new block from the network (behind `handle_new_block`).
+    pub(super) async fn process_block(&mut self, block: Block, source_peer: PeerId) -> Result<()> {
         let block_hash = block.hash();
         let block_slot = block.header.slot;
 
@@ -400,7 +400,7 @@ impl Node {
         } else {
             ValidationMode::Full
         };
-        if let Err(e) = self.apply_block(block, mode).await {
+        if let Err(e) = self.apply_peer_body(block, mode).await {
             let err_str = e.to_string();
             warn!(
                 "[BLOCK] REJECT slot={} h={} producer={} error={} — skipping, sync will catch up",

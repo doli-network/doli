@@ -50,8 +50,7 @@ impl Node {
         }
 
         // 2. Move fork blocks to fork_block_cache (execute_reorg reads from here)
-        self.cache_walked(&recovery.blocks, &recovery.connection_point)
-            .await;
+        self.cache_walked(&recovery).await;
 
         // 3. Try simple reorg first (works for single-block forks within recent_blocks)
         let fork_tip = recovery.blocks.last().unwrap();
@@ -213,7 +212,7 @@ impl Node {
                         let mut cache = self.fork_block_cache.write().await;
                         cache.remove(&block.hash());
                     }
-                    self.apply_block(block, ValidationMode::Full).await?;
+                    self.apply_peer_body(block, ValidationMode::Full).await?;
                 }
 
                 return Ok(());

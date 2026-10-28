@@ -2,6 +2,7 @@
 //! apply failure, returns the node to the tip it had before the reorg. Only a
 //! schedule refusal rejects the branch; an apply failure refuses that body only.
 
+use super::body_retry::BodyFault;
 use super::reorg_refusals::Refusal;
 use super::*;
 
@@ -18,7 +19,7 @@ pub(super) enum ReorgStop {
     Remembered { branch_tip: Hash },
     /// A new block's body was refused (it does not match its header, or a
     /// reorg refused that body before); nothing was rolled back.
-    JunkBody,
+    JunkBody(Vec<BodyFault>),
     /// `refusal` of `block` was refused after `applied` fork blocks landed.
     Refused {
         refusal: Refusal,
@@ -71,8 +72,11 @@ impl Node {
             .await?;
         let branch_tip = match stop {
             None => return Ok(()),
-            Some(ReorgStop::JunkBody) => {
+            Some(ReorgStop::JunkBody(faults)) => {
                 self.refused_reorg_blocks.note_body_refusal();
+                for fault in faults {
+                    self.body_failed(fault).await;
+                }
                 return Ok(());
             }
             Some(ReorgStop::Remembered { branch_tip }) => branch_tip,

@@ -196,6 +196,7 @@ impl Node {
             plan.new_blocks.len(),
             plan.common_ancestor
         );
+        self.pin_branch_bodies(&branch_blocks).await;
         if let Err(e) = self.execute_reorg(plan, target_block).await {
             error!("[FORCE_REORG] execute_reorg failed for {}: {}", target, e);
             return ForceReorgOutcome::ReorgDidNotLand;
@@ -218,6 +219,14 @@ impl Node {
             return false;
         };
         self.block_store.get_hash_by_height(height).ok().flatten() == Some(*hash)
+    }
+
+    /// The checked branch bodies are the copies the reorg applies.
+    async fn pin_branch_bodies(&self, branch_blocks: &[Block]) {
+        let mut cache = self.fork_block_cache.write().await;
+        for block in branch_blocks {
+            cache.insert(block.hash(), block.clone());
+        }
     }
 
     /// Resolve a branch body: the stored body first, else the fork-cache copy.

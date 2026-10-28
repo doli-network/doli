@@ -180,6 +180,7 @@ async fn inc_i_281_removed_block_held_while_sibling_known_after_window() {
     let walk = CompletedRecovery {
         blocks: r.dead[..2].to_vec(),
         connection_point: r.f_hash,
+        suppliers: Vec::new(),
     };
     r.node
         .handle_completed_fork_recovery(walk)

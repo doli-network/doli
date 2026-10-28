@@ -4,6 +4,7 @@
 
 use std::collections::VecDeque;
 
+use super::body_retry::{faults_of, Fault};
 use super::reorg_restore::{ReorgMode, ReorgStop};
 use super::reorg_schedule::ScheduleInputs;
 use super::*;
@@ -64,6 +65,11 @@ impl RefusedReorgBlocks {
 
     fn refuses(&self, block: &Block) -> bool {
         self.refusal_of(block).is_some()
+    }
+
+    /// True when a reorg refused this exact content and not its header hash.
+    pub(super) fn content_refused(&self, block: &Block) -> bool {
+        matches!(self.refusal_of(block), Some(Refusal::ApplyFailed(_)))
     }
 
     /// The refusal that holds `block`: by its header hash, else by its content.
@@ -197,7 +203,13 @@ impl Node {
                 first,
                 junk.len()
             );
-            return Some(ReorgStop::JunkBody);
+            return Some(ReorgStop::JunkBody(faults_of(
+                new_blocks,
+                &junk,
+                base,
+                &[],
+                Fault::Junk,
+            )));
         }
         let (hit, refusal) = new_blocks.iter().find_map(|b| {
             let r = self.refused_reorg_blocks.refusal_of(b)?;
@@ -209,7 +221,8 @@ impl Node {
                 "[REORG] Fork block {:.16} has a body a reorg refused before — dropped, nothing changed (INC-I-281)",
                 hit.hash()
             );
-            return Some(ReorgStop::JunkBody);
+            let faults = faults_of(new_blocks, &[hit.hash()], base, &[], Fault::Failed);
+            return Some(ReorgStop::JunkBody(faults));
         }
         let branch_tip = new_blocks.last()?.hash();
         warn!(

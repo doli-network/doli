@@ -2,6 +2,7 @@
 //! presence root) before the node caches or uses it. A body-level refusal drops
 //! that body only: its header and branch stay open.
 
+use super::body_retry::{BodyFault, Fault};
 use super::reorg_refusals::{content_key, Refusal};
 use super::*;
 
@@ -46,42 +47,35 @@ impl Node {
         }
     }
 
-    /// For an apply failure: drops that cached body and counts a body refusal.
+    /// For an apply failure: a body failure of that copy, and a counted body refusal.
     pub(super) async fn refused_body(&mut self, refusal: Refusal, hash: &Hash) -> bool {
         let Refusal::ApplyFailed(key) = refusal else {
             return false;
         };
-        self.evict_cached_body(hash, key).await;
+        let height = Some(self.chain_state.read().await.best_height.saturating_add(1));
+        let fault = BodyFault {
+            hash: *hash,
+            key,
+            height,
+            source: None,
+            kind: Fault::Failed,
+        };
+        self.body_failed(fault).await;
         self.refused_reorg_blocks.note_body_refusal();
         true
     }
 
-    /// Light apply of a walked direct successor; a failure drops its cached copy
-    /// and counts a body refusal.
+    /// Light apply of a walked direct successor; a failure is a body failure of
+    /// that copy and a counted body refusal.
     pub(super) async fn apply_fork_successor(&mut self, block: &Block) -> Result<()> {
         let result = self.apply_block(block.clone(), ValidationMode::Light).await;
         if result.is_err() {
-            self.evict_cached_body(&block.hash(), content_key(block))
+            let height = self.chain_state.read().await.best_height.saturating_add(1);
+            self.body_failed(BodyFault::of(block, Some(height), None, Fault::Failed))
                 .await;
             self.refused_reorg_blocks.note_body_refusal();
         }
         result
-    }
-
-    /// Caches walked `blocks` through the fork-cache gate at their heights above
-    /// `connection_point`.
-    pub(super) async fn cache_walked(&self, blocks: &[Block], connection_point: &Hash) {
-        let base = self
-            .block_store
-            .get_height_by_hash(connection_point)
-            .ok()
-            .flatten();
-        let ah = self.inc_i_178_attestation_bls_activation_height;
-        let mut cache = self.fork_block_cache.write().await;
-        for (i, block) in blocks.iter().enumerate() {
-            let height = base.map(|h| h.saturating_add(i as u64 + 1));
-            super::fork_cache::admit(&mut cache, ah, height, block.clone());
-        }
     }
 
     /// The body `handle_new_block` evaluates: `None` for a known block; the
