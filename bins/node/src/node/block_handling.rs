@@ -1,3 +1,4 @@
+use super::reorg_refusals::content_key;
 use super::reorg_restore::{ReorgMode, ReorgStop};
 use super::*;
 
@@ -546,7 +547,7 @@ impl Node {
                 return Ok(None);
             }
         }
-        if let Some(stop) = self.remembered_refusal(&new_blocks, mode) {
+        if let Some(stop) = self.pre_rollback_stop(&new_blocks, mode).await {
             return Ok(Some(stop));
         }
 
@@ -1043,6 +1044,7 @@ impl Node {
             {
                 return Ok(Some(ReorgStop::unscheduled(&hashes, i)));
             }
+            let key = (mode == ReorgMode::Normal).then(|| content_key(&block));
             if let Err(e) = self.apply_block(block, ValidationMode::Light).await {
                 let post_height = self.chain_state.read().await.best_height;
                 error!(
@@ -1066,7 +1068,7 @@ impl Node {
                         post_height
                     );
                 }
-                return Ok(None);
+                return Ok(key.map(|k| ReorgStop::apply_failed(k, &hashes, i)));
             }
         }
 

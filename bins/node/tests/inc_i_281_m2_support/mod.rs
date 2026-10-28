@@ -314,6 +314,73 @@ pub fn probe_suppressor(name: &str, peer_progress: bool) {
     );
 }
 
+/// INC-I-281 M2.5: lines only a rollback, a fork apply or a restore emits.
+pub const ROLLBACK_LINES: [&str; 7] = [
+    "Rolling back from height",
+    "Undo-based rollback",
+    "[ROLLBACK] Initiating",
+    "ROLLBACK_DONE",
+    "new blocks from fork",
+    "is not scheduled at its parent",
+    "[REORG_RESTORE]",
+];
+
+pub fn rollback_lines(logs: &Logs) -> Vec<(&'static str, usize)> {
+    ROLLBACK_LINES
+        .iter()
+        .map(|l| (*l, logs.mentioning(l)))
+        .filter(|(_, n)| *n > 0)
+        .collect()
+}
+
+/// A transfer that spends an outpoint no block created.
+pub fn missing_spend() -> doli_core::Transaction {
+    doli_core::Transaction::new_transfer(
+        vec![doli_core::Input::new(
+            crypto::hash::hash(b"inc-i-281-m25-missing-utxo"),
+            0,
+        )],
+        vec![doli_core::Output::normal(
+            1,
+            doli_core::consensus::reward_pool_pubkey_hash(),
+        )],
+    )
+}
+
+/// `b` plus `missing_spend`, merkle root recomputed, re-signed by `by`: a new hash.
+pub fn with_missing_spend(b: &Block, by: &KeyPair) -> Block {
+    let mut txs = b.transactions.clone();
+    txs.push(missing_spend());
+    let mut header = b.header.clone();
+    header.merkle_root = doli_core::block::compute_merkle_root(&txs);
+    crate::block_sig::sign_header(&mut header, by);
+    let out = Block::new(header, txs);
+    assert!(out.verify_merkle_root(), "fixture: merkle root valid");
+    out
+}
+
+/// `b`'s header with an empty body (the M3a stub shape): same hash, bad merkle root.
+pub fn junk_body(b: &Block) -> Block {
+    let junk = Block::new(b.header.clone(), vec![]);
+    assert!(!junk.verify_merkle_root(), "fixture: junk body");
+    junk
+}
+
+/// Producer set, in memory and persisted. No UTXO view: new_for_test keeps an empty in-memory
+/// UtxoSet, which every reorg's atomic_replace persists.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Ledger {
+    pub producers: Vec<u8>,
+    pub persisted_producers: Vec<u8>,
+}
+
+pub async fn ledger(node: &Node) -> Ledger {
+    Ledger {
+        producers: node.producer_set.read().await.serialize_canonical(),
+        persisted_producers: node.state_db.load_producer_set().serialize_canonical(),
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct Logs(Arc<Mutex<Vec<String>>>);
 

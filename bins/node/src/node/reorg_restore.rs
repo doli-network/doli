@@ -1,12 +1,9 @@
-//! A reorg that the in-reorg schedule check refuses returns the node to the
-//! tip it had before the reorg, and the refused block stays refused.
+//! A Normal reorg that refuses a fork block, by its schedule check or by an
+//! apply failure, returns the node to the tip it had before the reorg, and the
+//! refused block stays refused.
 
-use std::collections::VecDeque;
-
+use super::reorg_refusals::Refusal;
 use super::*;
-
-/// Refused fork blocks remembered (FIFO).
-const REFUSED_REORG_CAP: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ReorgMode {
@@ -15,13 +12,15 @@ pub(super) enum ReorgMode {
     Restore,
 }
 
-/// Why a Normal-mode reorg stopped on a refused block.
+/// Why a Normal-mode reorg stopped.
 pub(super) enum ReorgStop {
     /// A new block was refused before; nothing was rolled back.
     Remembered { branch_tip: Hash },
-    /// The schedule check refused `refused` after `applied` fork blocks landed.
-    Unscheduled {
-        refused: Hash,
+    /// A new block's body does not match its header; nothing was rolled back.
+    JunkBody,
+    /// `refusal` was refused after `applied` fork blocks landed.
+    Refused {
+        refusal: Refusal,
         applied: Vec<Hash>,
         branch_tip: Hash,
     },
@@ -30,38 +29,27 @@ pub(super) enum ReorgStop {
 impl ReorgStop {
     /// `hashes` are the new blocks in apply order; `i` is the refused one.
     pub(super) fn unscheduled(hashes: &[Hash], i: usize) -> Self {
-        ReorgStop::Unscheduled {
-            refused: hashes[i],
+        Self::refused(Refusal::Unscheduled(hashes[i]), hashes, i)
+    }
+
+    /// Block `i` failed apply_block; `key` is its content key.
+    pub(super) fn apply_failed(key: Hash, hashes: &[Hash], i: usize) -> Self {
+        Self::refused(Refusal::ApplyFailed(key), hashes, i)
+    }
+
+    fn refused(refusal: Refusal, hashes: &[Hash], i: usize) -> Self {
+        ReorgStop::Refused {
+            refusal,
             applied: hashes[..i].to_vec(),
             branch_tip: hashes[hashes.len() - 1],
         }
     }
 }
 
-/// Hashes of fork blocks the in-reorg schedule check refused.
-#[derive(Debug, Default)]
-pub struct RefusedReorgBlocks(VecDeque<Hash>);
-
-impl RefusedReorgBlocks {
-    fn insert(&mut self, hash: Hash) {
-        if self.0.contains(&hash) {
-            return;
-        }
-        self.0.push_back(hash);
-        if self.0.len() > REFUSED_REORG_CAP {
-            self.0.pop_front();
-        }
-    }
-
-    fn contains(&self, hash: &Hash) -> bool {
-        self.0.contains(hash)
-    }
-}
-
 impl Node {
-    /// Execute a chain reorganization. Not atomic: when the schedule check
-    /// refuses a fork block the node is restored to its prior tip and the
-    /// branch is rejected; an apply failure leaves the applied prefix.
+    /// Execute a chain reorganization. Not atomic: when the schedule check or
+    /// apply_block refuses a fork block the node is restored to its prior tip
+    /// and the branch is rejected.
     pub async fn execute_reorg(
         &mut self,
         reorg_result: ReorgResult,
@@ -74,14 +62,14 @@ impl Node {
             .run_reorg(reorg_result, Some(triggering_block), ReorgMode::Normal)
             .await?;
         let branch_tip = match stop {
-            None => return Ok(()),
+            None | Some(ReorgStop::JunkBody) => return Ok(()),
             Some(ReorgStop::Remembered { branch_tip }) => branch_tip,
-            Some(ReorgStop::Unscheduled {
-                refused,
+            Some(ReorgStop::Refused {
+                refusal,
                 applied,
                 branch_tip,
             }) => {
-                self.refused_reorg_blocks.insert(refused);
+                self.refused_reorg_blocks.insert(refusal);
                 let plan = ReorgResult {
                     rollback: applied,
                     common_ancestor: ancestor,
@@ -115,26 +103,5 @@ impl Node {
                 other.err()
             ),
         }
-    }
-
-    /// A Normal reorg whose new blocks include a refused block stops here.
-    pub(super) fn remembered_refusal(
-        &self,
-        new_blocks: &[Block],
-        mode: ReorgMode,
-    ) -> Option<ReorgStop> {
-        if mode != ReorgMode::Normal {
-            return None;
-        }
-        let hit = new_blocks
-            .iter()
-            .find(|b| self.refused_reorg_blocks.contains(&b.hash()))?;
-        let branch_tip = new_blocks.last()?.hash();
-        warn!(
-            "[REORG] Branch tip {:.16} holds fork block {:.16} that was refused at its parent — reorg refused, nothing changed",
-            branch_tip,
-            hit.hash()
-        );
-        Some(ReorgStop::Remembered { branch_tip })
     }
 }

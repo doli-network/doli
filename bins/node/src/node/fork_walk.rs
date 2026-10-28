@@ -121,6 +121,7 @@ impl Node {
             return Ok(());
         };
         let tip_before = self.chain_state.read().await.best_hash;
+        let junk_body = super::reorg_refusals::has_junk_body(&recovery.blocks);
         let mut result = Ok(());
         let mut eligible = true;
         let fork_base = self
@@ -152,13 +153,14 @@ impl Node {
             let reason = match (&result, eligible) {
                 (_, false) => "ineligible walked block".to_string(),
                 (Err(e), _) => format!("reorg failed: {}", e),
+                _ if junk_body => "a walked body does not match its header".to_string(),
                 _ => "not heavier or refused by finality".to_string(),
             };
             warn!(
                 "[FORK] RECOVERY_DONE fork tip {:.16}: no reorg ({})",
                 fork_tip, reason
             );
-            if !super::header_auth::is_fork_signature_rejection(&result) {
+            if !junk_body && !super::header_auth::is_fork_signature_rejection(&result) {
                 let branch_tip = {
                     let cache = self.fork_block_cache.read().await;
                     cached_branch_tip(&cache, fork_tip)
