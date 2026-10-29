@@ -375,6 +375,10 @@ finalized block, or in the background catch-up after a restart. If the node was 
 snap-synced, start it once on a release with the INC-I-248 fix before the backfill: the
 backfill fills the hole that the start-time trust-root check looks for (§5.4).
 
+The log line `Backfill: rejected block at height …: body does not match its header` means the
+source served a body that its header does not commit to (merkle root or presence root at that
+height). The height is skipped, not stored; run `backfillFromPeer` again with another source.
+
 ---
 
 ### 1.13. `[INTEGRITY]` Repeats `missing blocks` on an Archive Node (INC-I-253)
@@ -1294,6 +1298,53 @@ Exit code 2 means the URL or file could not be read. Read the lines:
 - **Bulk-lane `shed` or `channel shed topic=txs|votes|producers` rising:** the bulk lane was full, so those messages were dropped and reported `Ignore` (not forwarded by this hop) under load. A dropped tx is not lost if another hop forwards it.
 - **Consensus-lane `shed` or `channel shed topic=blocks|attestations` rising:** blocks or attestations were dropped at this node. Dropped blocks come back through sync; check that the node keeps up.
 - **`control_dropped` non-zero:** peer, status or sync events were dropped because the control backlog held 8,192 events (or 64 MiB of status/sync payload). The node's view of its peers or a sync response can then be stale. This is open item F-12 (no fix yet); record the value and the time.
+
+---
+
+### 4.8. Node Stuck on a Short Dead Branch at an Epoch Boundary (INC-I-281)
+
+**Symptom:** A node is a few blocks off the network near an epoch boundary. Its branch holds an epoch-boundary block that the network did not keep, and the node does not reorg onto the network chain. Before the fix, the logs showed the network's blocks refused as `invalid producer for slot`, or a rollback followed within seconds by a re-apply of the same dead block.
+
+**Cause:** The dead boundary block rotated the node's schedule list. The recovery doors judged the network's blocks with that rotated list and refused them. After a fork-remedy rollback, the node took the removed dead blocks back from gossip or an orphan-chase reply without fork choice, and counted that re-apply as peer progress. Design: `docs/architecture.md`, "Fork Recovery Across an Epoch Boundary".
+
+**Log lines:**
+
+| Line | Level | Meaning |
+|------|-------|---------|
+| `[FORK] Walked block … at slot … is ineligible (…) — branch not reorged onto` | warn | The fork-walk door refused a walked block. The door now uses the list at the block's own height, so a correct branch does not show this line. |
+| `[WEDGE_ESCAPE] Dropping ineligible fork block … at h=… slot …: … (INC-I-143, INC-I-281)` | warn | The wedge-escape door refused a sibling. Logged once per hash per 60 s (was debug). |
+| `[FORCE_REORG] refusing target=…: branch block … at slot … is ineligible: …` | warn | The `forceReorgTo` door refused a branch block. Outcome `ineligible`. |
+| `[DOOR_EPOCH] h=… follows a boundary only its branch holds — round-robin left to execute_reorg (INC-I-281)` | debug | The node cannot derive the list for this block and no learned anchor covers it. The door checked signature and membership only; `execute_reorg` checks the schedule. Inside the Light window (snap or floor-fallback window) the door does not skip: it judges the block with the current list. |
+| `[DOOR_EPOCH] Fork block … at h=… is not scheduled under learned anchor …: … (INC-I-281)` | debug | The block is in the epoch after a boundary block that an earlier refused reorg applied (a learned anchor). The door judged it with the anchor's list and refused it before any rollback. The door's own warn line carries the reason `not scheduled under learned anchor …`. |
+| `[REORG] Boundary block … at h=… of a refused branch is a learned anchor: doors judge its next epoch with its list (INC-I-281)` | info | A refused reorg had applied this boundary block. The node keeps its list (FIFO of 16, RAM only) so the doors refuse an unscheduled tail under it without a rollback. The anchor itself is not refused. Logged once per anchor. |
+| `[REORG] Gossip sibling … is a branch tip already rejected on tip … — skipped (INC-I-281)` | debug | The wedge-escape door met a branch tip that already lost fork choice on the current tip (LB-9 memo). No weight is recorded and no reorg starts. |
+| `[DOOR_EPOCH] no undo epoch state at boundary h=… for h=… — current list (INC-I-281)` | debug | The undo record of the node's boundary block is gone. The door uses the current list (old behaviour). |
+| `[DOOR_EPOCH] undo epoch state at boundary h=… undecodable (…) — current list (INC-I-281)` | warn | The undo record does not decode. The door uses the current list. Report it. |
+| `[REORG] Fork block … at h=… slot … is not scheduled at its parent: … — reorg stops after i/n blocks (INC-I-281)` | warn | `execute_reorg` refused a fork block at its parent. The node goes back to its prior tip, with its Light-window flags, rejects the branch and refuses that block by its header hash in later reorgs until restart. A `forceReorgTo` then ends as `reorg_did_not_land`. |
+| `Reorg apply_block failed at block i: … — rolled back from … to …` | error | A fork block failed `apply_block` after the rollback. The node goes back to its prior tip, drops that body from the fork cache and refuses that exact block (header and body) in later reorgs until restart. It does not reject the branch and learns no anchor: a correct copy of the same header can still reorg. |
+| `[REORG_RESTORE] restored tip …` / `[REORG_RESTORE] failed: tip …, not the prior tip … — header-first sync recovers` | info / error | The result of the return to the prior tip after a refused reorg. On `failed`, report it; header-first sync moves the node on. |
+| `[REORG] Fork block … has a body that does not match its header (n such) — dropped, nothing changed (INC-I-281)` | warn | A fork block has a body that does not match its header commitments (merkle root or presence root at its height). The node drops that copy before any rollback and does not reject the branch, so the correct copy can still reorg. |
+| `[REORG] Fork block … has a body a reorg refused before — dropped, nothing changed (INC-I-281)` | warn | The branch holds a body that an earlier reorg refused at apply (same header and body). No rollback. The node drops that cached copy and does not reject the branch, so a correct copy can still reorg. |
+| `[REORG] Branch tip … holds fork block … that a reorg refused before — reorg refused, nothing changed (INC-I-281)` | warn | The branch holds a block that an earlier reorg refused by its schedule. No rollback; the branch is rejected. The doors refuse such a block earlier, with the reason `fork block … was refused by a reorg before` in their warn line. |
+| `[FORK_CACHE] Fork block … not cached: its body does not match its header (INC-I-281)` | debug | A peer sent a fork body that does not match its header commitments. It is not cached and never replaces a cached body; the correct copy is fetched again. No action. |
+| `[FORK_CACHE] Fork block … not cached: a different body is cached under its hash (INC-I-281)` | debug | A gossip copy found a different passing body cached under its hash. The new copy is dropped. A walked copy replaces the cached one, and a cached body that fails is evicted and fetched again by hash. No action. |
+| `[BODY_REFETCH] asking … for … by hash (height …, attempt n/3)` | info | A copy of a fork block failed (commitment check, apply, or a content a reorg refused before). Its supplier gets an invalid-block record and the body is asked of a different peer by hash. The header and branch stay open. No action. |
+| `[BODY_RETRY] no other peer to ask for …` / `[BODY_RETRY] …: 3 refetches done — left to fork recovery (INC-I-281)` | warn | No peer that did not fail this hash is left, or the 3 refetches for this height are spent. Fork recovery and header-first sync act. Report it if it repeats at every height. |
+| `[BODY_RETRY] refetched body … cached — re-evaluating branch tip …` | info | The asked peer delivered the body; fork choice runs again for the cached branch it heads. No action. |
+| `[FORK] Walked block … carries a body a reorg refused before — dropped, its header and branch stay open (INC-I-281)` | warn | The walk peer served a body content that an earlier reorg refused at apply. The walk does not reorg, the branch is not rejected, the walk peer gets an invalid-block record and the body is asked of another peer. No action. |
+| `[FORK] RECOVERY_DONE fork tip …: no reorg (a fork body was refused)` | warn | A walked fork body failed apply. The node is on its prior tip and the branch is not rejected, so a correct copy can still reorg. No action. |
+| `Refusing body … from …: invalid block signature or a body that does not match its header` | warn | Header-first sync refused a body: a bad producer signature, or a body that does not match its header at its height. The hash stays needed and is asked of another peer. No action unless it repeats for every peer. |
+| `[REAPPLY] Holding … (slot …): removed by a fork-remedy rollback and a cached sibling wins fork choice; only fork choice may adopt a branch here (INC-I-281)` | info | The node does not take back a block that its rollback removed, because a heavier cached sibling exists. Logged once per hash. Fork choice adopts the winner. |
+
+**What to do:**
+- `[REAPPLY] Holding`, then a reorg onto the sibling: the fix works. No action.
+- `[REORG] … not scheduled at its parent` once, then the node stays on its tip: that branch has a block its own schedule refuses. The node refuses later copies of that block, and unscheduled tails under the same boundary block, without a rollback (`refused by a reorg before`, `not scheduled under learned anchor`). Do not force it. Compare the tip with other nodes (§4.2).
+- `[REORG_RESTORE] failed`: the node is not back on its prior tip. Report it; header-first sync moves the node on.
+- The node stays on the dead branch and shows none of these lines: make sure it runs a build with INC-I-281. Then use `forceReorgTo` with the network tip hash (`docs/rpc_reference.md`).
+
+The fix is node-local: no activation height, safe for a rolling restart.
+
+**Snap anchor answers.** A snap-synced node stores its anchor block header-only. Since INC-I-281 it answers "not found" when a peer asks for that block by height, by hash or in a `GetBodies` batch, and the peer asks another node (debug log: `sync serve: withholding header-only block …`). The `getBlockByHeight` RPC still returns the stored header with an empty transaction list at the anchor height. This is expected and is not corruption.
 
 ---
 

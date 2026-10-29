@@ -41,3 +41,8 @@ vdf = { workspace = true }
 [[test]]
 name = "inc_i_236_m2_backfill"
 path = "tests/inc_i_236_m2_backfill.rs"
+
+# INC-I-281 run 619 M-A backfillFromPeer body variant — own binary, by name for the probe.
+[[test]]
+name = "inc_i_281_ma_backfill"
+path = "tests/inc_i_281_ma_backfill.rs"

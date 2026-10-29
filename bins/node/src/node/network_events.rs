@@ -381,6 +381,7 @@ impl Node {
             .write()
             .await
             .handle_response(peer_id, response);
+        self.penalize_refused_sync_bodies().await;
         for block in blocks {
             self.handle_new_block(block, peer_id).await?;
         }

@@ -2378,6 +2378,12 @@ Topics do NOT include `network_id`. Network isolation is achieved via genesis ha
 | `/doli/sync/1.0.0` | GetHeaders, GetBodies, GetBlockByHeight, GetBlockByHash, GetStateSnapshot, GetStateRoot, GetHeadersByHeight, GetStateManifest, GetStateChunk, GetMaintainerState | Headers, bodies, blocks, state snapshots, state root hashes, state manifests, state chunks, typed session refusals, maintainer trust roots (`MaintainerStateAt`) |
 | `/doli/txfetch/1.0.0` | Transaction hashes (max 50) | Full transactions from mempool |
 
+**Block answers (INC-I-281).** A node never serves a stored header with a body that is not its
+own. When the stored block has an empty body and its header merkle root is not the empty-list
+root (only a snap-synced node's header-only anchor), `GetBlockByHeight` and `GetBlockByHash`
+answer `Block(None)` and `GetBodies` omits that hash. The requester treats both as "not found" and
+asks another peer. Every other block is served unchanged. No wire change.
+
 #### 7.3.1 Chunked state-transfer session (Stage 3 [F3])
 
 Snap sync has two transports on the same `/doli/sync/1.0.0` protocol. Which one is used is decided

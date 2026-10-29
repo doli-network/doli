@@ -71,7 +71,7 @@ fn block(g: Hash, h: u64, prev: Hash, sig: Sig) -> Block {
     let mut header = BlockHeader {
         version: 2,
         prev_hash: prev,
-        merkle_root: Hash::ZERO,
+        merkle_root: doli_core::block::compute_merkle_root(&[]),
         presence_root: Hash::ZERO,
         genesis_hash: g,
         timestamp: 40_000 + h,

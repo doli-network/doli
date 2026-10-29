@@ -119,15 +119,8 @@ pub fn stray_bit_universe_width(
     )
 }
 
-/// The `presence_root` preimage for a block that already carries its body.
-/// Post-AH the D6 commitment, unconditionally (C9): no producer-controlled guard.
-pub fn block_presence_root_at(ah: u64, height: u64, bitfield: &[u8], aggregate: &[u8]) -> Hash {
-    if height >= ah {
-        presence_commitment(bitfield, aggregate)
-    } else {
-        crypto::hash::hash(bitfield)
-    }
-}
+/// The `presence_root` for a block that already carries its body.
+pub use doli_core::presence_root_at as block_presence_root_at;
 
 /// Post-AH a zero-attester block carries the canonical empty commitment, not
 /// `Hash::ZERO`: an empty bitfield under that root is complete attendance.

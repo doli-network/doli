@@ -34,6 +34,8 @@ const MAX_REJECTED_BRANCHES: usize = 32;
 struct ActiveRecovery {
     /// Blocks collected so far, newest first (tip → ancestor direction)
     blocks: Vec<Block>,
+    /// Peer that served each of `blocks` (`None`: the seed)
+    suppliers: Vec<Option<PeerId>>,
     /// Next parent hash to fetch
     next_parent: Hash,
     /// Whether we're waiting for a response
@@ -54,6 +56,8 @@ pub struct CompletedRecovery {
     pub blocks: Vec<Block>,
     /// Hash where the fork connects to our chain (exists in block_store)
     pub connection_point: Hash,
+    /// Peer that served `blocks[i]` by hash; `None` or absent: unknown
+    pub suppliers: Vec<Option<PeerId>>,
 }
 
 /// Tracks active fork recovery via parent chain walking
@@ -121,6 +125,7 @@ impl ForkRecoveryTracker {
         self.active = Some(ActiveRecovery {
             next_parent,
             blocks: vec![orphan_block],
+            suppliers: vec![None],
             pending: false,
             peer,
             last_progress_at: Instant::now(),
@@ -197,6 +202,7 @@ impl ForkRecoveryTracker {
                 }
                 recovery.next_parent = blk.header.prev_hash;
                 recovery.blocks.push(blk);
+                recovery.suppliers.push(Some(peer));
                 recovery.last_progress_at = Instant::now();
                 // Depth check
                 if recovery.blocks.len() > MAX_RECOVERY_DEPTH {
@@ -230,6 +236,8 @@ impl ForkRecoveryTracker {
         // Reverse blocks to forward order (ancestor-child first, fork tip last)
         let mut blocks = recovery.blocks;
         blocks.reverse();
+        let mut suppliers = recovery.suppliers;
+        suppliers.reverse();
 
         info!(
             "Fork recovery: chain connected at {} ({} blocks)",
@@ -240,6 +248,7 @@ impl ForkRecoveryTracker {
         Some(CompletedRecovery {
             connection_point,
             blocks,
+            suppliers,
         })
     }
 

@@ -159,17 +159,21 @@ impl Node {
             return ForceReorgOutcome::Uncorroborated;
         }
 
-        // `execute_reorg` applies forward blocks in `ValidationMode::Light` and
-        // skips `check_producer_eligibility` (block_handling.rs:1040). Mirror
-        // wedge_escape.rs:79 / fork_recovery.rs:210 before handing over the plan.
+        // Signature + eligibility before any rollback, as the other doors do;
+        // execute_reorg re-checks each block's schedule at its parent.
         let best_height = self.chain_state.read().await.best_height;
         let ancestor_height = best_height.saturating_sub(plan.rollback.len() as u64);
         if let Err(e) = self.verify_fork_signed(&branch_blocks, ancestor_height + 1) {
             warn!("[FORCE_REORG] refusing target={}: {}", target, e);
             return ForceReorgOutcome::Ineligible;
         }
-        for block in &branch_blocks {
-            if let Err(e) = self.check_producer_eligibility(block).await {
+        let mut anchor = None;
+        for (offset, block) in branch_blocks.iter().enumerate() {
+            let height = Some(ancestor_height + 1 + offset as u64);
+            if let Err(e) = self
+                .check_producer_eligibility_at(block, height, Some(ancestor_height), anchor)
+                .await
+            {
                 warn!(
                     "[FORCE_REORG] refusing target={}: branch block {} at slot {} is ineligible: {}",
                     target,
@@ -179,6 +183,10 @@ impl Node {
                 );
                 return ForceReorgOutcome::Ineligible;
             }
+            anchor = self
+                .refused_reorg_blocks
+                .anchor_of(block, height)
+                .or(anchor);
         }
 
         warn!(
@@ -188,6 +196,7 @@ impl Node {
             plan.new_blocks.len(),
             plan.common_ancestor
         );
+        self.pin_branch_bodies(&branch_blocks).await;
         if let Err(e) = self.execute_reorg(plan, target_block).await {
             error!("[FORCE_REORG] execute_reorg failed for {}: {}", target, e);
             return ForceReorgOutcome::ReorgDidNotLand;
@@ -212,12 +221,20 @@ impl Node {
         self.block_store.get_hash_by_height(height).ok().flatten() == Some(*hash)
     }
 
-    /// Resolve a branch body from the same sources `execute_reorg` uses.
-    async fn resolve_branch_block(&self, hash: &Hash) -> Option<Block> {
-        if let Some(block) = self.fork_block_cache.read().await.get(hash) {
-            return Some(block.clone());
+    /// The checked branch bodies are the copies the reorg applies.
+    async fn pin_branch_bodies(&self, branch_blocks: &[Block]) {
+        let mut cache = self.fork_block_cache.write().await;
+        for block in branch_blocks {
+            cache.insert(block.hash(), block.clone());
         }
-        self.block_store.get_block(hash).ok().flatten()
+    }
+
+    /// Resolve a branch body: the stored body first, else the fork-cache copy.
+    async fn resolve_branch_block(&self, hash: &Hash) -> Option<Block> {
+        if let Some(block) = self.block_store.get_block(hash).ok().flatten() {
+            return Some(block);
+        }
+        self.fork_block_cache.read().await.get(hash).cloned()
     }
 
     /// REQ-FORK-012 §4 — the branch's own DISTINCT block producers must hold at

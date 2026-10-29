@@ -184,6 +184,7 @@ pub async fn run_walk(fx: &mut Fx, branch: &[Block]) -> anyhow::Result<()> {
     let recovery = CompletedRecovery {
         blocks: branch.to_vec(),
         connection_point: fx.base_tip,
+        suppliers: Vec::new(),
     };
     fx.node.handle_completed_fork_recovery(recovery).await
 }

@@ -45,6 +45,24 @@ use crate::node::wedge_outcome::{classify_wedge_plan, WedgeOutcome};
 /// cannot amplify plan_reorg cost into O(n^2). (AUDIT-P2-002.)
 pub(crate) const WEDGE_RETAINED_CAP: usize = 64;
 
+const DROP_WARN_WINDOW: Duration = Duration::from_secs(60);
+static DROP_WARNED: std::sync::Mutex<Vec<(Hash, Instant)>> = std::sync::Mutex::new(Vec::new());
+
+/// True when the eligibility drop of `hash` is logged now: once per hash per
+/// `DROP_WARN_WINDOW`; at most `WEDGE_RETAINED_CAP` hashes tracked (INC-I-281).
+fn should_warn_drop(hash: Hash, now: Instant) -> bool {
+    let mut last = DROP_WARNED.lock().unwrap_or_else(|p| p.into_inner());
+    last.retain(|(_, t)| now.saturating_duration_since(*t) < DROP_WARN_WINDOW);
+    if last.iter().any(|(h, _)| *h == hash) {
+        return false;
+    }
+    if last.len() >= WEDGE_RETAINED_CAP {
+        last.clear();
+    }
+    last.push((hash, now));
+    true
+}
+
 impl Node {
     /// Retain a competing sibling block the FORK_GUARD would otherwise drop, then
     /// attempt a synchronous reorg onto its branch via the existing reorg engine.
@@ -67,25 +85,51 @@ impl Node {
     /// FIX B) may seed a descendant reroute — see the module header.
     pub(crate) async fn retain_sibling_and_try_escape(&mut self, block: Block) -> Result<()> {
         let fork_tip_hash = block.hash();
+        let local_tip = self.chain_state.read().await.best_hash;
+        if (self.sync_manager.read().await).is_fork_branch_rejected(fork_tip_hash, local_tip) {
+            debug!(
+                "[REORG] Gossip sibling {:.16} is a branch tip already rejected on tip {:.16} — skipped (INC-I-281)",
+                fork_tip_hash, local_tip
+            );
+            return Ok(());
+        }
 
         // FIX A (AUDIT-P0-001/P1-001 net-new slice): eligibility-gate the block
         // against the epoch-frozen schedule BEFORE it can enter the reorg graph.
         // Mirrors try_apply_cached_chain (fork_recovery.rs:210). A block whose
         // producer is not the deterministically-scheduled slot leader is DROPPED
         // here — never recorded, cached, or reorged — so a spoofed-weight forged
-        // sibling cannot displace the tip. This does NOT re-architect the shared
-        // Light-mode execute_reorg (a pre-existing, separately-filed surface); it
-        // stops F2 from newly widening that surface to the tip.
-        if let Err(e) = self.check_producer_eligibility(&block).await {
-            debug!(
-                "[WEDGE_ESCAPE] Dropping ineligible fork block {:.8} at slot {}: {} (INC-I-143)",
-                fork_tip_hash, block.header.slot, e
-            );
+        // sibling cannot displace the tip. A block after a boundary only its
+        // branch holds passes on membership; execute_reorg checks its schedule.
+        let height = self.chain_state.read().await.best_height + 1;
+        // INC-I-204 M5: `BlockHeader` carries no height, so the sibling's REAL chain
+        // height is its parent's stored height plus one — chain-derived, never the
+        // per-process counter (INV-SYNC-012).
+        let sibling_height = self
+            .block_store
+            .get_height_by_hash(&block.header.prev_hash)
+            .ok()
+            .flatten()
+            .map_or(height, |h| h.saturating_add(1));
+        let (door_height, fork_point) = match self.door_position(&block).await {
+            Some((h, f)) => (h, Some(f)),
+            None => (sibling_height, None),
+        };
+        let anchor = self.door_cached_anchor(&block, door_height).await;
+        if let Err(e) = self
+            .check_producer_eligibility_at(&block, Some(door_height), fork_point, anchor)
+            .await
+        {
+            if should_warn_drop(fork_tip_hash, Instant::now()) {
+                warn!(
+                    "[WEDGE_ESCAPE] Dropping ineligible fork block {:.8} at h={} slot {}: {} (INC-I-143, INC-I-281)",
+                    fork_tip_hash, door_height, block.header.slot, e
+                );
+            }
             return Ok(());
         }
 
         // a. Producer weight (mirror the ReorgCandidate path in block_handling.rs).
-        let height = self.chain_state.read().await.best_height + 1;
         let weight = {
             let ps = self.producer_set.read().await;
             ps.get_by_pubkey(&block.header.producer)
@@ -96,15 +140,6 @@ impl Node {
         // b. Record the block into the reorg handler so plan_reorg can accumulate
         //    weight/height for the competing branch (fork block: no current-weight
         //    mutation).
-        // INC-I-204 M5: `BlockHeader` carries no height, so the sibling's REAL chain
-        // height is its parent's stored height plus one — chain-derived, never the
-        // per-process counter (INV-SYNC-012).
-        let sibling_height = self
-            .block_store
-            .get_height_by_hash(&block.header.prev_hash)
-            .ok()
-            .flatten()
-            .map_or(height, |h| h.saturating_add(1));
         if let Err(e) = self.verify_fork_signed(std::slice::from_ref(&block), sibling_height) {
             debug!("[WEDGE_ESCAPE] Dropping fork block: {}", e);
             return Ok(());
@@ -117,8 +152,12 @@ impl Node {
         );
 
         // c. Cache the body (execute_reorg fetches new-block bodies from here).
-        self.cache_block_with_eviction(fork_tip_hash, block.clone())
-            .await;
+        if !self
+            .cache_block_with_eviction(fork_tip_hash, block.clone())
+            .await
+        {
+            return Ok(());
+        }
 
         // FIX B (AUDIT-P2-001/P2-002): mark this hash as an eligibility-VALIDATED
         // retained fork block. ONLY descendants whose parent is in this set may be
@@ -231,5 +270,28 @@ impl Node {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // OUTPUT CONTRACT: should_warn_drop -> bool, DROP_WARNED length.
+    // INPUT PARTITIONS: repeat within window | repeat at window end | distinct hashes past the cap.
+    #[test]
+    fn drop_warn_once_per_hash_per_window_and_bounded() {
+        let t0 = Instant::now();
+        let a = crypto_hash(b"inc-i-281-wedge-drop-warn");
+        assert!(should_warn_drop(a, t0));
+        assert!(!should_warn_drop(a, t0 + Duration::from_secs(1)));
+        assert!(should_warn_drop(a, t0 + DROP_WARN_WINDOW));
+        for i in 0..(WEDGE_RETAINED_CAP as u32 * 3) {
+            assert!(should_warn_drop(
+                crypto_hash(&i.to_le_bytes()),
+                t0 + DROP_WARN_WINDOW
+            ));
+            assert!(DROP_WARNED.lock().unwrap().len() <= WEDGE_RETAINED_CAP);
+        }
     }
 }

@@ -52,6 +52,7 @@ impl SyncManager {
             self.recent_canonical_hashes.pop_front();
         }
 
+        self.rollback_memory.note_applied(&hash, Instant::now());
         self.network.blocks_applied += 1;
         self.network.last_block_applied = Instant::now();
         self.network.last_sync_activity = Instant::now();
@@ -569,6 +570,7 @@ impl SyncManager {
         // The next suppression check must see a peer-received block before
         // it can safely classify the node as BEHIND (not FORKED).
         self.fork.peer_block_applied_since_rollback = false;
+        self.rollback_memory.note_rollback();
     }
 
     /// INC-I-138 D5: Record that a PEER-RECEIVED block was applied after the
@@ -620,7 +622,14 @@ impl SyncManager {
             in_grace_period,
             last_finality_height: self.reorg_handler.last_finality_height(),
         };
-        let action = self.recovery.classify(&ctx);
+        // INC-I-281: Gate 1 opens only on applies of non-removed hashes.
+        let gate_ctx = RecoveryContext {
+            last_rollback_local_height: self
+                .rollback_memory
+                .gate1_rollback_height(ctx.last_rollback_local_height, ctx.local_height),
+            ..ctx.clone()
+        };
+        let action = self.recovery.classify(&gate_ctx);
         if action != RecoveryAction::None {
             info!(
                 "[COORDINATOR] action={:?} gap={} last_applied={}s peers={} \

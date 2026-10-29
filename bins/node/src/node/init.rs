@@ -771,6 +771,10 @@ impl Node {
                 .network
                 .params()
                 .inc_i_236_block_signature_activation_height,
+            inc_i_178_attestation_bls_activation_height: config
+                .network
+                .params()
+                .inc_i_178_attestation_bls_activation_height,
             ..SyncConfig::default()
         };
         let sync_manager = Arc::new(RwLock::new(SyncManager::new(sync_config, genesis_hash)));
@@ -1125,6 +1129,8 @@ impl Node {
             vote_ingress_throttle: Default::default(),
             rejected_fork_tips: HashSet::new(),
             wedge_retained_tips: HashSet::new(),
+            refused_reorg_blocks: Default::default(),
+            body_retry: Default::default(),
             orphan_chase_requests: 0,
             orphan_chase_guard: Default::default(),
             snap_sync_height: None,
@@ -1384,6 +1390,8 @@ impl Node {
             vote_ingress_throttle: Default::default(),
             rejected_fork_tips: HashSet::new(),
             wedge_retained_tips: HashSet::new(),
+            refused_reorg_blocks: Default::default(),
+            body_retry: Default::default(),
             orphan_chase_requests: 0,
             orphan_chase_guard: Default::default(),
             snap_sync_height: None,
@@ -1601,6 +1609,8 @@ impl Node {
             vote_ingress_throttle: Default::default(),
             rejected_fork_tips: HashSet::new(),
             wedge_retained_tips: HashSet::new(),
+            refused_reorg_blocks: Default::default(),
+            body_retry: Default::default(),
             orphan_chase_requests: 0,
             orphan_chase_guard: Default::default(),
             snap_sync_height: None,

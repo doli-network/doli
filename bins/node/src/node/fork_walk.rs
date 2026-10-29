@@ -60,7 +60,7 @@ pub(super) fn select_walk_seed(
 }
 
 /// Tip of the cached chain that descends from `from` (itself when it has none).
-fn cached_branch_tip(cache: &HashMap<Hash, Block>, from: Hash) -> Hash {
+pub(super) fn cached_branch_tip(cache: &HashMap<Hash, Block>, from: Hash) -> Hash {
     cached_branches(cache)
         .get(&from)
         .map_or(from, |(_, tip)| *tip)
@@ -123,8 +123,23 @@ impl Node {
         let tip_before = self.chain_state.read().await.best_hash;
         let mut result = Ok(());
         let mut eligible = true;
-        for block in &recovery.blocks {
-            if let Err(e) = self.check_producer_eligibility(block).await {
+        let fork_base = self
+            .block_store
+            .get_height_by_hash(&recovery.connection_point)
+            .ok()
+            .flatten();
+        let junk = self.drop_junk_bodies(&recovery.blocks, fork_base).await;
+        self.walk_bodies_failed(&recovery, &junk, fork_base).await;
+        let junk_body = !junk.is_empty();
+        let body_refusals = self.refused_reorg_blocks.body_refusals();
+        let replayed = self.walk_replays_refused(&recovery, fork_base).await;
+        let mut anchor = None;
+        for (offset, block) in recovery.blocks.iter().enumerate().filter(|_| !replayed) {
+            let height = fork_base.map(|h| h.saturating_add(offset as u64 + 1));
+            if let Err(e) = self
+                .check_producer_eligibility_at(block, height, fork_base, anchor)
+                .await
+            {
                 warn!(
                     "[FORK] Walked block {:.16} at slot {} is ineligible ({}) — branch not reorged onto",
                     block.hash(),
@@ -134,22 +149,30 @@ impl Node {
                 eligible = false;
                 break;
             }
+            anchor = self
+                .refused_reorg_blocks
+                .anchor_of(block, height)
+                .or(anchor);
         }
-        if eligible {
+        if eligible && !junk_body && !replayed {
             result = self.evaluate_recovered_fork(recovery).await;
         }
+        let body_refused = self.refused_reorg_blocks.body_refusals() != body_refusals;
         let tip_after = self.chain_state.read().await.best_hash;
         if tip_after == tip_before {
             let reason = match (&result, eligible) {
                 (_, false) => "ineligible walked block".to_string(),
                 (Err(e), _) => format!("reorg failed: {}", e),
+                _ if junk_body => "a walked body does not match its header".to_string(),
+                _ if body_refused => "a fork body was refused".to_string(),
                 _ => "not heavier or refused by finality".to_string(),
             };
             warn!(
                 "[FORK] RECOVERY_DONE fork tip {:.16}: no reorg ({})",
                 fork_tip, reason
             );
-            if !super::header_auth::is_fork_signature_rejection(&result) {
+            let body_level = junk_body || body_refused;
+            if !body_level && !super::header_auth::is_fork_signature_rejection(&result) {
                 let branch_tip = {
                     let cache = self.fork_block_cache.read().await;
                     cached_branch_tip(&cache, fork_tip)

@@ -1,21 +1,41 @@
 use super::*;
 use crate::node::attestation::{commit, width};
 
+mod door_epoch;
 mod gossip_txs;
 mod slash_facts;
 mod slash_withdrawal;
 mod withdrawal_economics;
 
 impl Node {
-    /// Check producer eligibility for a received gossip block.
+    /// Recovery-door eligibility pre-filter (membership + slot schedule) for a
+    /// block whose height is its stored parent's height + 1.
     ///
-    /// LIGHTWEIGHT CHECK: only verifies the producer is in the known set and
-    /// the time window is valid for the block's slot. Does NOT validate against
-    /// local chain state (which may be on a micro-fork).
-    ///
-    /// Full validation happens in apply_block() where the block is checked
-    /// against the actual chain state it builds on.
+    /// Reads node-local state: the producer set, GSet, liveness and known
+    /// producers, and the epoch list in force at the block's height
+    /// (`door_epoch.rs`, INC-I-281). Full validation happens in apply_block().
     pub async fn check_producer_eligibility(&self, block: &Block) -> Result<()> {
+        let parent = self.block_store.get_height_by_hash(&block.header.prev_hash);
+        let parent = parent.ok().flatten();
+        let block_height = parent.map(|h| h.saturating_add(1));
+        self.check_producer_eligibility_at(block, block_height, parent, None)
+            .await
+    }
+
+    /// As [`Self::check_producer_eligibility`] for a block at `block_height`
+    /// (`None` = unknown: the node's current epoch list) on a branch that
+    /// leaves the node's chain after `fork_point`. The round-robin arm runs
+    /// only when that block's list is derivable or `anchor`, the learned
+    /// anchor on its branch, covers it (`door_epoch.rs`). A block a reorg
+    /// refused before is refused.
+    pub(crate) async fn check_producer_eligibility_at(
+        &self,
+        block: &Block,
+        block_height: Option<u64>,
+        fork_point: Option<u64>,
+        anchor: Option<&crate::node::reorg_refusals::LearnedAnchor>,
+    ) -> Result<()> {
+        self.door_refusal(block)?;
         // Use the BLOCK's slot for eligibility, not our local chain state.
         // Our local tip may be on a different micro-fork, causing us to
         // reject valid blocks from the canonical chain.
@@ -43,6 +63,10 @@ impl Node {
                     active.len()
                 );
             }
+        }
+
+        if !self.door_judges_schedule(block_height, fork_point) {
+            return self.door_anchor_verdict(block, block_height, anchor);
         }
 
         // Bond weights from epoch-locked snapshot (single source of truth).
@@ -153,11 +177,7 @@ impl Node {
                 .params()
                 .inc_i_182_producer_auth_activation_height,
         )
-        .with_epoch_producer_list(if self.epoch_state.active_list.is_empty() {
-            self.epoch_state.producer_list.clone()
-        } else {
-            self.epoch_state.active_list.clone()
-        })
+        .with_epoch_producer_list(self.door_epoch_list(block_height).await)
         .with_inc_i_026_scheduler_activation_height(
             self.config
                 .network
@@ -493,16 +513,14 @@ impl Node {
         // carried aggregate is bound too and the denominator is the universe width.
         if !block.attestation_bitfield.is_empty() {
             let ah = self.inc_i_178_attestation_bls_activation_height;
-            let bf = &block.attestation_bitfield;
-            if height < ah {
-                let expected =
-                    commit::block_presence_root_at(ah, height, bf, &block.aggregate_bls_signature);
-                if block.header.presence_root != expected {
-                    return Err(validation::ValidationError::InvalidTransaction(format!(
-                        "presence_root mismatch: expected {}, got {}",
-                        expected, block.header.presence_root,
-                    )));
-                }
+            let (bf, agg) = (&block.attestation_bitfield, &block.aggregate_bls_signature);
+            let root = block.header.presence_root;
+            if height < ah && !doli_core::presence_root_matches(ah, Some(height), &root, bf, agg) {
+                return Err(validation::ValidationError::InvalidTransaction(format!(
+                    "presence_root mismatch: expected {}, got {}",
+                    commit::block_presence_root_at(ah, height, bf, agg),
+                    root,
+                )));
             }
             let active: Vec<crypto::PublicKey> = {
                 let producers = self.producer_set.read().await;
@@ -1095,7 +1113,6 @@ impl Node {
 
     /// Handle a sync request from a peer.
     /// Called by on_sync_request() in network_events.rs (the production path).
-    /// Note: handle_sync_request_bg() in event_loop.rs is dead code.
     pub async fn handle_sync_request(
         &self,
         request: network::protocols::SyncRequest,
@@ -1167,27 +1184,9 @@ impl Node {
                 SyncResponse::Headers(headers)
             }
 
-            SyncRequest::GetBodies { hashes } => {
-                let mut bodies = Vec::new();
-                for hash in hashes {
-                    if let Ok(Some(block)) = self.block_store.get_block(&hash) {
-                        bodies.push(block);
-                    }
-                }
-                SyncResponse::Bodies(bodies)
-            }
-
-            SyncRequest::GetBlockByHeight { height } => {
-                match self.block_store.get_block_by_height(height) {
-                    Ok(Some(block)) => SyncResponse::Block(Some(block)),
-                    _ => SyncResponse::Block(None),
-                }
-            }
-
-            SyncRequest::GetBlockByHash { hash } => match self.block_store.get_block(&hash) {
-                Ok(Some(block)) => SyncResponse::Block(Some(block)),
-                _ => SyncResponse::Block(None),
-            },
+            SyncRequest::GetBodies { hashes } => self.serve_bodies(hashes),
+            SyncRequest::GetBlockByHeight { height } => self.serve_block_by_height(height),
+            SyncRequest::GetBlockByHash { hash } => self.serve_block_by_hash(&hash),
 
             // INC-I-012 F1: Height-based header request. Used after snap sync
             // when the node's local_hash is unrecognizable by peers. The server

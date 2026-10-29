@@ -1,3 +1,5 @@
+use super::reorg_refusals::content_key;
+use super::reorg_restore::{ReorgMode, ReorgStop};
 use super::*;
 
 // =============================================================================
@@ -101,8 +103,8 @@ pub(crate) fn classify_gossip_block(
 pub(super) const ORPHAN_CHASE_REPEAT_WINDOW: Duration = Duration::from_secs(3);
 
 impl Node {
-    /// Handle a new block from the network
-    pub async fn handle_new_block(&mut self, block: Block, source_peer: PeerId) -> Result<()> {
+    /// Handle a new block from the network (behind `handle_new_block`).
+    pub(super) async fn process_block(&mut self, block: Block, source_peer: PeerId) -> Result<()> {
         let block_hash = block.hash();
         let block_slot = block.header.slot;
 
@@ -111,47 +113,8 @@ impl Node {
         let apply_start = Instant::now();
         info!("[APPLY_START] slot={} hash={}", block_slot, block_hash);
 
-        // Pre-check: already known?
-        //
-        // INC-I-147 D4: "we have the body" is NOT the same as "it is on our chain".
-        // `remove_canonical_entry` (storage/block_store/writes.rs:203-218) deletes only
-        // CF_HEIGHT_INDEX and CF_HASH_TO_HEIGHT on rollback/reorg — the body is left in
-        // place. A bare possession check therefore refuses a rolled-back block FOREVER,
-        // which is how a transient poison-rollback became a durable fork: the node that
-        // discarded the canonical block could never re-adopt it. MEASURED 2026-07-31:
-        // n7 logged 159 `status=already_known` refusals while stranded on the losing
-        // fork, and the layer below (apply_block/mod.rs:80-108) — which handles this
-        // case correctly — was never reached.
-        //
-        // Gated by `inc_i_147_activation_height` (Q1=NO on the merits, Q2=NO: this is
-        // node-local re-adoption and changes no block content). Pre-activation the
-        // possession check stands unchanged.
-        let already_known = if self.block_store.get_block(&block_hash)?.is_some() {
-            let inc_i_147_ah = self.config.network.params().inc_i_147_activation_height;
-            let block_height = self.block_store.get_height_by_hash(&block_hash)?;
-            match block_height {
-                // Canonical at some height: genuinely already known — no-op.
-                Some(_) => true,
-                // Body present but NOT canonical (rolled back). Post-activation, fall
-                // through and let the normal path re-adopt it.
-                None => {
-                    let post_activation = self.chain_state.read().await.best_height >= inc_i_147_ah;
-                    if post_activation {
-                        info!(
-                            "[REAPPLY] block {} has a body but no canonical entry (rolled back) — re-evaluating instead of short-circuiting (INC-I-147 D4)",
-                            block_hash
-                        );
-                        false
-                    } else {
-                        true
-                    }
-                }
-            }
-        } else {
-            false
-        };
-
-        if already_known {
+        // A stored block is evaluated with its stored body, never the peer copy.
+        let Some(block) = self.intake_body(block).await? else {
             debug!("Block {} already known", block_hash);
             info!(
                 "[APPLY_END] slot={} apply_ms={} status=already_known",
@@ -159,7 +122,7 @@ impl Node {
                 apply_start.elapsed().as_millis()
             );
             return Ok(());
-        }
+        };
 
         let (best_hash, best_height, genesis_hash) = {
             let state = self.chain_state.read().await;
@@ -292,10 +255,11 @@ impl Node {
                         let _ = network.request_sync(source_peer, request).await;
                     }
                 }
-                self.sync_manager
-                    .write()
-                    .await
-                    .note_orphan_gossip_block(need_height, block_slot);
+                self.sync_manager.write().await.note_orphan_gossip_child(
+                    &block.header.prev_hash,
+                    need_height,
+                    block_slot,
+                );
                 // Cache the orphan so it's available when the missing parent arrives.
                 self.cache_block_with_eviction(block_hash, block).await;
                 return Ok(());
@@ -304,8 +268,12 @@ impl Node {
             BlockClass::ForkBlock(ForkBlockKind::ReorgCandidate) => {
                 // Parent is in our store but block doesn't extend our tip.
                 // Cache it for potential reorg evaluation.
-                self.cache_block_with_eviction(block_hash, block.clone())
-                    .await;
+                if !self
+                    .cache_block_with_eviction(block_hash, block.clone())
+                    .await
+                {
+                    return Ok(());
+                }
 
                 debug!(
                     "Block {} doesn't build on tip {} (builds on {}), cached for potential reorg",
@@ -409,6 +377,9 @@ impl Node {
             );
             return Ok(());
         }
+        if self.hold_removed_block(&block).await {
+            return Ok(());
+        }
 
         // Apply the block — absorb errors so an invalid gossip block
         // (e.g. from a forked peer) doesn't crash the process.
@@ -429,7 +400,7 @@ impl Node {
         } else {
             ValidationMode::Full
         };
-        if let Err(e) = self.apply_block(block, mode).await {
+        if let Err(e) = self.apply_peer_body(block, mode).await {
             let err_str = e.to_string();
             warn!(
                 "[BLOCK] REJECT slot={} h={} producer={} error={} — skipping, sync will catch up",
@@ -448,7 +419,7 @@ impl Node {
         {
             let mut sync = self.sync_manager.write().await;
             sync.clear_awaiting_canonical_block();
-            sync.note_peer_block_applied_since_rollback();
+            sync.note_peer_applies_since_rollback(std::slice::from_ref(&block_hash));
         }
 
         self.drain_cached_children(mode).await;
@@ -472,16 +443,13 @@ impl Node {
         Ok(())
     }
 
-    /// Execute a chain reorganization
-    ///
-    /// This function is atomic: either the full reorg succeeds, or the chain
-    /// remains unchanged. We build new state in temporary structures and only
-    /// swap them in on success.
-    pub async fn execute_reorg(
+    /// Reorg machinery behind `execute_reorg`; `Some` = stopped on a refused block.
+    pub(super) async fn run_reorg(
         &mut self,
         reorg_result: ReorgResult,
-        triggering_block: Block,
-    ) -> Result<()> {
+        triggering_block: Option<Block>,
+        mode: ReorgMode,
+    ) -> Result<Option<ReorgStop>> {
         let rollback_count = reorg_result.rollback.len();
         let new_block_count = reorg_result.new_blocks.len();
 
@@ -492,13 +460,16 @@ impl Node {
 
         // Collect all new blocks we need to apply
         let mut new_blocks: Vec<Block> = Vec::new();
+        let trigger = triggering_block.as_ref().map(|b| (b.hash(), b));
 
         {
             let cache = self.fork_block_cache.read().await;
             for block_hash in &reorg_result.new_blocks {
-                if *block_hash == triggering_block.hash() {
-                    new_blocks.push(triggering_block.clone());
-                } else if let Some(cached_block) = cache.get(block_hash) {
+                if let Some((_, t)) = trigger.filter(|(h, _)| h == block_hash) {
+                    new_blocks.push(t.clone());
+                } else if let Some(cached_block) =
+                    cache.get(block_hash).filter(|_| mode == ReorgMode::Normal)
+                {
                     new_blocks.push(cached_block.clone());
                 } else if let Ok(Some(stored_block)) = self.block_store.get_block(block_hash) {
                     debug!(
@@ -511,7 +482,7 @@ impl Node {
                         "Cannot execute reorg: missing block {} (need to sync from peers)",
                         block_hash
                     );
-                    return Ok(());
+                    return Ok(None);
                 }
             }
         }
@@ -530,7 +501,7 @@ impl Node {
                     first.header.prev_hash,
                     reorg_result.common_ancestor
                 );
-                return Ok(());
+                return Ok(None);
             }
         }
         for i in 1..new_blocks.len() {
@@ -540,8 +511,11 @@ impl Node {
                     new_blocks[i].hash(),
                     new_blocks[i - 1].hash()
                 );
-                return Ok(());
+                return Ok(None);
             }
+        }
+        if let Some(stop) = self.pre_rollback_stop(&new_blocks, mode).await {
+            return Ok(Some(stop));
         }
 
         // Get current state
@@ -1026,13 +1000,18 @@ impl Node {
             sync.clear_finality_if_below_tip(target_height);
         }
 
-        // Now apply the new blocks through normal path
-        // Note: we skip check_producer_eligibility here because the fork blocks were
-        // validated when originally produced, and re-validating against rolled-back
-        // state uses the wrong producer set (common ancestor, not fork chain).
+        // Apply in Light mode; each block's slot schedule is checked first on the
+        // state at its parent, where the branch's own boundary has rotated the list.
         info!("Applying {} new blocks from fork", new_blocks.len());
         let pre_reorg_height = current_height;
+        let hashes: Vec<Hash> = new_blocks.iter().map(Block::hash).collect();
         for (i, block) in new_blocks.into_iter().enumerate() {
+            if mode == ReorgMode::Normal
+                && !self.reorg_block_scheduled(&block, i, new_block_count).await
+            {
+                return Ok(Some(ReorgStop::unscheduled(&hashes, i)));
+            }
+            let key = (mode == ReorgMode::Normal).then(|| content_key(&block));
             if let Err(e) = self.apply_block(block, ValidationMode::Light).await {
                 let post_height = self.chain_state.read().await.best_height;
                 error!(
@@ -1056,7 +1035,7 @@ impl Node {
                         post_height
                     );
                 }
-                return Ok(());
+                return Ok(key.map(|k| ReorgStop::apply_failed(k, &hashes, i)));
             }
         }
 
@@ -1070,11 +1049,11 @@ impl Node {
 
         // INC-I-138 D5: reorg blocks are peer-received — mark peer-confirmed
         // progress so the suppression guard can distinguish BEHIND from SELF-FORK.
-        if new_block_count > 0 {
+        if new_block_count > 0 && mode == ReorgMode::Normal {
             self.sync_manager
                 .write()
                 .await
-                .note_peer_block_applied_since_rollback();
+                .note_peer_applies_since_rollback(&reorg_result.new_blocks);
         }
 
         // Invalidate mempool - transactions may now be invalid
@@ -1092,6 +1071,6 @@ impl Node {
 
         info!("Reorg complete: now at height {}", new_tip_height);
 
-        Ok(())
+        Ok(None)
     }
 }

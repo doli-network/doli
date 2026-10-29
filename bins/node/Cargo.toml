@@ -152,6 +152,87 @@ path = "tests/inc_i_236_m2_reorg_doors.rs"
 name = "inc_i_236_m2_reorg_doors_b"
 path = "tests/inc_i_236_m2_reorg_doors_b.rs"
 
+# INC-I-281 M2.1 recovery doors across an epoch boundary — own binary: the
+# outcome probe (.claude/scripts/inc-i-281-m2-probe.sh doors) runs it by name.
+[[test]]
+name = "inc_i_281_m2_door_epoch_list"
+path = "tests/inc_i_281_m2_door_epoch_list.rs"
+
+# INC-I-281 M2.2 rollback memory (R-3b) and the two post-rollback suppressors (R-2)
+# — own binaries: the outcome probe (inc-i-281-m2-probe.sh reapply) runs them by name.
+[[test]]
+name = "inc_i_281_m2_rollback_memory"
+path = "tests/inc_i_281_m2_rollback_memory.rs"
+
+[[test]]
+name = "inc_i_281_m2_suppressors"
+path = "tests/inc_i_281_m2_suppressors.rs"
+
+# INC-I-281 M2.3 post-boundary schedule (P1) — own binary: the outcome probe
+# (inc-i-281-m2-probe.sh postboundary) runs it by name.
+[[test]]
+name = "inc_i_281_m23_post_boundary"
+path = "tests/inc_i_281_m23_post_boundary.rs"
+
+# INC-I-281 M2.3 false-rollback hold (P2) — own binary: the outcome probe
+# (inc-i-281-m2-probe.sh falserollback) runs it by name.
+[[test]]
+name = "inc_i_281_m23_false_rollback"
+path = "tests/inc_i_281_m23_false_rollback.rs"
+
+# INC-I-281 M3a stub-body serve (M3a.1) and genesis-phase reorg schedule (M3a.2) —
+# own binaries: the outcome probe (inc-i-281-m3a-probe.sh) runs them by name.
+[[test]]
+name = "inc_i_281_m3a_stub_serve"
+path = "tests/inc_i_281_m3a_stub_serve.rs"
+
+[[test]]
+name = "inc_i_281_m3a_genesis_reorg"
+path = "tests/inc_i_281_m3a_genesis_reorg.rs"
+
+# INC-I-281 M2.4 refused-reorg restore (SEC-FIXVERIFY-001) and Light-window door
+# (SEC-FIXVERIFY-002) — own binaries: the outcome probe runs them by name.
+[[test]]
+name = "inc_i_281_m24_refused_reorg"
+path = "tests/inc_i_281_m24_refused_reorg.rs"
+
+[[test]]
+name = "inc_i_281_m24_light_window"
+path = "tests/inc_i_281_m24_light_window.rs"
+
+# INC-I-281 M2.5 apply-failure restore (P1-A), refusal variants (P1-B) and restore
+# window flags (P2) — own binaries: inc-i-281-m2-probe.sh applyfail|variants runs them by name.
+[[test]]
+name = "inc_i_281_m25_apply_failure"
+path = "tests/inc_i_281_m25_apply_failure.rs"
+
+[[test]]
+name = "inc_i_281_m25_variants"
+path = "tests/inc_i_281_m25_variants.rs"
+
+[[test]]
+name = "inc_i_281_m25_restore_flags"
+path = "tests/inc_i_281_m25_restore_flags.rs"
+
+# INC-I-281 run 619 M-A same-header body variants — own binary: inc-i-281-m2-probe.sh bodyvariant runs it by name.
+[[test]]
+name = "inc_i_281_ma_body_commitments"
+path = "tests/inc_i_281_ma_body_commitments.rs"
+
+# INC-I-281 run 619 M-A body sweep (walk, reapply, forceReorgTo, GetBodies) — own binary.
+[[test]]
+name = "inc_i_281_ma_body_sweep"
+path = "tests/inc_i_281_ma_body_sweep.rs"
+
+# INC-I-281 run 620 M-B variant-first body retry — own binary: inc-i-281-m2-probe.sh bodyretry runs it by name.
+[[test]]
+name = "inc_i_281_mb_body_retry"
+path = "tests/inc_i_281_mb_body_retry.rs"
+
+[[test]]
+name = "inc_i_281_mb_body_sites"
+path = "tests/inc_i_281_mb_body_sites.rs"
+
 # INC-I-236 M2 node intake (gossip pre-filter, snap anchor) and apply-entry locks.
 [[test]]
 name = "inc_i_236_m2_intake_node"
