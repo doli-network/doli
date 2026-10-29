@@ -548,7 +548,8 @@ impl NetworkParams {
                 // IMMUTABLE once crossed (INC-I-054).
                 // Override via `DOLI_INC_I_204_FORK_CHOICE_ACTIVATION_HEIGHT`.
                 inc_i_204_fork_choice_activation_height: 88_014,
-                inc_i_288_fork_choice_activation_height: u64::MAX, // INC-I-288: pinned separately
+                // INC-I-288 node-local fork choice. PINNED 366_891: tip 366_801 plus 90 blocks of lead.
+                inc_i_288_fork_choice_activation_height: 366_891,
                 // INC-I-178 attestation-BLS semantics. PINNED 112_619 on testnet
                 // (2026-09-05, v6.27.0); IMMUTABLE once crossed (INV-PARAMS-001).
                 // Override via `DOLI_INC_I_178_ATTESTATION_BLS_ACTIVATION_HEIGHT`.
