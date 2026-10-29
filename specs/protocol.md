@@ -2133,6 +2133,17 @@ def accumulated_weight(block):
 
 This prevents Sybil attacks where an attacker creates many low-weight blocks.
 
+**Weight decides after a rollback and at an occupied height (INC-I-288).** At and above
+`inc_i_288_fork_choice_activation_height` (mainnet not scheduled, testnet `u64::MAX` until
+pinned, devnet 0) two node-local rules change, and nothing else: (1) a recovery rollback keeps
+the fork-choice memory (`SyncManager::reset_sync_for_rollback` no longer clears the
+`ReorgHandler`; our weight becomes the new tip's recorded weight), so a sibling is weighed
+against our real accumulated weight; (2) a sibling at an occupied height with a better (lower)
+slot than our block is weighed by the wedge-escape door (`retain_sibling_and_try_escape`) like
+any other sibling, instead of being dropped by FORK_GUARD. The slot no longer decides. Below the
+height both rules are unchanged. This is fork choice only: no block-validity, block-content,
+wire or protocol-version change, so the binary can roll.
+
 ### 5.6 Emission Schedule
 
 ```
@@ -2657,6 +2668,7 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | Equivocation slashing (`inc_i_255_slashing_activation_height`, §3.10.1) | 806,859 | 330,849 | 0 | Devnet only (`DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT`) |
 | Unbonding lock (`inc_i_257_unbonding_activation_height`, §3.13.1) | 806,859 | 330,849 | 0 | Devnet only (`DOLI_INC_I_257_UNBONDING_ACTIVATION_HEIGHT`) |
 | Producer authorization (`inc_i_182_producer_auth_activation_height`, §3.13.2) | 806,859 | 330,849 | 0 | Devnet only (`DOLI_INC_I_182_PRODUCER_AUTH_ACTIVATION_HEIGHT`) |
+| Rollback fork-choice memory (`inc_i_288_fork_choice_activation_height`, §5.5) | `u64::MAX` (not scheduled) | `u64::MAX` | 0 | Non-mainnet (`DOLI_INC_I_288_FORK_CHOICE_ACTIVATION_HEIGHT`) |
 | Data Directory | `~/.doli/mainnet/` | `~/.doli/testnet/` | `~/.doli/devnet/` | - |
 | Config File | `.env` in data dir | `.env` in data dir | `.env` in data dir | - |
 

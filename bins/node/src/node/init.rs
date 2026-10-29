@@ -763,6 +763,10 @@ impl Node {
                 .network
                 .params()
                 .inc_i_204_fork_choice_activation_height,
+            inc_i_288_fork_choice_activation_height: config
+                .network
+                .params()
+                .inc_i_288_fork_choice_activation_height,
             // INC-I-152: sync-side bootstrap window, so orphan chase walking a freshly
             // wiped node off h==0 does not foreclose bootstrap snap admission.
             genesis_blocks: config.network.params().genesis_blocks,
@@ -1266,8 +1270,13 @@ impl Node {
             mp.share_producer_set(producer_set.clone());
         }
 
-        // Real sync manager
-        let sync_config = SyncConfig::default();
+        // Real sync manager; the INC-I-288 gate follows the network, as in `new`.
+        let sync_config = SyncConfig {
+            inc_i_288_fork_choice_activation_height: network
+                .params()
+                .inc_i_288_fork_choice_activation_height,
+            ..SyncConfig::default()
+        };
         let sync_manager = Arc::new(RwLock::new(SyncManager::new(sync_config, genesis_hash)));
         {
             let mut sm = sync_manager.write().await;

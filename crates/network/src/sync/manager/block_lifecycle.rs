@@ -713,9 +713,15 @@ impl SyncManager {
         // retry from the new (rolled-back) tip. If peers don't recognize it,
         // the empty-headers counter will escalate to genesis resync.
         self.recovery_phase = super::RecoveryPhase::Normal;
-        // Clear stale weight history to prevent minority fork weights from
-        // contaminating future fork choice decisions after a resync.
-        self.reorg_handler.clear();
+        // INC-I-288: the caller already moved local_* to the new tip. At/above the
+        // gate fork choice keeps its memory; our weight is the new tip's recorded
+        // weight (0 when untracked, the same value a clear leaves).
+        if self.local_height >= self.config.inc_i_288_fork_choice_activation_height {
+            let weight = self.reorg_handler.chain_weight(&self.local_hash);
+            self.reorg_handler.set_current_weight(weight);
+        } else {
+            self.reorg_handler.clear();
+        }
         self.reset_sync_buffers();
     }
 

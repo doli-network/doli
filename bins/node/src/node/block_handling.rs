@@ -173,7 +173,9 @@ impl Node {
                 //
                 // Legitimate reorg comes through header-first sync, not gossip.
                 // O(1): one get_block_height + one get_block_by_height lookup.
-                if is_better {
+                // INC-I-288: at/above its gate the slot no longer decides; the weight
+                // door below weighs every sibling.
+                if is_better && fork_height < net.inc_i_288_fork_choice_activation_height {
                     // INC-I-040: If the dropped block has a BETTER (lower) slot,
                     // WE are on the losing fork. Signal stuck_fork for
                     // recovery via the RecoveryCoordinator on the next
