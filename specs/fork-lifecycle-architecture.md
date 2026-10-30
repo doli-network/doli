@@ -286,6 +286,13 @@ still does). Blocks a reorg rewinds are remembered like blocks a rollback remove
 memory + retained siblings), so their descendants reach A3 through the door. X3 weighs a
 cached block with no record and no stored height at its producer weight (the walk's rule).
 Below the height: unchanged.
+INC-I-289 K-2: no authority added or removed. The finalized checkpoint is persisted (CF_META
+`finality_checkpoint`) and re-armed at start only when the stored chain still holds that hash
+at that height, so the finality guards survive a restart. Snap install admits a snapshot only
+when its anchor provably descends from the finalized block (the canonical hash at its height,
+or a walk of at most 1024 local parent headers that meets the canonical chain at or above the
+finalized height); unproven is refused and the node falls back to normal sync. Below the
+height: unchanged.
 ```
 
 ### Proposed (after M6)
