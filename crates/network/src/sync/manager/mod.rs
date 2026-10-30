@@ -245,6 +245,8 @@ pub struct SyncManager {
 impl SyncManager {
     /// Create a new sync manager
     pub fn new(config: SyncConfig, genesis_hash: Hash) -> Self {
+        let mut recovery = recovery::RecoveryCoordinator::new();
+        recovery.set_fork_choice_gate(config.inc_i_288_fork_choice_activation_height);
         Self {
             pipeline: SyncPipeline::new(&config),
             pipeline_data: SyncPipelineData::None,
@@ -298,7 +300,7 @@ impl SyncManager {
             recent_canonical_hashes: VecDeque::with_capacity(200),
             consecutive_orphan_gossip_blocks: 0,
             needs_mass_status_refresh: false,
-            recovery: recovery::RecoveryCoordinator::new(),
+            recovery,
             force_reorg: None,
             rollback_memory: rollback_memory::RollbackMemory::default(),
         }

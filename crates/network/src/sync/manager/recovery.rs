@@ -296,6 +296,8 @@ pub struct RecoveryCoordinator {
     sibling_fetch_attempts: u32,
     /// Snap sync is disabled on this node (`--no-snap-sync` or archive/relay role).
     snap_disabled: bool,
+    /// INC-I-288 fork-choice gate: at/above it Rules 1 and 1b do not exist.
+    fork_choice_gate: u64,
 }
 
 /// Max evidence entries retained (prevents unbounded growth under event floods).
@@ -313,7 +315,13 @@ impl RecoveryCoordinator {
             last_action: None,
             sibling_fetch_attempts: 0,
             snap_disabled: false,
+            fork_choice_gate: u64::MAX,
         }
+    }
+
+    /// The INC-I-288 fork-choice activation height (default `u64::MAX`).
+    pub fn set_fork_choice_gate(&mut self, height: u64) {
+        self.fork_choice_gate = height;
     }
 
     /// Keep Rule 2 (SnapSync) closed while snap sync is disabled on this node.
@@ -384,6 +392,8 @@ impl RecoveryCoordinator {
             || orphan_count >= thresholds::MIN_MINOR_FORK_EVIDENCE;
         let minor_band = gap > 0 && gap < thresholds::MINOR_FORK_GAP_MAX;
         let rollback_budget = ctx.shallow_rollback_count < thresholds::SHALLOW_ROLLBACK_MAX;
+        // INC-I-289: the depth-1 rollback of Rules 1/1b weighs nothing.
+        let blind_rollback = ctx.local_height < self.fork_choice_gate;
 
         // INC-I-204 M3 (REQ-FORK-010): the wedge shape. G3 corroborated that our tip
         // is off the peer-majority chain AND nothing has applied since. A fork is not
@@ -400,7 +410,12 @@ impl RecoveryCoordinator {
         };
 
         // --- Rule 1: minor fork with a recent apply ---
-        if minor_fork_evidence && minor_band && ctx.recently_synced() && rollback_budget {
+        if blind_rollback
+            && minor_fork_evidence
+            && minor_band
+            && ctx.recently_synced()
+            && rollback_budget
+        {
             if rollback_refused {
                 return self.on_rollback_refused(ctx, wedged_shape);
             }
@@ -412,7 +427,7 @@ impl RecoveryCoordinator {
         // A node genuinely forked on a SMALL gap never satisfies Rule 1's
         // recently_synced() precondition — its tip is stale by definition. The
         // G3-guarded StuckFork signal replaces that precondition.
-        if stuck_fork && minor_band && rollback_budget {
+        if blind_rollback && stuck_fork && minor_band && rollback_budget {
             if rollback_refused {
                 return self.on_rollback_refused(ctx, wedged_shape);
             }

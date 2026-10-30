@@ -97,6 +97,12 @@ async fn e2_a_inc_i_288_heavier_tip_survives_three_lighter_orphans() {
 // E-2(a) INC-I-288 — Decision: a failure means the fix also blinded a lighter-tip node to a gap its peers really report, so a node on the minority branch no longer walks down (the INV-FORK-001 stuck-minority wedge).
 #[tokio::test]
 async fn e2_a_inc_i_288_control_lighter_tip_still_walks_down() {
+    // INC-I-289: the blind depth-1 walk-down exists only below the gate.
+    if !super::inc_i_288_f2_common::in_below_ah_child(
+        "inc_i_288_e2_heavier_tip::e2_a_inc_i_288_control_lighter_tip_still_walks_down",
+    ) {
+        return;
+    }
     // P2a: ours C1..C3 (F+3, lighter), theirs D1..D4 (F+4); D3, D4 arrive as orphans.
     let mut r = rig(&[211, 213, 215], &[210, 212, 214, 216]).await;
     let (c2, c3, d4) = (r.ours[1].clone(), r.ours[2].clone(), r.theirs[3].clone());

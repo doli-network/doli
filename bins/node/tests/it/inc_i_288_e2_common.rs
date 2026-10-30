@@ -8,6 +8,7 @@
 use crypto::{Hash, KeyPair};
 use doli_core::validation::ValidationMode;
 use doli_core::Block;
+use doli_node::node::{RollbackAuthority, RollbackOutcome};
 use network::{PeerId, RecoveryAction};
 
 pub use super::inc_i_288_c1_common::*;
@@ -141,18 +142,29 @@ pub async fn heal_tick(r: &mut Rig, peer_tips: &[(u64, Block)], orphans: &[Block
 }
 
 /// The behind side: own A1, A2 (F+2); a peer reports F+5; peers cannot extend our
-/// tip (EmptyHeaders x2); one tick: the coordinator walks down to A1 (h = F+1).
-/// Its ShallowRollback starts the 30 s cooldown (Gate 2).
+/// tip (EmptyHeaders x2); one tick starts the 30 s cooldown (Gate 2), then the
+/// depth-1 executor walks down to A1 (h = F+1). INC-I-289: at the gate the tick
+/// has no blind rollback rung, so the executor call is made here.
 pub async fn after_coordinator_rollback() -> (Rig, PeerId) {
     let mut r = rig(&[210, 211], &[]).await;
     let a1 = r.ours[0].clone();
     let peer = peer_at(&r, F + 5, crypto::hash::hash(b"canonical tip"), 230).await;
     empty_headers(&r, peer, 2).await;
-    tick(&mut r).await;
+    let (first, _) = dispatch(&mut r).await;
+    assert_ne!(
+        first,
+        RecoveryAction::None,
+        "precondition: cooldown started"
+    );
+    let out = r
+        .node
+        .rollback_one_block(RollbackAuthority::CoordinatorApproved { depth: 1 })
+        .await
+        .expect("rollback_one_block");
     assert_eq!(
-        rollbacks(&r),
-        (1, 1),
-        "precondition: the coordinator walked down one block"
+        out,
+        RollbackOutcome::RolledBack,
+        "precondition: rolled back"
     );
     assert_on(&r, &a1, F + 1, "precondition: tip A1 after the rollback").await;
     (r, peer)
