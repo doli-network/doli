@@ -278,6 +278,9 @@ pub(super) const META_ORACLE_LAST_UPDATE_HEIGHT: &[u8] = b"oracle_last_update_he
 /// marker survives the very operation that clears it explicitly — and survives
 /// a `systemctl restart` in the middle of the replay window.
 pub(super) const META_UTXO_STAGING_RESIDUAL: &[u8] = b"utxo_staging_residual";
+/// INC-I-289 K-2: the last finalized checkpoint, bincode `FinalityCheckpoint`.
+/// Local bookkeeping, NOT part of the state root; survives `atomic_replace`.
+pub(super) const META_FINALITY_CHECKPOINT: &[u8] = b"finality_checkpoint";
 pub(super) const META_REBUILD_IN_PROGRESS: &[u8] = b"rebuild_in_progress";
 
 /// Payload budget of ONE staged-install promotion sub-batch, in bytes.

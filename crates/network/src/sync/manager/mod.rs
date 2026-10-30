@@ -240,7 +240,14 @@ pub struct SyncManager {
 
     /// INC-I-281: hashes removed by recent fork-remedy rollbacks.
     rollback_memory: rollback_memory::RollbackMemory,
+
+    /// INC-I-289 K-2: receives each new finality checkpoint so the node can
+    /// persist it (set by the node; `None` in unit tests).
+    finality_sink: Option<FinalitySink>,
 }
+
+/// Callback that persists a newly finalized checkpoint.
+pub type FinalitySink = Box<dyn Fn(&doli_core::FinalityCheckpoint) + Send + Sync>;
 
 impl SyncManager {
     /// Create a new sync manager
@@ -303,6 +310,7 @@ impl SyncManager {
             recovery,
             force_reorg: None,
             rollback_memory: rollback_memory::RollbackMemory::default(),
+            finality_sink: None,
         }
     }
 
