@@ -2134,14 +2134,20 @@ def accumulated_weight(block):
 This prevents Sybil attacks where an attacker creates many low-weight blocks.
 
 **Weight decides after a rollback and at an occupied height (INC-I-288).** At and above
-`inc_i_288_fork_choice_activation_height` (mainnet not scheduled, testnet 366,891, devnet 0) two node-local rules change, and nothing else: (1) a recovery rollback keeps
+`inc_i_288_fork_choice_activation_height` (mainnet not scheduled, testnet 366,891, devnet 0) four node-local rules change, and nothing else: (1) a recovery rollback keeps
 the fork-choice memory (`SyncManager::reset_sync_for_rollback` no longer clears the
 `ReorgHandler`; our weight becomes the new tip's recorded weight), so a sibling is weighed
 against our real accumulated weight; (2) a sibling at an occupied height with a better (lower)
 slot than our block is weighed by the wedge-escape door (`retain_sibling_and_try_escape`) like
-any other sibling, instead of being dropped by FORK_GUARD. The slot no longer decides. Below the
-height both rules are unchanged. This is fork choice only: no block-validity, block-content,
-wire or protocol-version change, so the binary can roll.
+any other sibling, instead of being dropped by FORK_GUARD. The slot no longer decides; (3) an
+orphan gossip block (parent unknown, so its height is unknown) no longer raises the network tip
+height (`SyncManager::note_orphan_gossip_block`); the orphan is still counted, its slot noted and
+reported as evidence, and the tip height comes only from peer status and applied blocks, so orphans
+of a lighter branch do not make a gap of 1 that rolls back a heavier tip; (4) a block this
+node produced (producer = its own key) is not post-rollback progress for coordinator Gate 1
+(`block_applied_with_origin`); a block a peer delivered by gossip or reorg still is, whatever
+its producer. Below the height all four rules are unchanged. This is fork choice only: no
+block-validity, block-content, wire or protocol-version change, so the binary can roll.
 
 ### 5.6 Emission Schedule
 

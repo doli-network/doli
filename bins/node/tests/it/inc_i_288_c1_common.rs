@@ -25,6 +25,8 @@ pub struct Rig {
     pub ours: Vec<Block>,
     /// Built on F, not applied: `theirs[i]` is at height `F + 1 + i`.
     pub theirs: Vec<Block>,
+    /// The 3 producers; `keys[0]` is the node's own producer key.
+    pub keys: Vec<KeyPair>,
     _tmp: TempDir,
 }
 
@@ -97,6 +99,7 @@ pub async fn rig(our_slots: &[u32], their_slots: &[u32]) -> Rig {
         f_hash: prev,
         ours,
         theirs,
+        keys,
         _tmp: tmp,
     };
     let top = r.ours.last().expect("fixture: own branch is not empty");

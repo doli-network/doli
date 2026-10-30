@@ -28,6 +28,21 @@ impl SyncManager {
         producer_weight: u64,
         prev_hash: Hash,
     ) {
+        self.block_applied_with_origin(hash, height, slot, producer_weight, prev_hash, false);
+    }
+
+    /// `block_applied_with_weight`, plus whether this node produced the block. At/above
+    /// the INC-I-288 gate an own block is not post-rollback progress for Gate 1
+    /// (INV-SYNC-010).
+    pub fn block_applied_with_origin(
+        &mut self,
+        hash: Hash,
+        height: u64,
+        slot: u32,
+        producer_weight: u64,
+        prev_hash: Hash,
+        own: bool,
+    ) {
         // Record block with weight for fork choice rule.
         // INC-I-147 D6: pass the REAL chain height — deriving it from the parent yields
         // a per-process counter once the node restarts mid-chain.
@@ -52,7 +67,9 @@ impl SyncManager {
             self.recent_canonical_hashes.pop_front();
         }
 
-        self.rollback_memory.note_applied(&hash, Instant::now());
+        if !own || height < self.config.inc_i_288_fork_choice_activation_height {
+            self.rollback_memory.note_applied(&hash, Instant::now());
+        }
         self.network.blocks_applied += 1;
         self.network.last_block_applied = Instant::now();
         self.network.last_sync_activity = Instant::now();

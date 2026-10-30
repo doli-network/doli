@@ -257,6 +257,9 @@ X1 FORK_GUARD slot rule (block_handling.rs `is_better` arm: drop the better-slot
 · X2 rollback clear (reset_sync_for_rollback zeroed our weight, so the first sibling won by delta=1).
 At and above `inc_i_288_fork_choice_activation_height`: X1 merged into A10 (the door weighs it),
 X2 removed (the rollback keeps the weights) → 13. Below the height: 15, unchanged.
+INC-I-288 round 2: no authority removed (still 13 above the height); two A4 inputs narrowed:
+the orphan-guessed height (best+1) no longer raises the network tip height (A4's gap), and an
+own-produced apply no longer opens A4 Gate 1 (peer-delivered applies still do).
 ```
 
 ### Proposed (after M6)

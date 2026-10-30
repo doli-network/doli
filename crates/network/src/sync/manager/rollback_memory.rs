@@ -60,6 +60,11 @@ impl RollbackMemory {
         }
     }
 
+    /// A peer delivered a non-removed block, whatever its producer (INC-I-288).
+    pub fn note_peer_applied(&mut self) {
+        self.fresh_apply_since_rollback = true;
+    }
+
     /// Time since `hash` was removed, while it is remembered.
     pub fn removed_age(&self, hash: &Hash, now: Instant) -> Option<Duration> {
         self.removed
@@ -130,6 +135,10 @@ impl SyncManager {
             .any_not_removed(applied, Instant::now())
         {
             self.note_peer_block_applied_since_rollback();
+            // INC-I-288: Gate 1 progress too; an own-key block skips it at apply.
+            if self.local_height >= self.config.inc_i_288_fork_choice_activation_height {
+                self.rollback_memory.note_peer_applied();
+            }
         }
     }
 }
@@ -217,5 +226,46 @@ mod tests {
         assert_eq!(m.gate1_rollback_height(Some(5), 7), Some(5));
         m.note_rollback();
         assert_eq!(m.gate1_rollback_height(Some(5), 6), Some(6));
+    }
+
+    // OUTPUT CONTRACT: fn SyncManager::block_applied_with_origin(.., own), then optionally
+    //   fn SyncManager::note_peer_applies_since_rollback(applied), after a rollback to h=0.
+    //   O2: the rollback-memory progress bit, read as gate1_rollback_height(Some(0), local):
+    //   Some(0) = progress (Gate 1 may open), Some(1) = none. The apply's other outputs do
+    //   not depend on `own` (N/A). Removed hashes: progress_ignores_removed_hashes.
+    // PATHS x PARTITIONS: own {yes, no} x gate {at (0), below (MAX)} x peer mark {yes, no}.
+    #[test]
+    fn inc_i_288_gate1_progress_by_apply_origin() {
+        let gate1 = |gate: u64, own: bool, peer_mark: bool| {
+            let config = super::super::SyncConfig {
+                inc_i_288_fork_choice_activation_height: gate,
+                ..Default::default()
+            };
+            let mut m = SyncManager::new(config, Hash::ZERO);
+            m.note_rollback_completed(0);
+            m.block_applied_with_origin(h(1), 1, 1, 1, Hash::ZERO, own);
+            if peer_mark {
+                m.note_peer_applies_since_rollback(&[h(1)]);
+            }
+            m.rollback_memory
+                .gate1_rollback_height(Some(0), m.local_height)
+        };
+        assert_eq!(gate1(0, true, false), Some(1), "own block at the gate");
+        assert_eq!(
+            gate1(0, true, true),
+            Some(0),
+            "peer-delivered own-key block"
+        );
+        assert_eq!(gate1(0, false, false), Some(0), "other producer's block");
+        assert_eq!(
+            gate1(u64::MAX, true, false),
+            Some(0),
+            "own block below the gate"
+        );
+        assert_eq!(
+            gate1(u64::MAX, true, true),
+            Some(0),
+            "peer mark below the gate"
+        );
     }
 }
