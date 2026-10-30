@@ -279,6 +279,13 @@ authority: it picks which branch A3 judges) ranks by A3's branch weight (recorde
 producer weight), not cached depth, and a rejected seed passes to the next; X3 weighs our
 side as the removed block plus its heaviest cached continuation; the slot-advance input reads
 the local tip height for its gate, like every other INC-I-288 site. Below the height: unchanged.
+INC-I-289: 12 above the height, none added or removed. A4 loses Rules 1 and 1b (the
+weight-free ShallowRollback{1}; SiblingFetch is reached only from them), so A4 no longer
+changes the branch by rollback. A Syncing state no longer blocks production (ResyncInProgress
+still does). Blocks a reorg rewinds are remembered like blocks a rollback removes (rollback
+memory + retained siblings), so their descendants reach A3 through the door. X3 weighs a
+cached block with no record and no stored height at its producer weight (the walk's rule).
+Below the height: unchanged.
 ```
 
 ### Proposed (after M6)
