@@ -11,6 +11,10 @@ use tracing::{error, info, warn};
 
 use super::Node;
 
+/// Bound on the local header walk that proves a snapshot anchor descends from
+/// the finalized block; a longer gap is refused (needs a peer-served proof).
+const MAX_FINALITY_PROOF_WALK: u64 = 1024;
+
 /// The durable 3-state produced by a successful `SnapshotPrelude::Installed`.
 pub(crate) struct InstalledSnapshot {
     pub(crate) chain_state: ChainState,
@@ -34,7 +38,9 @@ impl Node {
         &self,
         snapshot: &network::VerifiedSnapshot,
     ) -> Result<SnapshotPrelude> {
-        let outcome = if !self.snap_anchor_authenticated(snapshot) {
+        let outcome = if !self.snap_anchor_authenticated(snapshot)
+            || !self.snap_anchor_keeps_finality(snapshot).await
+        {
             Ok(SnapshotPrelude::Refused)
         } else if let Some(marker) = snapshot.utxo_staged.as_ref() {
             self.install_staged_utxos(snapshot, marker).await
@@ -52,6 +58,73 @@ impl Node {
             }
         }
         outcome
+    }
+
+    /// INC-I-289 K-2: at or above the fork-choice gate, with a finalized
+    /// checkpoint, a snapshot is admitted only when its anchor provably descends
+    /// from it. Unproven is refused (fail-closed); the caller falls back to
+    /// normal sync.
+    async fn snap_anchor_keeps_finality(&self, snapshot: &network::VerifiedSnapshot) -> bool {
+        let fin = self.sync_manager.read().await.fork_choice_finality();
+        let gate = self
+            .config
+            .network
+            .params()
+            .inc_i_288_fork_choice_activation_height;
+        let (Some(fh), Some(f)) = (fin.finalized_height, fin.finalized_hash) else {
+            return true;
+        };
+        if fin.local_tip_height < gate || self.snap_anchor_descends_from(snapshot, fh, f) {
+            return true;
+        }
+        warn!(
+            "[SNAP_SYNC] Refusing snapshot h={} hash={}: anchor not proven to descend from finalized h={} {}",
+            snapshot.block_height, snapshot.block_hash, fh, f
+        );
+        false
+    }
+
+    /// Walk parents from the anchor (its carried header first, then stored
+    /// headers) until a hash our canonical index holds at that height. The
+    /// anchor descends from `f` iff that meeting height is `>= fh` and the
+    /// canonical index still holds `f` at `fh`.
+    fn snap_anchor_descends_from(
+        &self,
+        snapshot: &network::VerifiedSnapshot,
+        fh: u64,
+        f: crypto::Hash,
+    ) -> bool {
+        let canonical = |h: u64| self.block_store.get_hash_by_height(h).ok().flatten();
+        if canonical(fh) != Some(f) {
+            return false;
+        }
+        let mut carried = snapshot
+            .block_header_bytes
+            .as_ref()
+            .and_then(|b| bincode::deserialize::<doli_core::BlockHeader>(b).ok())
+            .filter(|h| h.hash() == snapshot.block_hash);
+        let (mut hash, mut height) = (snapshot.block_hash, snapshot.block_height);
+        if height < fh {
+            return false;
+        }
+        for _ in 0..=MAX_FINALITY_PROOF_WALK {
+            if canonical(height) == Some(hash) {
+                return true;
+            }
+            if height == fh {
+                return false;
+            }
+            let header = match carried.take() {
+                Some(h) => h,
+                None => match self.block_store.get_header(&hash) {
+                    Ok(Some(h)) => h,
+                    _ => return false,
+                },
+            };
+            hash = header.prev_hash;
+            height -= 1;
+        }
+        false
     }
 
     /// M1/M3 path: the whole canonical image arrived on the wire.

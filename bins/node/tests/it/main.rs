@@ -269,6 +269,7 @@ mod inc_i_289_c_descendants_weighed;
 mod inc_i_289_common;
 mod inc_i_289_d_producer_not_starved;
 mod inc_i_289_h4_unrecorded_continuation;
+mod inc_i_289_k2_finality;
 mod m1_snap_install_identity;
 mod m3_common;
 mod m3_staging_install;
