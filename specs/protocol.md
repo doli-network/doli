@@ -2157,15 +2157,22 @@ the parent's) is a weight input in one place, `ReorgHandler::slot_weight`: a for
 slot is not above its parent's slot, or whose parent's slot is unknown, is recorded at weight
 0. The parent's slot is the one the `ReorgHandler` recorded with the parent's weight, else the
 node's (fork cache body, else block store). Every fork-block record passes it
-(`record_fork_block_at_slot`: the wedge-escape door, including a block recorded while its
+(`SyncManager::record_fork_block_at_slot`, gated on the local tip height like every rule
+here: the wedge-escape door, including a block recorded while its
 parent body was gone, and the fork-recovery walk), and so does the untracked one-block
 candidate of `check_reorg_weighted`; the plan's branch sum reads the recorded weights. A slot
 leader cannot stack same-slot blocks into branch weight on any path; such a block is still
 cached and retained, at weight 0; (1d) the INC-I-281 hold (`hold_removed_block`) uses the plan
-door's branch rule from the shared parent (the tip): it holds the re-apply of our removed block
-when a cached branch on that parent (a sibling and its cached descendants, to any cached tip)
-is strictly heavier (`candidate_weight`) than the removed block; one equal-weight,
-lower-hash sibling does not hold; (2) a sibling at an occupied height with a better (lower)
+door's branch rule from the shared parent (the tip), branch against branch: our side is the
+removed block plus its heaviest cached continuation, a rival is a sibling plus its heaviest
+cached descendants (per block `candidate_weight`); it holds the re-apply of our removed block
+only when a rival is strictly heavier; one equal-weight, lower-hash sibling does not hold;
+(1e) the fork walk (`try_trigger_fork_recovery`) ranks its seeds by the cached branch weight
+they root (per block the `ReorgHandler` weight, else its producer's weight, which the walk
+records), not by cached depth, so a same-slot chain at weight 0 ranks below a branch that can
+add weight; a seed whose branch already lost fork choice on our tip passes the walk to the
+next seed. Below the height the walk takes the deepest cached chain and a rejected one ends
+the search; (2) a sibling at an occupied height with a better (lower)
 slot than our block is weighed by the wedge-escape door (`retain_sibling_and_try_escape`) like
 any other sibling, instead of being dropped by FORK_GUARD. The slot no longer decides; (3) an
 orphan gossip block (parent unknown, so its height is unknown) no longer raises the network tip

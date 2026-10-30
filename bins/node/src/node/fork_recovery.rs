@@ -167,7 +167,7 @@ impl Node {
                 }
             }
             None => {
-                warn!("Could not plan reorg from recovered fork — common ancestor not found; checking direct-successor fallback");
+                warn!("Could not plan reorg from recovered fork — common ancestor not found or a block on our side has no weight; checking direct-successor fallback");
                 if self
                     .try_apply_direct_successor(recovery.blocks.last().unwrap())
                     .await?

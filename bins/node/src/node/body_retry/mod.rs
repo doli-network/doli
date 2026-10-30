@@ -212,7 +212,7 @@ impl Node {
     async fn retry_branch(&mut self, hash: Hash) {
         let tip = {
             let cache = self.fork_block_cache.read().await;
-            cache.get(&cached_branch_tip(&cache, hash)).cloned()
+            cache.get(&cached_branch_tip(&cache, hash, |_| 1)).cloned()
         };
         let Some(tip) = tip.filter(|t| t.hash() != hash) else {
             return;

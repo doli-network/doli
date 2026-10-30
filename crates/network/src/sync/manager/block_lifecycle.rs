@@ -507,9 +507,7 @@ impl SyncManager {
             .record_fork_block_with_height(hash, prev_hash, weight, real_height);
     }
 
-    /// [`Self::record_fork_block_weight`] of a block at `slot`; `parent_slot` is the
-    /// parent's slot when the node knows it. Returns the weight recorded (INC-I-288
-    /// slot-advance rule).
+    /// Records a fork block at `slot`; at/above the INC-I-288 gate (local tip) via the slot rule.
     pub fn record_fork_block_at_slot(
         &mut self,
         hash: Hash,
@@ -519,14 +517,15 @@ impl SyncManager {
         slot: u32,
         parent_slot: Option<u32>,
     ) -> u64 {
-        self.reorg_handler.record_fork_block_at_slot(
-            hash,
-            prev_hash,
-            weight,
-            real_height,
-            slot,
-            parent_slot,
-        )
+        let rh = &mut self.reorg_handler;
+        let weight = if rh.weighs_from_ancestor(self.local_height) {
+            rh.slot_weight(slot, &prev_hash, parent_slot, weight)
+        } else {
+            weight
+        };
+        rh.record_fork_block_with_height(hash, prev_hash, weight, real_height);
+        rh.note_block_slot(hash, slot);
+        weight
     }
 
     /// Seed the reorg handler with the snap sync tip so fork detection works immediately.

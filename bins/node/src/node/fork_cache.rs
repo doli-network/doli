@@ -1,4 +1,4 @@
-use super::fork_walk::{cached_branches, select_walk_seed};
+use super::fork_walk::{cached_branches, select_walk_seed, walk_rank};
 use super::*;
 
 const CACHE_CAP: usize = 100;
@@ -9,8 +9,8 @@ const MAX_DRAIN: u32 = 50;
 /// Cached children of `parent` in drain order: longest cached descendant chain
 /// first, then lower slot, then lower hash.
 pub(super) fn drain_order(cache: &HashMap<Hash, Block>, parent: Hash) -> Vec<Hash> {
-    let branches = cached_branches(cache);
-    let mut kids: Vec<(std::cmp::Reverse<usize>, u32, Hash)> = cache
+    let branches = cached_branches(cache, |_| 1);
+    let mut kids: Vec<(std::cmp::Reverse<u64>, u32, Hash)> = cache
         .iter()
         .filter(|(_, b)| b.header.prev_hash == parent)
         .map(|(h, b)| (std::cmp::Reverse(branches[h].0), b.header.slot, *h))
@@ -50,32 +50,14 @@ pub(super) fn admit(
     true
 }
 
-/// Every cached branch on `parent` that does not pass through `skip`: the blocks
-/// from a cached child of `parent` up to a cached tip, fork-nearest first.
-fn cached_branches_on(cache: &HashMap<Hash, Block>, parent: Hash, skip: Hash) -> Vec<Vec<Hash>> {
-    cache
-        .keys()
-        .filter_map(|tip| {
-            let mut path = Vec::new();
-            let mut cur = *tip;
-            while cur != skip && path.len() < cache.len() {
-                let b = cache.get(&cur)?;
-                path.push(cur);
-                if b.header.prev_hash == parent {
-                    path.reverse();
-                    return Some(path);
-                }
-                cur = b.header.prev_hash;
-            }
-            None
-        })
-        .collect()
-}
-
-/// The walk seed and its longest cached descendant chain, fork-nearest first,
+/// The walk seed and its heaviest cached descendant chain, fork-nearest first,
 /// capped at `MAX_PINNED`.
-fn seed_chain(cache: &HashMap<Hash, Block>, is_canonical: impl Fn(&Hash) -> bool) -> HashSet<Hash> {
-    let Some((seed, tip)) = select_walk_seed(cache, is_canonical) else {
+fn seed_chain(
+    cache: &HashMap<Hash, Block>,
+    is_canonical: impl Fn(&Hash) -> bool,
+    weight: impl Fn(&Hash) -> u64,
+) -> HashSet<Hash> {
+    let Some((seed, tip)) = select_walk_seed(cache, is_canonical, weight) else {
         return HashSet::new();
     };
     let seed_hash = seed.hash();
@@ -113,7 +95,10 @@ impl Node {
         if cache.len() <= CACHE_CAP {
             return true;
         }
-        let pinned = seed_chain(&cache, |h| self.is_canonical(h));
+        drop(cache);
+        let weights = self.walk_weights().await;
+        let mut cache = self.fork_block_cache.write().await;
+        let pinned = seed_chain(&cache, |h| self.is_canonical(h), walk_rank(&weights));
         let mut by_slot: Vec<(u32, Hash)> = cache
             .iter()
             .filter(|(h, _)| !pinned.contains(*h))
@@ -175,15 +160,11 @@ impl Node {
             return false;
         }
         let parent = block.header.prev_hash;
-        let (siblings, branches): (Vec<Hash>, Vec<Vec<Hash>>) = {
-            let cache = self.fork_block_cache.read().await;
-            let siblings = cache
-                .iter()
-                .filter(|(h, b)| **h != hash && b.header.prev_hash == parent)
-                .map(|(h, _)| *h)
-                .collect();
-            (siblings, cached_branches_on(&cache, parent, hash))
-        };
+        let siblings: Vec<Hash> = (self.fork_block_cache.read().await)
+            .iter()
+            .filter(|(h, b)| **h != hash && b.header.prev_hash == parent)
+            .map(|(h, _)| *h)
+            .collect();
         if siblings.is_empty() {
             return false;
         }
@@ -200,15 +181,26 @@ impl Node {
             let rh = sync.reorg_handler();
             let finality = sync.fork_choice_finality();
             if rh.weighs_from_ancestor(finality.local_tip_height) {
-                // INC-I-288: the plan door's rule from the shared parent (the tip):
-                // a cached branch strictly heavier than the removed block holds it.
+                // INC-I-288: branch against branch from the shared parent (the tip), by
+                // the plan door's rule: the removed block plus its heaviest cached
+                // continuation against each cached sibling branch.
                 let store = &self.block_store;
-                let ours = rh.branch_weight(&[hash], |_| Some(weight));
-                branches.iter().any(|b| {
-                    let theirs = rh
-                        .candidate_weight(b, |h| super::wedge_escape::stored_weight(store, &ps, h));
-                    Some(theirs) > ours
-                })
+                let cache = self.fork_block_cache.read().await;
+                let best = cached_branches(&cache, |h| {
+                    rh.candidate_weight(&[*h], |x| {
+                        super::wedge_escape::stored_weight(store, &ps, x)
+                    })
+                });
+                let own = (cache.iter())
+                    .filter(|(_, b)| b.header.prev_hash == hash)
+                    .map(|(h, _)| best[h].0)
+                    .max();
+                let ours = rh
+                    .candidate_weight(&[hash], |_| Some(weight))
+                    .saturating_add(own.unwrap_or(0));
+                siblings
+                    .iter()
+                    .any(|s| best.get(s).is_some_and(|(w, _)| *w > ours))
             } else {
                 let ours = rh.chain_weight(&parent).saturating_add(weight);
                 siblings.iter().any(|s| {
@@ -298,9 +290,9 @@ mod tests {
             chain.push(prev);
             cache.insert(prev, b);
         }
-        let pinned = seed_chain(&cache, |_| false);
+        let pinned = seed_chain(&cache, |_| false, |_| 1);
         assert_eq!(pinned.len(), MAX_PINNED);
         assert!(chain[..MAX_PINNED].iter().all(|h| pinned.contains(h)));
-        assert!(seed_chain(&HashMap::new(), |_| false).is_empty());
+        assert!(seed_chain(&HashMap::new(), |_| false, |_| 1).is_empty());
     }
 }

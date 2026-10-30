@@ -293,7 +293,7 @@ impl Node {
                 // A guard STOPPED the reorg — a different diagnosis from the arm
                 // above, and the one INC-I-204 needed (INC-I-204 M0 D3).
                 info!(
-                    "[WEDGE_ESCAPE] Sibling {:.8} retained (plan_reorg refused: finality guard, unknown ancestor, or reorg depth) — signaling fork recovery (INC-I-143)",
+                    "[WEDGE_ESCAPE] Sibling {:.8} retained (plan_reorg refused: finality guard, unknown ancestor, reorg depth, or a block on our side has no weight) — signaling fork recovery (INC-I-143)",
                     fork_tip_hash
                 );
                 self.sync_manager.write().await.signal_stuck_fork();

@@ -160,7 +160,7 @@ impl ReorgHandler {
         warn!(
             "Could not find common ancestor for block {} (searched {} blocks)",
             block.hash(),
-            MAX_REORG_DEPTH
+            to_rollback.len()
         );
 
         None

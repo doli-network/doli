@@ -274,6 +274,11 @@ The wedge escape's own slot drop (an A10 input added in round 4) is removed: the
 rule is one ReorgHandler weight input (slot_weight) that every fork-block record and the
 gossip door's untracked candidate pass. Our side with an unknown block weight keeps our tip
 (A3 and A1 refuse). Below the height: unchanged.
+INC-I-288 round 4c: 12 above the height, none added or removed. The walk's seed rule (not an
+authority: it picks which branch A3 judges) ranks by A3's branch weight (recorded weight, else
+producer weight), not cached depth, and a rejected seed passes to the next; X3 weighs our
+side as the removed block plus its heaviest cached continuation; the slot-advance input reads
+the local tip height for its gate, like every other INC-I-288 site. Below the height: unchanged.
 ```
 
 ### Proposed (after M6)
