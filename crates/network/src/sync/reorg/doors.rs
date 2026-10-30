@@ -76,12 +76,15 @@ impl ReorgHandler {
                     return None; // No reorg needed
                 }
                 // The walk used tracked parents only, so every rolled-back block
-                // has its handler weight.
+                // has its handler weight; an unknown one keeps our tip. The candidate
+                // is its recorded weight, else the slot-advance rule here.
                 let (ours, cand) = if from_ancestor {
-                    (
-                        self.branch_weight(&to_rollback, |_| None),
-                        block_producer_weight,
-                    )
+                    let ours = self.branch_weight(&to_rollback, |_| None)?;
+                    let slot = block.header.slot;
+                    let cand = self.candidate_weight(&[block_hash], |_| {
+                        Some(self.slot_weight(slot, &prev_hash, None, block_producer_weight))
+                    });
+                    (ours, cand)
                 } else {
                     (self.current_chain_weight, new_chain_weight)
                 };
@@ -253,12 +256,13 @@ impl ReorgHandler {
         get_height: impl Fn(&Hash) -> Option<u64>,
         finality: ForkChoiceFinality,
     ) -> Option<ReorgResult> {
+        // The operator door does not weigh: every untracked block weighs 0.
         self.plan_reorg_inner(
             current_tip,
             new_tip,
             get_parent,
             get_height,
-            |_| None,
+            |_| Some(0),
             finality,
             true,
         )
@@ -447,12 +451,13 @@ impl ReorgHandler {
         // New blocks are in reverse order (need to apply from ancestor to tip)
         new_chain.reverse();
 
-        // INC-I-288: at/above the gate each side is weighed from the common ancestor;
-        // below it, the base-relative accumulated weights of a lossy cache.
+        // INC-I-288: at/above the gate each side is weighed from the common ancestor
+        // (our side unknown: no plan, our tip is kept); below it, the base-relative
+        // accumulated weights of a lossy cache.
         let (current_weight, new_weight) = if self.weighs_from_ancestor(finality.local_tip_height) {
             (
-                self.branch_weight(&rollback, &get_weight),
-                self.branch_weight(&new_chain, &get_weight),
+                self.branch_weight(&rollback, &get_weight)?,
+                self.candidate_weight(&new_chain, &get_weight),
             )
         } else {
             (self.chain_weight(&current_tip), self.chain_weight(&new_tip))

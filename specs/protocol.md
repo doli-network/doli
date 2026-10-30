@@ -2141,19 +2141,31 @@ recovery rollback and a production self-apply rollback alike) keeps the fork-cho
 compares the two branches from their common ancestor: each side weighs the sum of the
 producer weights of its blocks after the ancestor (`ReorgHandler::branch_weight`). A block's
 weight is its `ReorgHandler` entry, else the weight `apply_block` records for a stored block
-(producer `effective_weight` at the block's height), else 0, so a block nobody can weigh
-never makes the candidate heavier. The base-relative accumulated weight of the lossy cache
+(producer `effective_weight` at the block's height), else unknown. On the candidate side an
+unknown block adds nothing (`ReorgHandler::candidate_weight`), so it never makes the candidate
+heavier. On our side an unknown block (a store read error, or a hole in the canonical
+hash-to-height index) keeps our tip: `plan_reorg` returns no plan and `check_reorg_weighted`
+no reorg. The base-relative accumulated weight of the lossy cache
 (0 for a tip that a restart or an eviction left untracked) no longer decides. This holds in
 `plan_reorg` (its `weight_delta`), in the gossip door `check_reorg_weighted` (its verdict
-waits for the walk to the ancestor) and in the wedge-escape door, which has no accumulated-
-weight short-circuit and acts on the plan's `weight_delta > 0`; (1b) a re-record of a block
+waits for the walk to the ancestor) and in the wedge-escape door, which does not call
+`weigh_branches`, has no accumulated-weight short-circuit and acts on the plan's
+`weight_delta > 0`; (1b) a re-record of a block
 the `ReorgHandler` already tracks keeps its one LRU slot, so repeated deliveries of one block
-cannot evict our tip; (1c) the wedge-escape door applies the slot-advance rule of apply
-(`SlotNotAdvancing`: slot not above the parent's) before it records a weight: such a block
-is dropped, so a slot leader cannot stack same-slot blocks into branch weight; (1d) the
-INC-I-281 hold (`hold_removed_block`) uses the door's verdict: only a strictly heavier cached
-sibling (common-ancestor weight) holds the re-apply of our removed block; an equal-weight,
-lower-hash sibling does not; (2) a sibling at an occupied height with a better (lower)
+cannot evict our tip; (1c) the slot-advance rule of apply (`SlotNotAdvancing`: slot not above
+the parent's) is a weight input in one place, `ReorgHandler::slot_weight`: a fork block whose
+slot is not above its parent's slot, or whose parent's slot is unknown, is recorded at weight
+0. The parent's slot is the one the `ReorgHandler` recorded with the parent's weight, else the
+node's (fork cache body, else block store). Every fork-block record passes it
+(`record_fork_block_at_slot`: the wedge-escape door, including a block recorded while its
+parent body was gone, and the fork-recovery walk), and so does the untracked one-block
+candidate of `check_reorg_weighted`; the plan's branch sum reads the recorded weights. A slot
+leader cannot stack same-slot blocks into branch weight on any path; such a block is still
+cached and retained, at weight 0; (1d) the INC-I-281 hold (`hold_removed_block`) uses the plan
+door's branch rule from the shared parent (the tip): it holds the re-apply of our removed block
+when a cached branch on that parent (a sibling and its cached descendants, to any cached tip)
+is strictly heavier (`candidate_weight`) than the removed block; one equal-weight,
+lower-hash sibling does not hold; (2) a sibling at an occupied height with a better (lower)
 slot than our block is weighed by the wedge-escape door (`retain_sibling_and_try_escape`) like
 any other sibling, instead of being dropped by FORK_GUARD. The slot no longer decides; (3) an
 orphan gossip block (parent unknown, so its height is unknown) no longer raises the network tip

@@ -30,6 +30,15 @@ impl Node {
             .flatten()
             .unwrap_or(current_height);
         self.verify_fork_signed(&recovery.blocks, fork_base_height.saturating_add(1))?;
+        // INC-I-288: the slot-advance rule needs the parent's slot. A walked parent is
+        // recorded just before its child; the connection point is stored.
+        let cp = recovery.connection_point;
+        let cp_slot = self
+            .block_store
+            .get_header(&cp)
+            .ok()
+            .flatten()
+            .map(|h| h.slot);
         let mut last_block_weight = 1u64;
         {
             let producers = self.producer_set.read().await;
@@ -39,11 +48,13 @@ impl Node {
                     .get_by_pubkey(&block.header.producer)
                     .map(|p| p.effective_weight(current_height + 1))
                     .unwrap_or(1);
-                sync.record_fork_block_weight(
+                sync.record_fork_block_at_slot(
                     block.hash(),
                     block.header.prev_hash,
                     weight,
                     fork_base_height.saturating_add(offset as u64 + 1),
+                    block.header.slot,
+                    cp_slot.filter(|_| block.header.prev_hash == cp),
                 );
                 last_block_weight = weight;
             }

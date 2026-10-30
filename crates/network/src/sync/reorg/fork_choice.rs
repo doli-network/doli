@@ -51,6 +51,77 @@ pub enum WeightVerdict {
 }
 
 impl ReorgHandler {
+    /// INC-I-288: the weight `blocks` add above their common ancestor. Per block the
+    /// handler's producer weight, else `node_weight`; `None` (unknown) when a block
+    /// has neither. An unknown weight on our side keeps our tip.
+    pub fn branch_weight(
+        &self,
+        blocks: &[Hash],
+        node_weight: impl Fn(&Hash) -> Option<u64>,
+    ) -> Option<u64> {
+        blocks.iter().try_fold(0u64, |sum, h| {
+            let w = self.block_weights.get(h).map(|b| b.producer_weight);
+            Some(sum.saturating_add(w.or_else(|| node_weight(h))?))
+        })
+    }
+
+    /// [`Self::branch_weight`] of a candidate branch: a block nobody can weigh adds
+    /// nothing.
+    pub fn candidate_weight(
+        &self,
+        blocks: &[Hash],
+        node_weight: impl Fn(&Hash) -> Option<u64>,
+    ) -> u64 {
+        self.branch_weight(blocks, |h| Some(node_weight(h).unwrap_or(0)))
+            .unwrap_or(0)
+    }
+
+    /// INC-I-288: apply's slot-advance rule (`SlotNotAdvancing`) as a weight input.
+    /// A block at `slot` on `prev` adds `weight` only when `slot` is above the
+    /// parent's slot (recorded here, else `parent_slot`); an unknown parent slot
+    /// adds nothing.
+    pub(super) fn slot_weight(
+        &self,
+        slot: u32,
+        prev: &Hash,
+        parent_slot: Option<u32>,
+        weight: u64,
+    ) -> u64 {
+        match self.block_slots.get(prev).copied().or(parent_slot) {
+            Some(p) if slot > p => weight,
+            _ => 0,
+        }
+    }
+
+    /// Notes the slot of a tracked block (the apply path).
+    pub(crate) fn note_block_slot(&mut self, hash: Hash, slot: u32) {
+        if self.recent_blocks.contains(&hash) {
+            self.block_slots.insert(hash, slot);
+        }
+    }
+
+    /// [`Self::record_fork_block_with_height`] of a block at `slot`. At/above the
+    /// INC-I-288 gate (its real height) the weight passes [`Self::slot_weight`].
+    /// Returns the weight recorded.
+    pub fn record_fork_block_at_slot(
+        &mut self,
+        hash: Hash,
+        prev_hash: Hash,
+        weight: u64,
+        real_height: u64,
+        slot: u32,
+        parent_slot: Option<u32>,
+    ) -> u64 {
+        let weight = if real_height >= self.inc_i_288_fork_choice_activation_height {
+            self.slot_weight(slot, &prev_hash, parent_slot, weight)
+        } else {
+            weight
+        };
+        self.record_fork_block_with_height(hash, prev_hash, weight, real_height);
+        self.note_block_slot(hash, slot);
+        weight
+    }
+
     /// The branch-weight rule below the INC-I-288 gate, on base-relative accumulated
     /// weights. At/above it the doors weigh from the common ancestor instead.
     pub fn weigh_branches(

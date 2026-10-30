@@ -50,6 +50,28 @@ pub(super) fn admit(
     true
 }
 
+/// Every cached branch on `parent` that does not pass through `skip`: the blocks
+/// from a cached child of `parent` up to a cached tip, fork-nearest first.
+fn cached_branches_on(cache: &HashMap<Hash, Block>, parent: Hash, skip: Hash) -> Vec<Vec<Hash>> {
+    cache
+        .keys()
+        .filter_map(|tip| {
+            let mut path = Vec::new();
+            let mut cur = *tip;
+            while cur != skip && path.len() < cache.len() {
+                let b = cache.get(&cur)?;
+                path.push(cur);
+                if b.header.prev_hash == parent {
+                    path.reverse();
+                    return Some(path);
+                }
+                cur = b.header.prev_hash;
+            }
+            None
+        })
+        .collect()
+}
+
 /// The walk seed and its longest cached descendant chain, fork-nearest first,
 /// capped at `MAX_PINNED`.
 fn seed_chain(cache: &HashMap<Hash, Block>, is_canonical: impl Fn(&Hash) -> bool) -> HashSet<Hash> {
@@ -145,21 +167,22 @@ impl Node {
 
     /// INC-I-281: true if a non-fork-choice intake must not apply `block` (a
     /// child of the tip) now: a fork-remedy rollback removed it and a cached
-    /// sibling would win fork choice against it. Decided by fork choice, not a
-    /// timer. Fork choice does not call this.
+    /// sibling branch would win fork choice against it. Decided by fork choice,
+    /// not a timer. Fork choice does not call this.
     pub(super) async fn hold_removed_block(&self, block: &Block) -> bool {
         let hash = block.hash();
         if !self.sync_manager.read().await.removed_by_rollback(&hash) {
             return false;
         }
         let parent = block.header.prev_hash;
-        let siblings: Vec<Hash> = {
+        let (siblings, branches): (Vec<Hash>, Vec<Vec<Hash>>) = {
             let cache = self.fork_block_cache.read().await;
-            cache
+            let siblings = cache
                 .iter()
                 .filter(|(h, b)| **h != hash && b.header.prev_hash == parent)
                 .map(|(h, _)| *h)
-                .collect()
+                .collect();
+            (siblings, cached_branches_on(&cache, parent, hash))
         };
         if siblings.is_empty() {
             return false;
@@ -177,13 +200,14 @@ impl Node {
             let rh = sync.reorg_handler();
             let finality = sync.fork_choice_finality();
             if rh.weighs_from_ancestor(finality.local_tip_height) {
-                // INC-I-288: the weight door's verdict — the tip is the common
-                // ancestor, and only a strictly heavier sibling holds the block.
+                // INC-I-288: the plan door's rule from the shared parent (the tip):
+                // a cached branch strictly heavier than the removed block holds it.
                 let store = &self.block_store;
                 let ours = rh.branch_weight(&[hash], |_| Some(weight));
-                siblings.iter().any(|s| {
-                    rh.branch_weight(&[*s], |h| super::wedge_escape::stored_weight(store, &ps, h))
-                        > ours
+                branches.iter().any(|b| {
+                    let theirs = rh
+                        .candidate_weight(b, |h| super::wedge_escape::stored_weight(store, &ps, h));
+                    Some(theirs) > ours
                 })
             } else {
                 let ours = rh.chain_weight(&parent).saturating_add(weight);

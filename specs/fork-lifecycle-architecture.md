@@ -267,6 +267,13 @@ X3 the INC-I-281 hold's own tie rule (hold_removed_block; unlisted, so 14 in fac
 into the same verdict: only a strictly heavier sibling holds. A1 stays a door, same weight rule.
 Inputs narrowed: duplicate LRU pushes of a tracked block; same-slot blocks (slot-advance rule
 before the weight record). Below the height: unchanged (round 1's 15, plus X3).
+INC-I-288 round 4b: 12 above the height, none added or removed. X3 now uses A3's branch
+rule (the hold weighs each cached branch on the shared parent, a sibling plus its cached
+descendants, with the plan's candidate sum), so the hold has no weight rule of its own.
+The wedge escape's own slot drop (an A10 input added in round 4) is removed: the slot-advance
+rule is one ReorgHandler weight input (slot_weight) that every fork-block record and the
+gossip door's untracked candidate pass. Our side with an unknown block weight keeps our tip
+(A3 and A1 refuse). Below the height: unchanged.
 ```
 
 ### Proposed (after M6)

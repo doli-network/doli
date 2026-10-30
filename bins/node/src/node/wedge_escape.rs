@@ -160,20 +160,14 @@ impl Node {
             let tip_h = sync.fork_choice_finality().local_tip_height;
             sync.reorg_handler().weighs_from_ancestor(tip_h)
         };
-        // INC-I-288: apply's slot-advance rule (SlotNotAdvancing) before the weight
-        // input — a block that cannot apply on its parent adds no weight.
-        if from_ancestor && self.slot_not_advancing(&block).await {
-            debug!(
-                "[WEDGE_ESCAPE] Dropping fork block {:.8}: slot {} does not advance over its parent (INC-I-288)",
-                fork_tip_hash, block.header.slot
-            );
-            return Ok(());
-        }
-        self.sync_manager.write().await.record_fork_block_weight(
+        let parent_slot = self.parent_slot(&block).await;
+        self.sync_manager.write().await.record_fork_block_at_slot(
             fork_tip_hash,
             block.header.prev_hash,
             weight,
             sibling_height,
+            block.header.slot,
+            parent_slot,
         );
 
         // c. Cache the body (execute_reorg fetches new-block bodies from here).
@@ -201,31 +195,34 @@ impl Node {
         // INC-I-204 M5: the verdict now comes from the ONE authority
         // (`ReorgHandler::weigh_branches`). Below the fork-choice activation height it
         // reproduces this door's pre-M5 rule exactly — `fork_w <= our_w` gives up.
-        // INC-I-288: at/above its gate there is no short-circuit; the plan decides.
+        // INC-I-288: at/above its gate weigh_branches is not called (no short-circuit);
+        // the plan decides.
         let current_tip = self.chain_state.read().await.best_hash;
-        let (fork_weight, our_weight, verdict) = {
+        let below_gate = if from_ancestor {
+            None
+        } else {
             let sync = self.sync_manager.read().await;
             let finality = sync.fork_choice_finality();
             let rh = sync.reorg_handler();
-            (
+            Some((
                 rh.chain_weight(&fork_tip_hash),
                 rh.chain_weight(&current_tip),
                 rh.weigh_branches(&current_tip, &fork_tip_hash, finality),
-            )
+            ))
         };
-        if !from_ancestor
-            && matches!(
+        if let Some((fork_weight, our_weight, verdict)) = below_gate {
+            if matches!(
                 verdict,
                 network::WeightVerdict::Lighter | network::WeightVerdict::TieKeep
-            )
-        {
-            record_wedge_escape_outcome(WedgeOutcome::CannotOutweigh.reason());
-            info!(
-                "[WEDGE_ESCAPE] Sibling {:.8} cannot out-weight tip (fork_w={} <= our_w={}) — retained, signaling recovery (INC-I-143)",
-                fork_tip_hash, fork_weight, our_weight
-            );
-            self.sync_manager.write().await.signal_stuck_fork();
-            return Ok(());
+            ) {
+                record_wedge_escape_outcome(WedgeOutcome::CannotOutweigh.reason());
+                info!(
+                    "[WEDGE_ESCAPE] Sibling {:.8} cannot out-weight tip (fork_w={} <= our_w={}) — retained, signaling recovery (INC-I-143)",
+                    fork_tip_hash, fork_weight, our_weight
+                );
+                self.sync_manager.write().await.signal_stuck_fork();
+                return Ok(());
+            }
         }
 
         // d. Attempt a synchronous reorg using the SAME flow as
@@ -252,10 +249,11 @@ impl Node {
         // can hash-grind an equal-weight competitor to displace the committed tip.
         // INC-I-204 M0: name the branch before taking it. The match below is the
         // live selection, unchanged; the classifier only labels it.
-        let outcome = if from_ancestor {
-            classify_plan(reorg_result.as_ref())
-        } else {
-            classify_wedge_plan(fork_weight, our_weight, reorg_result.as_ref())
+        let outcome = match below_gate {
+            None => classify_plan(reorg_result.as_ref()),
+            Some((fork_weight, our_weight, _)) => {
+                classify_wedge_plan(fork_weight, our_weight, reorg_result.as_ref())
+            }
         };
         record_wedge_escape_outcome(outcome.reason());
 
@@ -305,9 +303,9 @@ impl Node {
         Ok(())
     }
 
-    /// True when `block`'s slot does not advance over its parent's (fork cache
-    /// body first, then the store); false when the parent is in neither.
-    async fn slot_not_advancing(&self, block: &Block) -> bool {
+    /// The slot of `block`'s parent as the node holds it: fork cache body first,
+    /// then the store; `None` when it is in neither.
+    async fn parent_slot(&self, block: &Block) -> Option<u32> {
         let prev = block.header.prev_hash;
         let cached = self
             .fork_block_cache
@@ -315,14 +313,13 @@ impl Node {
             .await
             .get(&prev)
             .map(|b| b.header.slot);
-        let parent_slot = cached.or_else(|| {
+        cached.or_else(|| {
             self.block_store
                 .get_header(&prev)
                 .ok()
                 .flatten()
                 .map(|h| h.slot)
-        });
-        parent_slot.is_some_and(|s| block.header.slot <= s)
+        })
     }
 }
 

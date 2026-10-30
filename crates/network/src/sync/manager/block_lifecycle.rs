@@ -48,6 +48,7 @@ impl SyncManager {
         // a per-process counter once the node restarts mid-chain.
         self.reorg_handler
             .record_block_with_height(hash, prev_hash, producer_weight, height);
+        self.reorg_handler.note_block_slot(hash, slot);
 
         self.local_height = height;
         self.local_hash = hash;
@@ -504,6 +505,28 @@ impl SyncManager {
     ) {
         self.reorg_handler
             .record_fork_block_with_height(hash, prev_hash, weight, real_height);
+    }
+
+    /// [`Self::record_fork_block_weight`] of a block at `slot`; `parent_slot` is the
+    /// parent's slot when the node knows it. Returns the weight recorded (INC-I-288
+    /// slot-advance rule).
+    pub fn record_fork_block_at_slot(
+        &mut self,
+        hash: Hash,
+        prev_hash: Hash,
+        weight: u64,
+        real_height: u64,
+        slot: u32,
+        parent_slot: Option<u32>,
+    ) -> u64 {
+        self.reorg_handler.record_fork_block_at_slot(
+            hash,
+            prev_hash,
+            weight,
+            real_height,
+            slot,
+            parent_slot,
+        )
     }
 
     /// Seed the reorg handler with the snap sync tip so fork detection works immediately.

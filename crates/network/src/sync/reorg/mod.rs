@@ -64,6 +64,9 @@ pub struct ReorgHandler {
     block_parents: HashMap<Hash, Hash>,
     /// Block weight information for fork choice rule
     pub(crate) block_weights: HashMap<Hash, BlockWeight>,
+    /// INC-I-288: the slot of a tracked block, recorded with its weight and
+    /// evicted with it; read only at/above the INC-I-288 gate.
+    block_slots: HashMap<Hash, u32>,
     /// Maximum blocks to track
     pub(crate) max_tracked: usize,
     /// LRU order for eviction
@@ -111,6 +114,7 @@ impl ReorgHandler {
             recent_blocks,
             block_parents: HashMap::new(),
             block_weights: HashMap::new(),
+            block_slots: HashMap::new(),
             max_tracked: 10000,
             lru_order,
             current_chain_weight: 0,
@@ -132,19 +136,6 @@ impl ReorgHandler {
     /// both branches are weighed from their common ancestor ([`Self::branch_weight`]).
     pub fn weighs_from_ancestor(&self, local_tip_height: u64) -> bool {
         local_tip_height >= self.inc_i_288_fork_choice_activation_height
-    }
-
-    /// INC-I-288: the weight `blocks` add above their common ancestor. Per block the
-    /// handler's producer weight, else `node_weight`, else 0 (unknown adds nothing).
-    pub fn branch_weight(
-        &self,
-        blocks: &[Hash],
-        node_weight: impl Fn(&Hash) -> Option<u64>,
-    ) -> u64 {
-        blocks.iter().fold(0u64, |sum, h| {
-            let w = self.block_weights.get(h).map(|b| b.producer_weight);
-            sum.saturating_add(w.or_else(|| node_weight(h)).unwrap_or(0))
-        })
     }
 
     /// Create a reorg handler with an explicit INC-I-147 activation height.
@@ -308,6 +299,7 @@ impl ReorgHandler {
                 self.recent_blocks.remove(&old_hash);
                 self.block_parents.remove(&old_hash);
                 self.block_weights.remove(&old_hash);
+                self.block_slots.remove(&old_hash);
             }
         }
     }
@@ -377,6 +369,7 @@ impl ReorgHandler {
         self.recent_blocks.clear();
         self.block_parents.clear();
         self.block_weights.clear();
+        self.block_slots.clear();
         self.lru_order.clear();
         // Re-seed genesis after clear
         self.recent_blocks.insert(Hash::ZERO);
