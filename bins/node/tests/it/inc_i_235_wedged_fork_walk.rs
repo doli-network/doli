@@ -162,6 +162,27 @@ fn seed2(a_cached: bool) -> Shape {
 }
 
 impl Fx {
+    /// The non-own producers attest A and A1 over gossip. A and A1 share a leader
+    /// (slots 100, 103), so without this [A, A1] ties B at one supporter each. The
+    /// node credits only a hash it already holds as a fork block (A when cached).
+    async fn back_canon(&mut self) {
+        for (i, blk) in self.canon[..2].iter().enumerate() {
+            for p in &self.producers[1..] {
+                let h = FORK_H + i as u64;
+                let a = doli_core::Attestation::new(
+                    blk.hash(),
+                    blk.header.slot,
+                    h,
+                    1,
+                    p.private_key(),
+                    *p.public_key(),
+                );
+                self.node
+                    .on_new_attestation(a.to_bytes(), self.peers[0])
+                    .await;
+            }
+        }
+    }
     fn canon_at(&self, h: u64) -> Option<Block> {
         h.checked_sub(FORK_H)
             .and_then(|i| self.canon.get(i as usize))
@@ -275,6 +296,8 @@ async fn assert_converged(fx: &Fx, fetched: &[Hash], case: &str) {
 #[tokio::test]
 async fn repro_wedged_losing_sibling_converges_by_reorg_case_b_sibling_evicted() {
     let mut fx = fixture(seed2(false)).await;
+    // INC-I-289 sweep: (a) — the walked [A, A1] beat B by block count (2 > 1) → non-own producers attest the cached A1, so it out-supports B (1 leader each before).
+    fx.back_canon().await;
     fx.header_in_flight().await;
     fx.node.try_trigger_fork_recovery().await;
     let fetched = fx.drive(12, true).await;
@@ -286,6 +309,8 @@ async fn repro_wedged_losing_sibling_converges_by_reorg_case_b_sibling_evicted()
 #[tokio::test]
 async fn repro_wedged_losing_sibling_converges_by_reorg_case_a_sibling_cached() {
     let mut fx = fixture(seed2(true)).await;
+    // INC-I-289 sweep: (a) — the walked [A, A1] beat B by block count (2 > 1) → non-own producers attest the cached A and A1, so they out-support B.
+    fx.back_canon().await;
     fx.header_in_flight().await;
     fx.node.try_trigger_fork_recovery().await;
     let fetched = fx.drive(12, true).await;
@@ -298,6 +323,8 @@ async fn repro_wedged_losing_sibling_converges_by_reorg_case_a_sibling_cached() 
 #[tokio::test]
 async fn lock_fixture_converges_once_walk_result_reaches_fork_choice() {
     let mut fx = fixture(seed2(false)).await;
+    // INC-I-289 sweep: (a) — the walk result [A, A1] beat B by block count (2 > 1) → non-own producers attest the cached A1, so it out-supports B.
+    fx.back_canon().await;
     let done = network::sync::CompletedRecovery {
         blocks: vec![fx.canon[0].clone(), fx.canon[1].clone()],
         connection_point: fx.base[4].hash(),
@@ -426,6 +453,8 @@ fn sec_shape(a_eligible: bool) -> Shape {
 #[tokio::test]
 async fn sec001_walked_block_by_unscheduled_producer_is_not_reorged_onto() {
     let mut fx = fixture(sec_shape(false)).await;
+    // INC-I-289 sweep: (a) — kept symmetric with the control: the same A1 backing, so only eligibility can refuse.
+    fx.back_canon().await;
     walk_once(&mut fx).await;
     assert_eq!(
         fx.tip().await,
@@ -440,6 +469,8 @@ async fn sec001_walked_block_by_unscheduled_producer_is_not_reorged_onto() {
 #[tokio::test]
 async fn sec001_control_eligible_walked_branch_is_reorged_onto() {
     let mut fx = fixture(sec_shape(true)).await;
+    // INC-I-289 sweep: (a) — [A, A1] beat B by block count (2 > 1), a support tie under K-1 → non-own producers attest the cached A1.
+    fx.back_canon().await;
     walk_once(&mut fx).await;
     assert_eq!(
         fx.tip().await,

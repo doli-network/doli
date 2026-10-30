@@ -43,9 +43,22 @@ fn heavier_branch(r: &Rig) -> Vec<doli_core::Block> {
     vec![b[0].clone(), b[1].clone(), b3]
 }
 
+/// A rig whose A2 hashes in the lower half: each of the 67 B3 candidates then
+/// hashes above A2 with probability >= 1/2, so the search cannot run dry (<= 2^-67).
+async fn rig_with_low_a2() -> Rig {
+    for _ in 0..64 {
+        let r = live_rig(&OURS, &[]).await;
+        if r.ours[1].hash().as_bytes()[0] < 0x80 {
+            return r;
+        }
+    }
+    panic!("fixture: no rig with A2 in the lower hash half in 64 tries");
+}
+
 /// Restart, then the completed walk of B1..B3 connected at F.
 async fn restart_then_walk() -> (Rig, anyhow::Result<()>) {
-    let mut r = live_rig(&OURS, &[]).await;
+    // INC-I-289 sweep: (a) — flaky: a random A2 near the hash maximum left no B3 above it in 200 slots → the rig is redrawn until A2 hashes in the lower half; the B3 > A2 condition and every assertion are unchanged.
+    let mut r = rig_with_low_a2().await;
     r.theirs = heavier_branch(&r);
     restart(&mut r).await;
     assert!(

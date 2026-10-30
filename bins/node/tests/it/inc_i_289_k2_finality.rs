@@ -29,9 +29,10 @@ const P: u64 = 4;
 const F: u64 = P + 1;
 /// Our tip: F + CONFIRMATION_DEPTH.
 const T: u64 = F + 2;
-const OUR_SLOTS: [u32; 3] = [5, 6, 7];
+/// Every slot 2 mod 3: one leader, so the 3-producer sibling out-supports ours.
+const OUR_SLOTS: [u32; 3] = [5, 8, 11];
 const SIB_SLOTS: [u32; 5] = [8, 9, 10, 11, 12];
-const EXT_SLOTS: [u32; 2] = [8, 9];
+const EXT_SLOTS: [u32; 2] = [12, 13];
 
 struct Rig {
     node: Node,
@@ -224,6 +225,7 @@ async fn k2a_inc_i_289_reorg_past_finalized_block_is_refused() {
 // K2A-CTL INC-I-289 — Decision: a failure means the sibling is not heavier by today's rule, so k2a passes without ever reaching the finality guard.
 #[tokio::test]
 async fn k2a_control_inc_i_289_same_sibling_reorgs_without_finality() {
+    // INC-I-289 sweep: (a) — sibling 5 blocks beat our 3 by block count, but both had all 3 producers (a support tie) → OUR_SLOTS now has one leader, so the sibling out-supports ours 3 to 1.
     let mut r = rig().await;
     assert_eq!(
         finalized(&r.node).await,

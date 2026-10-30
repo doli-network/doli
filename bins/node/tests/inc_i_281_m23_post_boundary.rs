@@ -78,6 +78,8 @@ async fn wedge_door_accepts_post_boundary_block() {
     let c_b_retained = fx.retained(&canon[0]);
     gossip(&mut fx, &canon[1]).await;
     let kept = fx.retained(&canon[1]) || fx.state().await.at_b1 == Some(canon[1].hash());
+    // INC-I-289 sweep: (a) — C (all by the node's key) beat D by block count at C_B+2 → non-own producers attest the retained C_B+1 before the tip.
+    fx.attest(&canon[1], fx.b() + 1).await;
     gossip(&mut fx, &canon[2]).await;
     probe("wedge_door_accepts_post_boundary_block", !kept);
     assert!(
@@ -96,6 +98,8 @@ async fn wedge_door_accepts_post_boundary_block() {
 async fn reorg_lands_on_post_boundary_block() {
     let mut fx = fixture().await;
     let canon = fx.canonical();
+    // INC-I-289 sweep: (a) — the walked C (all by the node's key) beat D by block count → non-own producers attest C_B+1, so the walk still lands it.
+    fx.back(&canon[1], fx.b() + 1).await;
     let f = fx.f_hash;
     let result = run_walk(&mut fx, &canon, f).await;
     let st = fx.state().await;

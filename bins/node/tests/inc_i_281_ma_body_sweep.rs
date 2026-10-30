@@ -139,6 +139,8 @@ async fn walk_junk_wrongs(honest_first: bool) -> Vec<String> {
     if honest_first {
         r236::seed_cache(&fx.node, &canon[..1]).await;
     }
+    // INC-I-289 sweep: (a) — the walk and the gossip landing beat D by block count → non-own producers attest C_B+1, so the walk still reaches the presence check.
+    fx.back(&canon[1], fx.b() + 1).await;
     let mut walked = canon.clone();
     walked[0] = variant.clone();
     let before = fx.state().await;
@@ -207,6 +209,9 @@ fn failing_branch(fx: &Fx, tail: bool) -> (Vec<Block>, Block) {
 async fn apply_failure_wrongs(tail: bool) -> Vec<String> {
     let mut fx = setup().await;
     let (br, bad) = failing_branch(&fx, tail);
+    // INC-I-289 sweep: (a) — the walk tried the branch by block count → non-own producers attest its first good block (Y_B+1 | C_B), so the walk still reaches the apply failure.
+    let good = usize::from(!tail);
+    fx.back(&br[good], fx.b() + good as u64).await;
     let before = fx.state().await;
     let (logs, g) = logged();
     let f = fx.f_hash;

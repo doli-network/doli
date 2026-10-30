@@ -46,6 +46,8 @@ async fn setup() -> Fx {
 async fn refused_first() -> Fx {
     let mut fx = setup().await;
     let br = fx.ineligible();
+    // INC-I-289 sweep: (a) — the walk tried [C_B, C'] by block count; under K-1 it ties D ({k0, C'_B+1's producer} vs 2) → non-own producers attest C'_B+1 (not C_B, which would then win alone by gossip), so the in-reorg check still refuses C'.
+    fx.back(&br[1], fx.b() + 1).await;
     let before = fx.state().await;
     let logs = Logs::default();
     let result = {
@@ -215,6 +217,8 @@ async fn wedge_door_consults_rejected_branch_memo() {
 async fn honest_tail_under_refused_anchor_still_reorgs() {
     let mut fx = refused_first().await;
     let canon = fx.canonical();
+    // INC-I-289 sweep: (a) — the walked C (all by the node's key) beat D by block count → non-own producers attest C_B+1, so the walk still lands it.
+    fx.back(&canon[1], fx.b() + 1).await;
     let f = fx.f_hash;
     let result = run_walk(&mut fx, &canon, f).await;
     let st = fx.state().await;

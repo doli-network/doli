@@ -340,6 +340,13 @@ impl Rig {
         self.deliver(&b, p).await;
     }
 
+    /// Non-own producers attest C_B (held as a fork block since `send(0)`), right
+    /// before the event that used to tip the branch by block count.
+    async fn back_c_b(&mut self) {
+        let (c_b, h) = (self.br[0].clone(), self.fx.b());
+        self.fx.attest(&c_b, h).await;
+    }
+
     async fn plant(&mut self, v: &Block, from: &str) {
         let p = self.peer(from);
         self.failed.push((v.hash(), p));
@@ -541,12 +548,16 @@ async fn scripted(path: Path, var: Var) -> Vec<String> {
     let (logs, g) = logged();
     r.send(0, "H1").await;
     r.plant(&v, "A").await;
+    // INC-I-289 sweep: (a) — C (all by the node's key) beat D by block count at C_B+2 / the walk → gossip: non-own producers attest C_B+2 (held first), so only the full branch out-supports D, as before; walk: they attest the cached C_B (a commitment variant is never cached).
     match path {
         Path::Gossip => {
             r.send(1, "H1").await;
+            let (tip, h) = (r.br[2].clone(), r.fx.b() + 2);
+            r.fx.back(&tip, h).await;
             r.send(2, "H1").await;
         }
         Path::Walk => {
+            r.back_c_b().await;
             let (br, f) = (r.br.clone(), r.fx.f_hash);
             if let Err(e) = run_walk(&mut r.fx, &br, f).await {
                 r.wrong.push(format!("walk returned Err: {e}"));
@@ -583,6 +594,8 @@ async fn bound() -> Vec<String> {
     let (logs, g) = logged();
     r.send(0, "S1").await;
     r.plant(&v, "A").await;
+    // INC-I-289 sweep: (a) — the tip triggered the reorg by block count → non-own producers attest the cached C_B.
+    r.back_c_b().await;
     r.send(2, "S1").await;
     r.serve(&logs, true).await;
     drop(g);
@@ -621,9 +634,11 @@ async fn bound() -> Vec<String> {
 async fn honest_control() -> Vec<String> {
     let mut r = rig(Body::Spend, &["A", "H1", "H2"]).await;
     let (logs, g) = logged();
-    for i in 0..3 {
-        r.send(i, "H1").await;
-    }
+    // INC-I-289 sweep: (a) — C landed by block count → non-own producers attest the cached C_B before the tip.
+    r.send(0, "H1").await;
+    r.send(1, "H1").await;
+    r.back_c_b().await;
+    r.send(2, "H1").await;
     r.serve(&logs, false).await;
     drop(g);
     let mut wrong = std::mem::take(&mut r.wrong);
