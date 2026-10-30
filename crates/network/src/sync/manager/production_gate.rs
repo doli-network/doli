@@ -55,10 +55,12 @@ impl SyncManager {
             };
         }
 
-        // Check 1: Block during active sync or recovery
-        if self.state.is_syncing()
-            || matches!(self.recovery_phase, super::RecoveryPhase::ResyncInProgress)
-        {
+        // Check 1: Block during active sync or recovery. At/above the
+        // fork-choice gate a Syncing state (started by a peer's height claim)
+        // does not block; the height-based defer in production does.
+        let sync_blocks = self.state.is_syncing()
+            && self.local_height < self.config.inc_i_288_fork_choice_activation_height;
+        if sync_blocks || matches!(self.recovery_phase, super::RecoveryPhase::ResyncInProgress) {
             return ProductionAuthorization::BlockedSyncing;
         }
 

@@ -263,6 +263,8 @@ mod inc_i_288_f2c_gate_input;
 mod inc_i_288_f2c_hold_branch;
 mod inc_i_288_f2c_restart_walk;
 mod inc_i_288_f2c_walk_seed;
+mod inc_i_289_common;
+mod inc_i_289_d_producer_not_starved;
 mod m1_snap_install_identity;
 mod m3_common;
 mod m3_staging_install;
