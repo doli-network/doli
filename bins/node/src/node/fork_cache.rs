@@ -164,26 +164,36 @@ impl Node {
         if siblings.is_empty() {
             return false;
         }
-        // The rollback cleared the reorg handler: weigh the block as the wedge
-        // escape weighs a sibling (parent weight + producer weight).
+        // Below the INC-I-288 gate the rollback cleared the reorg handler: weigh the
+        // block as the wedge escape weighs a sibling (parent weight + producer weight).
         let height = self.chain_state.read().await.best_height + 1;
-        let weight = {
-            let ps = self.producer_set.read().await;
-            ps.get_by_pubkey(&block.header.producer)
-                .map(|p| p.effective_weight(height))
-                .unwrap_or(1)
-        };
         let held = {
+            let ps = self.producer_set.read().await;
+            let weight = ps
+                .get_by_pubkey(&block.header.producer)
+                .map(|p| p.effective_weight(height))
+                .unwrap_or(1);
             let sync = self.sync_manager.read().await;
             let rh = sync.reorg_handler();
             let finality = sync.fork_choice_finality();
-            let ours = rh.chain_weight(&parent).saturating_add(weight);
-            siblings.iter().any(|s| {
-                matches!(
-                    rh.weigh_untracked(&hash, ours, s, finality),
-                    network::WeightVerdict::Heavier | network::WeightVerdict::TieSwitch
-                )
-            })
+            if rh.weighs_from_ancestor(finality.local_tip_height) {
+                // INC-I-288: the weight door's verdict — the tip is the common
+                // ancestor, and only a strictly heavier sibling holds the block.
+                let store = &self.block_store;
+                let ours = rh.branch_weight(&[hash], |_| Some(weight));
+                siblings.iter().any(|s| {
+                    rh.branch_weight(&[*s], |h| super::wedge_escape::stored_weight(store, &ps, h))
+                        > ours
+                })
+            } else {
+                let ours = rh.chain_weight(&parent).saturating_add(weight);
+                siblings.iter().any(|s| {
+                    matches!(
+                        rh.weigh_untracked(&hash, ours, s, finality),
+                        network::WeightVerdict::Heavier | network::WeightVerdict::TieSwitch
+                    )
+                })
+            }
         };
         if held
             && self

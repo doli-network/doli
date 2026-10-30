@@ -51,40 +51,18 @@ impl ReorgHandler {
         let parent_weight = self.chain_weight(&prev_hash);
         let new_chain_weight = parent_weight.saturating_add(block_producer_weight);
 
-        // THE shared weight/tie rule (`fork_choice::resolve_weight`). This door's
-        // pre-M5 rule already switched to the lower hash on an exact tie (INC-I-012:
-        // without it every equal-weight gossip block falls through to serialized
-        // fork recovery and young networks storm), which is exactly the unified
-        // post-activation rule — so it passes `allow_tie_switch = true` in BOTH
-        // regimes and is byte-identical below the gate.
-        match self.resolve_weight(
-            self.current_chain_weight,
-            new_chain_weight,
-            &current_tip,
-            &block_hash,
-            true,
-        ) {
-            WeightVerdict::Lighter => {
-                debug!(
-                    "Ignoring fork: new_weight={} < current_weight={}",
-                    new_chain_weight, self.current_chain_weight,
-                );
-                return None;
-            }
-            WeightVerdict::TieKeep => {
-                debug!(
-                    "Ignoring fork: equal weight={}, block hash >= current tip (deterministic tie-break)",
-                    new_chain_weight,
-                );
-                return None;
-            }
-            WeightVerdict::TieSwitch => {
-                debug!(
-                    "Equal-weight tie-break: block {} < tip {} — switching chain",
-                    block_hash, current_tip,
-                );
-            }
-            WeightVerdict::Heavier => {}
+        // INC-I-288: at/above the gate the verdict waits for the walk and weighs both
+        // sides from the common ancestor (`prev_hash`); below it, before the walk.
+        let from_ancestor = self.weighs_from_ancestor(finality.local_tip_height);
+        if !from_ancestor
+            && self.gossip_refuses(
+                self.current_chain_weight,
+                new_chain_weight,
+                &current_tip,
+                &block_hash,
+            )
+        {
+            return None;
         }
 
         // Find common ancestor and build rollback list
@@ -96,6 +74,19 @@ impl ReorgHandler {
                 // Found common ancestor
                 if to_rollback.is_empty() {
                     return None; // No reorg needed
+                }
+                // The walk used tracked parents only, so every rolled-back block
+                // has its handler weight.
+                let (ours, cand) = if from_ancestor {
+                    (
+                        self.branch_weight(&to_rollback, |_| None),
+                        block_producer_weight,
+                    )
+                } else {
+                    (self.current_chain_weight, new_chain_weight)
+                };
+                if from_ancestor && self.gossip_refuses(ours, cand, &current_tip, &block_hash) {
+                    return None;
                 }
 
                 // Finality check: never reorg past the last finalized block.
@@ -138,7 +129,7 @@ impl ReorgHandler {
                     }
                 }
 
-                let weight_delta = new_chain_weight as i64 - self.current_chain_weight as i64;
+                let weight_delta = cand as i64 - ours as i64;
 
                 info!(
                     "Reorg to heavier chain: rolling back {} blocks, weight_delta=+{}",
@@ -172,6 +163,40 @@ impl ReorgHandler {
         None
     }
 
+    /// The gossip door's weight/tie verdict: true when it keeps our tip.
+    ///
+    /// THE shared weight/tie rule (`fork_choice::resolve_weight`). This door's pre-M5
+    /// rule already switched to the lower hash on an exact tie (INC-I-012: without
+    /// it every equal-weight gossip block falls through to serialized fork recovery
+    /// and young networks storm), which is exactly the unified post-activation rule
+    /// — so it passes `allow_tie_switch = true` in BOTH regimes.
+    fn gossip_refuses(&self, ours: u64, cand: u64, current_tip: &Hash, block_hash: &Hash) -> bool {
+        match self.resolve_weight(ours, cand, current_tip, block_hash, true) {
+            WeightVerdict::Lighter => {
+                debug!(
+                    "Ignoring fork: new_weight={} < current_weight={}",
+                    cand, ours
+                );
+                true
+            }
+            WeightVerdict::TieKeep => {
+                debug!(
+                    "Ignoring fork: equal weight={}, block hash >= current tip (deterministic tie-break)",
+                    cand,
+                );
+                true
+            }
+            WeightVerdict::TieSwitch => {
+                debug!(
+                    "Equal-weight tie-break: block {} < tip {} — switching chain",
+                    block_hash, current_tip,
+                );
+                false
+            }
+            WeightVerdict::Heavier => false,
+        }
+    }
+
     /// Plan a reorganization from current chain to new chain
     pub fn plan_reorg(
         &self,
@@ -181,11 +206,33 @@ impl ReorgHandler {
         get_height: impl Fn(&Hash) -> Option<u64>,
         finality: ForkChoiceFinality,
     ) -> Option<ReorgResult> {
+        self.plan_reorg_with_weights(
+            current_tip,
+            new_tip,
+            get_parent,
+            get_height,
+            |_| None,
+            finality,
+        )
+    }
+
+    /// [`Self::plan_reorg`] with the node's producer weight of a block the handler
+    /// does not track (INC-I-288: read only at/above its gate, by `branch_weight`).
+    pub fn plan_reorg_with_weights(
+        &self,
+        current_tip: Hash,
+        new_tip: Hash,
+        get_parent: impl Fn(&Hash) -> Option<Hash>,
+        get_height: impl Fn(&Hash) -> Option<u64>,
+        get_weight: impl Fn(&Hash) -> Option<u64>,
+        finality: ForkChoiceFinality,
+    ) -> Option<ReorgResult> {
         self.plan_reorg_inner(
             current_tip,
             new_tip,
             get_parent,
             get_height,
+            get_weight,
             finality,
             false,
         )
@@ -206,15 +253,25 @@ impl ReorgHandler {
         get_height: impl Fn(&Hash) -> Option<u64>,
         finality: ForkChoiceFinality,
     ) -> Option<ReorgResult> {
-        self.plan_reorg_inner(current_tip, new_tip, get_parent, get_height, finality, true)
+        self.plan_reorg_inner(
+            current_tip,
+            new_tip,
+            get_parent,
+            get_height,
+            |_| None,
+            finality,
+            true,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn plan_reorg_inner(
         &self,
         current_tip: Hash,
         new_tip: Hash,
         get_parent: impl Fn(&Hash) -> Option<Hash>,
         get_height: impl Fn(&Hash) -> Option<u64>,
+        get_weight: impl Fn(&Hash) -> Option<u64>,
         finality: ForkChoiceFinality,
         finality_override: bool,
     ) -> Option<ReorgResult> {
@@ -390,9 +447,16 @@ impl ReorgHandler {
         // New blocks are in reverse order (need to apply from ancestor to tip)
         new_chain.reverse();
 
-        // Calculate weight delta
-        let current_weight = self.chain_weight(&current_tip);
-        let new_weight = self.chain_weight(&new_tip);
+        // INC-I-288: at/above the gate each side is weighed from the common ancestor;
+        // below it, the base-relative accumulated weights of a lossy cache.
+        let (current_weight, new_weight) = if self.weighs_from_ancestor(finality.local_tip_height) {
+            (
+                self.branch_weight(&rollback, &get_weight),
+                self.branch_weight(&new_chain, &get_weight),
+            )
+        } else {
+            (self.chain_weight(&current_tip), self.chain_weight(&new_tip))
+        };
         let weight_delta = new_weight as i64 - current_weight as i64;
 
         Some(ReorgResult {

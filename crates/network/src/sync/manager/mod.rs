@@ -251,7 +251,8 @@ impl SyncManager {
             reorg_handler: ReorgHandler::with_activation_heights(
                 config.inc_i_147_activation_height,
                 config.inc_i_204_fork_choice_activation_height,
-            ),
+            )
+            .with_inc_i_288_gate(config.inc_i_288_fork_choice_activation_height),
             config,
             state: SyncState::Idle,
             local_height: 0,

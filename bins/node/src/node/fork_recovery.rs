@@ -109,13 +109,15 @@ impl Node {
         // 4. Fall back to plan_reorg for deeper forks
         let fork_tip_hash = fork_tip.hash();
         let reorg_result = {
+            let ps = self.producer_set.read().await;
             let sync = self.sync_manager.read().await;
             let store = &self.block_store;
-            sync.reorg_handler().plan_reorg(
+            sync.reorg_handler().plan_reorg_with_weights(
                 current_tip,
                 fork_tip_hash,
                 |hash| store.get_header(hash).ok().flatten().map(|h| h.prev_hash),
                 |hash| store.get_height_by_hash(hash).ok().flatten(),
+                |hash| super::wedge_escape::stored_weight(store, &ps, hash),
                 sync.fork_choice_finality(),
             )
         };

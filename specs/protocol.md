@@ -2134,10 +2134,26 @@ def accumulated_weight(block):
 This prevents Sybil attacks where an attacker creates many low-weight blocks.
 
 **Weight decides after a rollback and at an occupied height (INC-I-288).** At and above
-`inc_i_288_fork_choice_activation_height` (mainnet not scheduled, testnet 366,891, devnet 0) four node-local rules change, and nothing else: (1) a recovery rollback keeps
-the fork-choice memory (`SyncManager::reset_sync_for_rollback` no longer clears the
-`ReorgHandler`; our weight becomes the new tip's recorded weight), so a sibling is weighed
-against our real accumulated weight; (2) a sibling at an occupied height with a better (lower)
+`inc_i_288_fork_choice_activation_height` (mainnet not scheduled, testnet 366,891, devnet 0) these node-local rules change, and nothing else: (1) every `rollback_one_block` (a
+recovery rollback and a production self-apply rollback alike) keeps the fork-choice memory
+(`SyncManager::reset_sync_for_rollback` no longer clears the
+`ReorgHandler`; our weight becomes the new tip's recorded weight); (1a) every weight door
+compares the two branches from their common ancestor: each side weighs the sum of the
+producer weights of its blocks after the ancestor (`ReorgHandler::branch_weight`). A block's
+weight is its `ReorgHandler` entry, else the weight `apply_block` records for a stored block
+(producer `effective_weight` at the block's height), else 0, so a block nobody can weigh
+never makes the candidate heavier. The base-relative accumulated weight of the lossy cache
+(0 for a tip that a restart or an eviction left untracked) no longer decides. This holds in
+`plan_reorg` (its `weight_delta`), in the gossip door `check_reorg_weighted` (its verdict
+waits for the walk to the ancestor) and in the wedge-escape door, which has no accumulated-
+weight short-circuit and acts on the plan's `weight_delta > 0`; (1b) a re-record of a block
+the `ReorgHandler` already tracks keeps its one LRU slot, so repeated deliveries of one block
+cannot evict our tip; (1c) the wedge-escape door applies the slot-advance rule of apply
+(`SlotNotAdvancing`: slot not above the parent's) before it records a weight: such a block
+is dropped, so a slot leader cannot stack same-slot blocks into branch weight; (1d) the
+INC-I-281 hold (`hold_removed_block`) uses the door's verdict: only a strictly heavier cached
+sibling (common-ancestor weight) holds the re-apply of our removed block; an equal-weight,
+lower-hash sibling does not; (2) a sibling at an occupied height with a better (lower)
 slot than our block is weighed by the wedge-escape door (`retain_sibling_and_try_escape`) like
 any other sibling, instead of being dropped by FORK_GUARD. The slot no longer decides; (3) an
 orphan gossip block (parent unknown, so its height is unknown) no longer raises the network tip
@@ -2146,7 +2162,7 @@ reported as evidence, and the tip height comes only from peer status and applied
 of a lighter branch do not make a gap of 1 that rolls back a heavier tip; (4) a block this
 node produced (producer = its own key) is not post-rollback progress for coordinator Gate 1
 (`block_applied_with_origin`); a block a peer delivered by gossip or reorg still is, whatever
-its producer. Below the height all four rules are unchanged. This is fork choice only: no
+its producer. Below the height every rule above is unchanged. This is fork choice only: no
 block-validity, block-content, wire or protocol-version change, so the binary can roll.
 
 ### 5.6 Emission Schedule
@@ -2673,7 +2689,7 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | Equivocation slashing (`inc_i_255_slashing_activation_height`, §3.10.1) | 806,859 | 330,849 | 0 | Devnet only (`DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT`) |
 | Unbonding lock (`inc_i_257_unbonding_activation_height`, §3.13.1) | 806,859 | 330,849 | 0 | Devnet only (`DOLI_INC_I_257_UNBONDING_ACTIVATION_HEIGHT`) |
 | Producer authorization (`inc_i_182_producer_auth_activation_height`, §3.13.2) | 806,859 | 330,849 | 0 | Devnet only (`DOLI_INC_I_182_PRODUCER_AUTH_ACTIVATION_HEIGHT`) |
-| Rollback fork-choice memory (`inc_i_288_fork_choice_activation_height`, §5.5) | `u64::MAX` (not scheduled) | 366,891 | 0 | Non-mainnet (`DOLI_INC_I_288_FORK_CHOICE_ACTIVATION_HEIGHT`) |
+| INC-I-288 fork choice: rollback memory, common-ancestor weight (`inc_i_288_fork_choice_activation_height`, §5.5) | `u64::MAX` (not scheduled) | 366,891 | 0 | Non-mainnet (`DOLI_INC_I_288_FORK_CHOICE_ACTIVATION_HEIGHT`) |
 | Data Directory | `~/.doli/mainnet/` | `~/.doli/testnet/` | `~/.doli/devnet/` | - |
 | Config File | `.env` in data dir | `.env` in data dir | `.env` in data dir | - |
 

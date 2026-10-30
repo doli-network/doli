@@ -260,6 +260,13 @@ X2 removed (the rollback keeps the weights) → 13. Below the height: 15, unchan
 INC-I-288 round 2: no authority removed (still 13 above the height); two A4 inputs narrowed:
 the orphan-guessed height (best+1) no longer raises the network tip height (A4's gap), and an
 own-produced apply no longer opens A4 Gate 1 (peer-delivered applies still do).
+INC-I-288 round 4: 12 above the height. One weight rule: both branches weighed from their
+common ancestor (ReorgHandler::branch_weight), not the lossy base-relative accumulated cache.
+A10 merged into A3 (its own short-circuit, weigh_branches, removed; it acts on A3's delta).
+X3 the INC-I-281 hold's own tie rule (hold_removed_block; unlisted, so 14 in fact before) merged
+into the same verdict: only a strictly heavier sibling holds. A1 stays a door, same weight rule.
+Inputs narrowed: duplicate LRU pushes of a tracked block; same-slot blocks (slot-advance rule
+before the weight record). Below the height: unchanged (round 1's 15, plus X3).
 ```
 
 ### Proposed (after M6)

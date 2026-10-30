@@ -51,8 +51,8 @@ pub enum WeightVerdict {
 }
 
 impl ReorgHandler {
-    /// THE branch-weight rule. Every door — gossip, wedge escape, fork recovery —
-    /// reaches its verdict through this function.
+    /// The branch-weight rule below the INC-I-288 gate, on base-relative accumulated
+    /// weights. At/above it the doors weigh from the common ancestor instead.
     pub fn weigh_branches(
         &self,
         our_tip: &Hash,
@@ -72,7 +72,8 @@ impl ReorgHandler {
     }
 
     /// [`Self::weigh_branches`] when our side is a block the handler does not
-    /// track (a rollback cleared it): the caller supplies its accumulated weight.
+    /// track (below the INC-I-288 gate a rollback cleared it): the caller supplies
+    /// its accumulated weight.
     pub fn weigh_untracked(
         &self,
         our_tip: &Hash,

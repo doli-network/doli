@@ -826,9 +826,11 @@ pub struct NetworkParams {
     /// Mainnet IMMUTABILITY (INC-I-054): once crossed, never move forward.
     pub inc_i_204_fork_choice_activation_height: u64,
 
-    /// INC-I-288 gate. At and above it a coordinator rollback keeps the ReorgHandler
-    /// memory and a better-slot sibling at an occupied height goes to the weight door
-    /// (no FORK_GUARD drop). Fork choice only, no block content. IMMUTABLE once crossed.
+    /// INC-I-288 gate. At and above it a rollback (`reset_sync_for_rollback`) keeps
+    /// the ReorgHandler memory, a better-slot sibling goes to the weight door, both
+    /// branches are weighed from their common ancestor, and the orphan/own-block and
+    /// same-slot inputs are narrowed. Fork choice only, no block content.
+    /// IMMUTABLE once crossed.
     pub inc_i_288_fork_choice_activation_height: u64,
 
     /// INC-I-178 M4 attestation-BLS activation height.

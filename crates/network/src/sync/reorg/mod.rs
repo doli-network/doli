@@ -89,6 +89,9 @@ pub struct ReorgHandler {
     /// door keeps its pre-M5 path verbatim. `new()` defaults it to `u64::MAX`
     /// (dormant) so pre-existing tests keep exercising the pre-activation branch.
     inc_i_204_fork_choice_activation_height: u64,
+    /// `NetworkParams::inc_i_288_fork_choice_activation_height`; `new()` keeps it
+    /// dormant (`u64::MAX`).
+    inc_i_288_fork_choice_activation_height: u64,
     /// INC-I-204 M0 observation counters. Written alongside decisions, never read
     /// by one; `bins/node` scrapes them into Prometheus.
     counters: ReorgCounters,
@@ -114,8 +117,34 @@ impl ReorgHandler {
             last_finality_height: None,
             inc_i_147_activation_height: 0,
             inc_i_204_fork_choice_activation_height: u64::MAX,
+            inc_i_288_fork_choice_activation_height: u64::MAX,
             counters: ReorgCounters::default(),
         }
+    }
+
+    /// Sets the INC-I-288 gate (`SyncManager::new` passes `SyncConfig`'s value).
+    pub(crate) fn with_inc_i_288_gate(mut self, height: u64) -> Self {
+        self.inc_i_288_fork_choice_activation_height = height;
+        self
+    }
+
+    /// INC-I-288: at/above the gate, with our applied tip at `local_tip_height`,
+    /// both branches are weighed from their common ancestor ([`Self::branch_weight`]).
+    pub fn weighs_from_ancestor(&self, local_tip_height: u64) -> bool {
+        local_tip_height >= self.inc_i_288_fork_choice_activation_height
+    }
+
+    /// INC-I-288: the weight `blocks` add above their common ancestor. Per block the
+    /// handler's producer weight, else `node_weight`, else 0 (unknown adds nothing).
+    pub fn branch_weight(
+        &self,
+        blocks: &[Hash],
+        node_weight: impl Fn(&Hash) -> Option<u64>,
+    ) -> u64 {
+        blocks.iter().fold(0u64, |sum, h| {
+            let w = self.block_weights.get(h).map(|b| b.producer_weight);
+            sum.saturating_add(w.or_else(|| node_weight(h)).unwrap_or(0))
+        })
     }
 
     /// Create a reorg handler with an explicit INC-I-147 activation height.
@@ -159,7 +188,7 @@ impl ReorgHandler {
     /// weight is computed from the parent's accumulated weight plus
     /// this block's producer weight.
     pub fn record_block_with_weight(&mut self, hash: Hash, prev_hash: Hash, producer_weight: u64) {
-        self.record_block_internal(hash, prev_hash, producer_weight, true, None);
+        self.record_block_internal(hash, prev_hash, producer_weight, true, None, false);
     }
 
     /// Record an applied block using its REAL chain height (INC-I-147 D6).
@@ -185,7 +214,8 @@ impl ReorgHandler {
             bump(&self.counters.pre_activation_record_height);
         }
         let height = post_activation.then_some(real_height);
-        self.record_block_internal(hash, prev_hash, producer_weight, true, height);
+        let dedup = real_height >= self.inc_i_288_fork_choice_activation_height;
+        self.record_block_internal(hash, prev_hash, producer_weight, true, height, dedup);
     }
 
     /// Record a fork block's weight WITHOUT updating current_chain_weight.
@@ -195,7 +225,7 @@ impl ReorgHandler {
     /// If we updated current_chain_weight here, the subsequent comparison would
     /// compare the fork against itself (delta=0) and always reject the reorg.
     pub fn record_fork_block(&mut self, hash: Hash, prev_hash: Hash, producer_weight: u64) {
-        self.record_block_internal(hash, prev_hash, producer_weight, false, None);
+        self.record_block_internal(hash, prev_hash, producer_weight, false, None, false);
     }
 
     /// Record a fork block using its REAL chain height (INC-I-204 M5, Contradiction 2).
@@ -218,7 +248,8 @@ impl ReorgHandler {
             bump(&self.counters.pre_activation_fork_choice);
         }
         let height = post_activation.then_some(real_height);
-        self.record_block_internal(hash, prev_hash, producer_weight, false, height);
+        let dedup = real_height >= self.inc_i_288_fork_choice_activation_height;
+        self.record_block_internal(hash, prev_hash, producer_weight, false, height, dedup);
     }
 
     /// `real_height`: the block's true chain height when the caller knows it
@@ -233,6 +264,7 @@ impl ReorgHandler {
         producer_weight: u64,
         update_current_weight: bool,
         real_height: Option<u64>,
+        dedup: bool,
     ) {
         // Calculate accumulated weight and height
         let (parent_accumulated, parent_height) = self
@@ -262,10 +294,13 @@ impl ReorgHandler {
             self.current_chain_weight = accumulated_weight;
         }
 
-        // Add to tracking
-        self.recent_blocks.insert(hash);
+        // Add to tracking. INC-I-288: at/above the gate a re-record keeps its one LRU
+        // slot, so re-records of one hash cannot evict other blocks.
+        let fresh = self.recent_blocks.insert(hash);
         self.block_parents.insert(hash, prev_hash);
-        self.lru_order.push_back(hash);
+        if fresh || !dedup {
+            self.lru_order.push_back(hash);
+        }
 
         // Evict old entries if necessary
         while self.lru_order.len() > self.max_tracked {
@@ -391,6 +426,9 @@ mod tests;
 
 #[cfg(test)]
 mod tests_inc_i_147;
+
+#[cfg(test)]
+mod tests_inc_i_288;
 
 #[cfg(test)]
 mod tests_m5_common;

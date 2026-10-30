@@ -11,7 +11,7 @@ use doli_core::consensus::ConsensusParams;
 use doli_core::validation::ValidationMode;
 use doli_core::{Block, BlockHeader, Transaction};
 use doli_node::node::{Node, RollbackAuthority, RollbackOutcome};
-use network::PeerId;
+use network::{PeerId, SyncConfig, SyncManager};
 use tempfile::TempDir;
 use vdf::{VdfOutput, VdfProof};
 
@@ -73,11 +73,47 @@ fn branch(p: &ConsensusParams, keys: &[KeyPair], prev: Hash, slots: &[u32]) -> V
 
 /// Base h=1..=F, then `our_slots` applied on F; `their_slots` built on F.
 pub async fn rig(our_slots: &[u32], their_slots: &[u32]) -> Rig {
+    rig_on(our_slots, their_slots, None).await
+}
+
+/// The `SyncConfig` the test node runs: `Node::new_for_test`'s (INC-I-288 gate
+/// from the network, M5 dormant), or with `live` every fork-choice gate from
+/// `Network::Devnet.params()` as `Node::new` wires them (M5 live, F-2).
+pub fn sync_config(live: bool) -> SyncConfig {
+    let net = doli_core::Network::Devnet.params();
+    let base = SyncConfig {
+        inc_i_288_fork_choice_activation_height: net.inc_i_288_fork_choice_activation_height,
+        ..SyncConfig::default()
+    };
+    if !live {
+        return base;
+    }
+    SyncConfig {
+        inc_i_147_activation_height: net.inc_i_147_activation_height,
+        inc_i_204_fork_choice_activation_height: net.inc_i_204_fork_choice_activation_height,
+        ..base
+    }
+}
+
+/// A fresh SyncManager as `Node::new_for_test` builds it, with `cfg`.
+pub fn fresh_sync_manager(cfg: SyncConfig) -> SyncManager {
+    let genesis = doli_core::chainspec::ChainSpec::devnet().genesis_hash();
+    let mut sm = SyncManager::new(cfg, genesis);
+    sm.set_bootstrap_grace_period_secs(0);
+    sm.set_min_peers_for_production(0);
+    sm
+}
+
+/// [`rig`], with the node's SyncManager replaced by one on `cfg` before any block.
+pub async fn rig_on(our_slots: &[u32], their_slots: &[u32], cfg: Option<SyncConfig>) -> Rig {
     let tmp = TempDir::new().unwrap();
     let keys: Vec<KeyPair> = (0..3).map(|_| KeyPair::generate()).collect();
     let mut node = Node::new_for_test(tmp.path().to_path_buf(), keys.clone())
         .await
         .expect("Node::new_for_test");
+    if let Some(cfg) = cfg {
+        *node.sync_manager.write().await = fresh_sync_manager(cfg);
+    }
     let p = node.params.clone();
     let mut prev = Hash::ZERO;
     for h in 1..=F {
