@@ -232,6 +232,28 @@ impl Node {
         }
         held
     }
+
+    /// INC-I-289: at/above the INC-I-288 gate, blocks that a reorg rewinds are
+    /// remembered as a fork-remedy rollback remembers them, and stay retained
+    /// siblings, so their descendants reach the weighed door.
+    pub(super) async fn remember_reorged_out(&mut self, rewound: &[Hash], tip_height: u64) {
+        let gate = self
+            .config
+            .network
+            .params()
+            .inc_i_288_fork_choice_activation_height;
+        if tip_height < gate {
+            return;
+        }
+        let mut sync = self.sync_manager.write().await;
+        for h in rewound {
+            sync.note_fork_remedy_removed(*h);
+            if self.wedge_retained_tips.len() >= super::wedge_escape::WEDGE_RETAINED_CAP {
+                self.wedge_retained_tips.clear();
+            }
+            self.wedge_retained_tips.insert(*h);
+        }
+    }
 }
 
 #[cfg(test)]

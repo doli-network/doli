@@ -1048,6 +1048,10 @@ impl Node {
                 cache.remove(hash);
             }
         }
+        if mode == ReorgMode::Normal {
+            self.remember_reorged_out(&reorg_result.rollback, current_height)
+                .await;
+        }
 
         // INC-I-138 D5: reorg blocks are peer-received — mark peer-confirmed
         // progress so the suppression guard can distinguish BEHIND from SELF-FORK.
