@@ -4,23 +4,28 @@
 //! D) arrives. Contract at the gate: no adoption on arrival; a canonical reply that
 //! ties the sibling branch keeps D's branch; with no reply a tick-driven weighed
 //! door still adopts the heavier sibling (liveness). Below the gate: old rule.
+//! B1 (INC-I-289 K-1 rule: support = distinct producers + held attestations, not
+//! block count): the other producers' verified attestations for D arrive first, so
+//! D's branch has 3 of 3 supporters and S1,S2 has 2 of 3.
 //!
 // OUTPUT CONTRACT: fn Node::handle_new_block(block, peer) (HeightOccupied / Orphan
 //   reroute -> retain_sibling_and_try_escape -> plan_reorg -> execute_reorg), then
-//   fn Node::run_periodic_tasks()
+//   fn Node::run_periodic_tasks(); B1 also fn Node::on_new_attestation(data, peer)
 //   O1: chain_state best_hash / best_height, canonical entry, persisted tip, sync tip
 //   O2: block_store holds S2 (S2 was applied = was the tip at some point)
-//   O3: return values Ok(()) (gossip / tick helpers expect)
-// PATHS: P1 S1 then S2 by gossip (no adoption on arrival); P2 E1 by gossip + tick;
-//   P3 no E1, up to 5 ticks
-// INPUT PARTITIONS: B1 at/above AH, canonical reply E1 arrives -> D,E1 kept;
+//   O3: return values Ok(()) (gossip / tick helpers expect); B1 Verdict::Accept
+// PATHS: P0 (B1) gossip attestations for D from both other producers; P1 S1 then
+//   S2 by gossip (no adoption on arrival); P2 E1 by gossip + tick; P3 no E1, up to 5 ticks
+// INPUT PARTITIONS: B1 at/above AH, D attested 3 of 3, S 2 of 3, E1 arrives -> D,E1 kept;
 //   B2 at/above AH, no reply -> S2 adopted within 5 ticks;
 //   B0 below AH (child re-exec) -> S2 adopted at arrival (old rule)
 // MATRIX: B1 O1-O3 · B2 O1,O3 · B0 O1,O3
 //
 //! covers: block_handling.rs (Orphan reroute) wedge_escape.rs (door) periodic.rs
 
-use doli_core::Block;
+use doli_core::{Attestation, Block};
+use network::service::Verdict;
+use network::PeerId;
 
 use super::inc_i_289_common::*;
 
@@ -35,11 +40,34 @@ async fn late_sibling() -> (Rig, Block, Vec<Block>, Block) {
     (r, d, sib, e1)
 }
 
-// B1 INC-I-289 — Decision: a failure means a two-block sibling still wins at its arrival on delta=1, before the canonical branch's next block can answer (door b of the h=835,607 fork).
+// B1 INC-I-289 — Decision: a failure means a two-block sibling of two producers still wins over a block every producer attested, by block count (door b of the h=835,607 fork).
 #[tokio::test]
-#[ignore = "INC-I-289 H-2(b): a one-block lead wins at arrival under the current weight rule; waits for the fork-choice rule decision"]
 async fn b1_inc_i_289_two_block_sibling_does_not_win_before_canonical_reply() {
     let (mut r, d, sib, e1) = late_sibling().await;
+    // The mainnet fact: the bond majority's verified gossip attestations for D.
+    for k in r
+        .keys
+        .iter()
+        .filter(|k| *k.public_key() != d.header.producer)
+    {
+        let att = Attestation::new(
+            d.hash(),
+            d.header.slot,
+            F + 1,
+            1,
+            k.private_key(),
+            *k.public_key(),
+        );
+        let v = r
+            .node
+            .on_new_attestation(att.to_bytes(), PeerId::random())
+            .await;
+        assert_eq!(
+            v,
+            Verdict::Accept,
+            "B1 precondition: attestation for D admitted"
+        );
+    }
     gossip(&mut r, &sib[0]).await;
     gossip(&mut r, &sib[1]).await;
 

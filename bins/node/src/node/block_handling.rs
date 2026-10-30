@@ -291,12 +291,14 @@ impl Node {
                         .unwrap_or(1)
                 };
 
+                let view = self.support_view().await;
                 let reorg_result = {
                     let store = &self.block_store;
                     self.sync_manager.write().await.handle_new_block_weighted(
                         block.clone(),
                         producer_weight,
                         |h| store.get_height_by_hash(h).ok().flatten(),
+                        |h| view.support(store, h),
                     )
                 };
 

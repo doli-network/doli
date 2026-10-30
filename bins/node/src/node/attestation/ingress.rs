@@ -32,6 +32,8 @@ pub(crate) enum BlsAttestVerdict {
 pub(crate) struct AttestSeen {
     seen: HashMap<(PublicKey, u32), bool>,
     wall: Option<u32>,
+    /// INC-I-289 K-1: attesters of fork-only hashes, for the reorg doors.
+    pub(crate) fork_credit: super::fork_credit::ForkCredit,
 }
 
 impl AttestSeen {

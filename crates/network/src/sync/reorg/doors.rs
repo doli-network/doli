@@ -12,6 +12,7 @@ use crypto::Hash;
 use doli_core::Block;
 use tracing::{debug, info, warn};
 
+use super::support::{candidate_union, union_weight, BlockSupport};
 use super::{bump, ForkChoiceFinality, ReorgHandler, ReorgResult, WeightVerdict, MAX_REORG_DEPTH};
 
 impl ReorgHandler {
@@ -24,13 +25,15 @@ impl ReorgHandler {
     ///
     /// `get_height` resolves a hash to its REAL chain height (block-store backed);
     /// `finality` is the derived finality view. Both are only consulted at and above
-    /// `inc_i_204_fork_choice_activation_height`.
-    pub fn check_reorg_weighted(
+    /// `inc_i_204_fork_choice_activation_height`. `get_support` is read only at/above
+    /// the INC-I-288 gate (INC-I-289 K-1); `block` itself falls back to its producer.
+    pub fn check_reorg_supported(
         &self,
         block: &Block,
         current_tip: Hash,
         block_producer_weight: u64,
         get_height: impl Fn(&Hash) -> Option<u64>,
+        get_support: impl Fn(&Hash) -> Option<BlockSupport>,
         finality: ForkChoiceFinality,
     ) -> Option<ReorgResult> {
         let prev_hash = block.header.prev_hash;
@@ -75,15 +78,22 @@ impl ReorgHandler {
                 if to_rollback.is_empty() {
                     return None; // No reorg needed
                 }
-                // The walk used tracked parents only, so every rolled-back block
-                // has its handler weight; an unknown one keeps our tip. The candidate
-                // is its recorded weight, else the slot-advance rule here.
+                // INC-I-289: an unsupported own block keeps our tip. The candidate
+                // counts when recorded or when its slot advances on its parent.
                 let (ours, cand) = if from_ancestor {
-                    let ours = self.branch_weight(&to_rollback, |_| None)?;
+                    let ours = union_weight(&to_rollback, &get_support)?;
                     let slot = block.header.slot;
-                    let cand = self.candidate_weight(&[block_hash], |_| {
-                        Some(self.slot_weight(slot, &prev_hash, None, block_producer_weight))
-                    });
+                    let counts = self.block_weights.contains_key(&block_hash)
+                        || self.slot_weight(slot, &prev_hash, None, 1) > 0;
+                    let own = || {
+                        let id = *block.header.producer.as_bytes();
+                        BlockSupport::single(id, block_producer_weight)
+                    };
+                    let cand = if counts {
+                        candidate_union(&[block_hash], |h| get_support(h).or_else(|| Some(own())))
+                    } else {
+                        0
+                    };
                     (ours, cand)
                 } else {
                     (self.current_chain_weight, new_chain_weight)
@@ -219,15 +229,15 @@ impl ReorgHandler {
         )
     }
 
-    /// [`Self::plan_reorg`] with the node's producer weight of a block the handler
-    /// does not track (INC-I-288: read only at/above its gate, by `branch_weight`).
-    pub fn plan_reorg_with_weights(
+    /// [`Self::plan_reorg`] with each block's supporters (INC-I-289 K-1: read only
+    /// at/above the INC-I-288 gate, by `union_weight`).
+    pub fn plan_reorg_with_support(
         &self,
         current_tip: Hash,
         new_tip: Hash,
         get_parent: impl Fn(&Hash) -> Option<Hash>,
         get_height: impl Fn(&Hash) -> Option<u64>,
-        get_weight: impl Fn(&Hash) -> Option<u64>,
+        get_support: impl Fn(&Hash) -> Option<BlockSupport>,
         finality: ForkChoiceFinality,
     ) -> Option<ReorgResult> {
         self.plan_reorg_inner(
@@ -235,7 +245,7 @@ impl ReorgHandler {
             new_tip,
             get_parent,
             get_height,
-            get_weight,
+            get_support,
             finality,
             false,
         )
@@ -262,7 +272,7 @@ impl ReorgHandler {
             new_tip,
             get_parent,
             get_height,
-            |_| Some(0),
+            |h| self.per_block_support(h, |_| Some(0)),
             finality,
             true,
         )
@@ -275,7 +285,7 @@ impl ReorgHandler {
         new_tip: Hash,
         get_parent: impl Fn(&Hash) -> Option<Hash>,
         get_height: impl Fn(&Hash) -> Option<u64>,
-        get_weight: impl Fn(&Hash) -> Option<u64>,
+        get_support: impl Fn(&Hash) -> Option<BlockSupport>,
         finality: ForkChoiceFinality,
         finality_override: bool,
     ) -> Option<ReorgResult> {
@@ -456,8 +466,8 @@ impl ReorgHandler {
         // accumulated weights of a lossy cache.
         let (current_weight, new_weight) = if self.weighs_from_ancestor(finality.local_tip_height) {
             (
-                self.branch_weight(&rollback, &get_weight)?,
-                self.candidate_weight(&new_chain, &get_weight),
+                union_weight(&rollback, &get_support)?,
+                candidate_union(&new_chain, &get_support),
             )
         } else {
             (self.chain_weight(&current_tip), self.chain_weight(&new_tip))

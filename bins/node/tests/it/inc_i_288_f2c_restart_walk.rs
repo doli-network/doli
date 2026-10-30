@@ -34,7 +34,9 @@ const OURS: [u32; 2] = [210, 211];
 fn heavier_branch(r: &Rig) -> Vec<doli_core::Block> {
     let a2 = r.ours[1].hash();
     let b = chain_on(r, r.f_hash, F + 1, &[216, 217]);
+    // B3 by the third producer: B has 3 distinct supporters (INC-I-289 K-1).
     let b3 = (218..418)
+        .filter(|s| s % 3 == 2)
         .map(|s| block(F + 3, s, b[1].hash(), leader(&r.keys, s), &r.node.params))
         .find(|x| x.hash().as_bytes() > a2.as_bytes())
         .expect("fixture: a B3 hashing above A2 within 200 slots");

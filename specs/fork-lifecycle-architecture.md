@@ -293,6 +293,20 @@ when its anchor provably descends from the finalized block (the canonical hash a
 or a walk of at most 1024 local parent headers that meets the canonical chain at or above the
 finalized height); unproven is refused and the node falls back to normal sync. Below the
 height: unchanged.
+INC-I-289 K-1: no authority added or removed. A1 and A3 weigh a branch as the bond
+(selection_weight_at, the finality unit) of its DISTINCT supporters from the common
+ancestor, each producer once: the producers of its blocks, the attesters named by the bits of
+each branch block whose parent is on the branch (a block's bits attest its parent), and the
+verified gossip attesters the node holds for its blocks from OTHER producers (the finality
+tracker for applied blocks; a bounded map of at most 64 hashes, oldest evicted, for fork-cache
+and retained blocks; neither feeds attendance, the BLS pool or finality). A block's bits count
+only when the block is at/above inc_i_178_attestation_bls_activation_height and the door's
+check of its aggregate (the apply check, never skipped as light) accepts; else they add 0. The
+node's own attestation counts only as a bit in a block on the branch. Not counted: block
+count, the first block's bits. An unsupported own block keeps our tip; an unknown candidate
+block adds nothing; the comparison (strictly heavier; the gossip door's tie switch) is
+unchanged. X3 and the walk's seed rule still rank by per-block sums. Below the height:
+unchanged.
 ```
 
 ### Proposed (after M6)

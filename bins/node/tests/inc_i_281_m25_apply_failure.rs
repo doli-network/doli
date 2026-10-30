@@ -194,6 +194,8 @@ async fn feed_again(fx: &mut Fx, ext: &[Block]) -> (Vec<(&'static str, usize)>, 
 async fn apply_failure_at_boundary_restores_prior_tip() {
     let mut fx = setup().await;
     let br = boundary_branch(&fx);
+    // INC-I-289 sweep: (a) — C_B*,Y were all by the node's key and out-weighed D by block count → non-own producers attest Y_{B+1}, so the walk door still tries the branch.
+    fx.back(&br[1], fx.b() + 1).await;
     let bad = br[0].clone();
     let wrong = failed_walk_wrongs(&mut fx, &br, &bad).await;
     probe("boundary", !wrong.is_empty());
@@ -208,6 +210,8 @@ async fn apply_failure_at_boundary_restores_prior_tip() {
 async fn apply_failure_in_tail_restores_prior_tip() {
     let mut fx = setup().await;
     let br = tail_branch(&fx);
+    // INC-I-289 sweep: (a) — C_B,C_{B+1}*,Y won D by block count → non-own producers attest C_B, so the walk door still tries the branch.
+    fx.back_c_b().await;
     let bad = br[1].clone();
     let wrong = failed_walk_wrongs(&mut fx, &br, &bad).await;
     probe("tail", !wrong.is_empty());
@@ -222,6 +226,8 @@ async fn apply_failure_in_tail_restores_prior_tip() {
 async fn apply_failed_block_refused_before_rollback() {
     let mut fx = setup().await;
     let br = boundary_branch(&fx);
+    // INC-I-289 sweep: (a) — the first walk tried the branch by block count → non-own producers attest Y_{B+1}, so the first walk still reaches the apply failure.
+    fx.back(&br[1], fx.b() + 1).await;
     let original = fx.state().await;
     let (first, _logs) = walk_logged(&mut fx, &br).await;
     let ext = extend(&fx, &br);
@@ -247,6 +253,8 @@ async fn apply_failed_block_refused_before_rollback() {
 async fn junk_body_copy_does_not_refuse_honest_block() {
     let mut fx = setup().await;
     let canon = fx.canonical();
+    // INC-I-289 sweep: (a) — the honest copy landed by block count → non-own producers attest C_{B+1} (not C_B: the junk copy shares C_B's header).
+    fx.back(&canon[1], fx.b() + 1).await;
     let mut walked = canon.clone();
     walked[0] = junk_body(&canon[0]);
     let before = fx.state().await;

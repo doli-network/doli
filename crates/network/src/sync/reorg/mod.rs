@@ -23,9 +23,11 @@ use doli_core::Block;
 mod doors;
 mod fork_choice;
 mod observe;
+mod support;
 pub use fork_choice::{ForkChoiceFinality, WeightVerdict};
 pub use observe::ReorgObservations;
 use observe::{bump, ReorgCounters};
+pub use support::{BlockSupport, SupporterId};
 
 /// Maximum depth for reorg detection (must handle network partitions up to ~2.7 hours)
 const MAX_REORG_DEPTH: usize = 1000;

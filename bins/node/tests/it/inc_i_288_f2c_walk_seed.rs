@@ -36,6 +36,8 @@ use super::inc_i_288_e2_common::{cached, deliver};
 use super::inc_i_288_f2c_common::*;
 
 const OURS: [u32; 3] = [210, 211, 212];
+/// Two producers: B1..B4's three outweigh them under INC-I-289 K-1 (supporters, not blocks).
+const OURS2: [u32; 2] = [210, 211];
 
 struct Shape {
     burst: Vec<Block>,
@@ -83,7 +85,7 @@ async fn trigger_and_walk(r: &mut Rig, serve: &[Block]) -> (bool, Vec<crypto::Ha
 // SEC-INTEGRITY-R3-001 INC-I-288 — Decision: a failure means one slot leader's same-slot burst, cached at weight 0, takes the walk seed and blocks every later walk, so a wedged node never reaches the heavier branch (INV-FORK-009).
 #[tokio::test]
 async fn f2c_w1_inc_i_288_same_slot_burst_does_not_block_walk_to_heavier_branch() {
-    let mut r = live_rig(&OURS, &[]).await;
+    let mut r = live_rig(&OURS2, &[]).await;
     let sh = stuck_with_burst_and_heavier_orphan(&mut r, 6).await;
     for (i, d) in sh.burst.iter().enumerate().skip(1) {
         assert_eq!(
@@ -138,7 +140,7 @@ async fn f2c_w1_inc_i_288_same_slot_burst_does_not_block_walk_to_heavier_branch(
 // SEC-INTEGRITY-R3-001 INC-I-288 — Decision: a failure means this fixture cannot walk to and adopt B1..B4 at all, so the W1 red would not be the burst's.
 #[tokio::test]
 async fn f2c_w2_inc_i_288_control_without_burst_walk_adopts_heavier_branch() {
-    let mut r = live_rig(&OURS, &[]).await;
+    let mut r = live_rig(&OURS2, &[]).await;
     let s = same_slot_burst(&r, 213, r.f_hash, F + 1, 1)[0].header.slot;
     let honest = chain_on(&r, r.f_hash, F + 1, &[s + 1, s + 2, s + 3, s + 4]);
     let b4 = honest[3].clone();

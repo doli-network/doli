@@ -425,20 +425,29 @@ impl SyncManager {
     /// `get_height` resolves a hash to its REAL chain height. `crates/network` has no
     /// `doli-storage` dependency, so the block-store lookup arrives as a closure from
     /// `bins/node` (INC-I-204 M5 / INV-SYNC-012).
+    /// `get_support` names each block's supporters (INC-I-289 K-1, read only at/above
+    /// the INC-I-288 gate).
     pub fn handle_new_block_weighted(
         &mut self,
         block: Block,
         producer_weight: u64,
         get_height: impl Fn(&Hash) -> Option<u64>,
+        get_support: impl Fn(&Hash) -> Option<super::super::reorg::BlockSupport>,
     ) -> Option<super::super::reorg::ReorgResult> {
         let finality = self.fork_choice_finality();
-        self.reorg_handler.check_reorg_weighted(
+        self.reorg_handler.check_reorg_supported(
             &block,
             self.local_hash,
             producer_weight,
             get_height,
+            get_support,
             finality,
         )
+    }
+
+    /// INC-I-289: the verified gossip attesters held for each pending block.
+    pub fn pending_attesters(&self) -> Vec<(Hash, Vec<crypto::PublicKey>)> {
+        self.finality_tracker.pending_attesters()
     }
 
     /// The derived finality view every fork-choice door reads (INC-I-204 M5).

@@ -65,15 +65,17 @@ impl Node {
 
         // 3. Try simple reorg first (works for single-block forks within recent_blocks)
         let fork_tip = recovery.blocks.last().unwrap();
+        let view = self.support_view().await;
         let simple_reorg = {
             let sync = self.sync_manager.read().await;
             let store = &self.block_store;
             let finality = sync.fork_choice_finality();
-            sync.reorg_handler().check_reorg_weighted(
+            sync.reorg_handler().check_reorg_supported(
                 fork_tip,
                 current_tip,
                 last_block_weight,
                 |h| store.get_height_by_hash(h).ok().flatten(),
+                |h| view.support(store, h),
                 finality,
             )
         };
@@ -120,15 +122,14 @@ impl Node {
         // 4. Fall back to plan_reorg for deeper forks
         let fork_tip_hash = fork_tip.hash();
         let reorg_result = {
-            let ps = self.producer_set.read().await;
             let sync = self.sync_manager.read().await;
             let store = &self.block_store;
-            sync.reorg_handler().plan_reorg_with_weights(
+            sync.reorg_handler().plan_reorg_with_support(
                 current_tip,
                 fork_tip_hash,
                 |hash| store.get_header(hash).ok().flatten().map(|h| h.prev_hash),
                 |hash| store.get_height_by_hash(hash).ok().flatten(),
-                |hash| super::wedge_escape::stored_weight(store, &ps, hash),
+                |hash| view.support(store, hash),
                 sync.fork_choice_finality(),
             )
         };

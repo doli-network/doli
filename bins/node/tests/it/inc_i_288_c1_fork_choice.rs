@@ -217,7 +217,8 @@ async fn c1_control_inc_i_288_worse_slot_heavier_branch_adopted_without_rollback
 #[tokio::test]
 async fn c1_b_inc_i_288_better_slot_heavier_branch_is_weighed_and_adopted() {
     // P2a: own A1,A2 (slots 210, 211); their B1 has the BETTER slot 205, then B2, B3.
-    let mut r = rig(&[210, 211], &[205, 213, 214]).await;
+    // B3 at 215: three distinct producers vs our two (INC-I-289 K-1 weighs supporters).
+    let mut r = rig(&[210, 211], &[205, 213, 215]).await;
     let (b1, b2, b3) = (
         r.theirs[0].clone(),
         r.theirs[1].clone(),
