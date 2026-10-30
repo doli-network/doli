@@ -41,6 +41,8 @@ mod tests_inc_i_181;
 mod tests_inc_i_233;
 #[cfg(test)]
 mod tests_inc_i_234;
+#[cfg(test)]
+mod tests_inc_i_288;
 
 /// Pins of the four defense gates (236/255/257/182): testnet 330_849, mainnet 806_859.
 #[cfg(test)]
