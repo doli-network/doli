@@ -183,12 +183,19 @@ impl Node {
             if rh.weighs_from_ancestor(finality.local_tip_height) {
                 // INC-I-288: branch against branch from the shared parent (the tip), by
                 // the plan door's rule: the removed block plus its heaviest cached
-                // continuation against each cached sibling branch.
+                // continuation against each cached sibling branch. A cached block with
+                // no record and no stored height weighs its producer, as the walk does.
                 let store = &self.block_store;
                 let cache = self.fork_block_cache.read().await;
                 let best = cached_branches(&cache, |h| {
                     rh.candidate_weight(&[*h], |x| {
-                        super::wedge_escape::stored_weight(store, &ps, x)
+                        super::wedge_escape::stored_weight(store, &ps, x).or_else(|| {
+                            let producer = cache.get(x)?.header.producer;
+                            Some(
+                                ps.get_by_pubkey(&producer)
+                                    .map_or(1, |p| p.effective_weight(height)),
+                            )
+                        })
                     })
                 });
                 let own = (cache.iter())
