@@ -356,13 +356,15 @@ nothing. A door never takes the tip table for an older epoch; the ranking takes 
 only for an unknown attach point, and a missing table zeroes only its own branch. Below the height: unchanged.
 INC-I-293 F2: no authority added or removed. At/above the height the Orphan arm (parent neither
 stored nor retained) also calls the existing walk starter try_trigger_fork_recovery after the
-unchanged ORPHAN_CHASE; the walk still feeds A3. Below the height: unchanged.
+unchanged ORPHAN_CHASE; the walk still feeds A3. The walk asks the orphan's sender, else a
+peer whose reported tip is off our chain (R-2 103). Below the height: unchanged.
 INC-I-293 F3: no authority added or removed. At/above the height a sibling the wedge door keeps
 retained and off the chain hands its cached children, depth-first, to the same door call
 (at most WEDGE_RETAINED_CAP = 64 calls, stops when the tip moves), so a root that arrives last
 is weighed with its branch by A3. Below the height: unchanged.
 INC-I-293 F1: no authority added or removed. At/above the height the attestation fetch keeps its
-entry until the block is held (or the 30 s expiry) and re-asks one connected peer per tick.
+entry until the block is held (or the 30 s expiry) and re-asks the relayer, or the peer that
+inherited it at disconnect by reporting the same off-chain tip; at most 2 per peer per tick (R-2 101-103).
 ```
 
 ### Proposed (after M6)

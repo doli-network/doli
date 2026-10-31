@@ -2188,8 +2188,11 @@ node produced (producer = its own key) is not post-rollback progress for coordin
 (`block_applied_with_origin`); a block a peer delivered by gossip or reorg still is, whatever
 its producer; (5) an orphan gossip block whose parent is neither stored nor a retained sibling,
 and whose slot is within the reorg depth of our tip (`slot <= best_slot + MAX_REORG_DEPTH`),
-also starts the by-hash fork walk (`try_trigger_fork_recovery`, Orphan arm of `handle_new_block`
-in `block_handling.rs`) after the unchanged by-height ORPHAN_CHASE request; a catch-up orphan
+also starts the by-hash fork walk (`try_trigger_fork_recovery_from`, Orphan arm of `handle_new_block`
+in `block_handling.rs`) after the unchanged by-height ORPHAN_CHASE request; the walk asks the
+orphan's sender while it is connected, else a connected peer whose reported tip is off our
+chain, never the tallest peer (`fork_walk.rs`); a completed walk whose tip is already canonical
+rolls back nothing (INC-I-293 R1, `fork_walk.rs`); a catch-up orphan
 beyond that depth and any orphan below the height get only the chase (INC-I-293 F2); (6) a sibling that the wedge-escape door keeps retained and
 off the chain hands each of its cached children, depth-first, to the same door
 (`retain_sibling_and_try_escape` in `wedge_escape.rs`), at most `WEDGE_RETAINED_CAP` (64) door
@@ -2197,9 +2200,12 @@ calls, and stops when the tip moves; so a root that arrives after its children i
 its branch, as if it had arrived first (INC-I-293 F3); (7) a block that an attestation names
 and the node lacks keeps its attestation-fetch entry until the block is stored, cached or
 retained, or the unchanged 30 s expiry ends it, and each periodic tick sends one
-`GetBlockByHash` for it to the recorded relayer while it is connected, else to the highest
-connected peer (`best_peer_for_recovery`); below the height the fetch fires once to the
-recorded relayer and the entry is removed (INC-I-293 F1, `periodic.rs`).
+`GetBlockByHash` for it to the recorded relayer while it is connected; when the relayer
+disconnects its entries pass to a connected peer that reports the same tip, off our chain
+(`hand_off_attest_fetch` in `branch_support.rs`), and with no such peer the entry is asked of
+no one; each tick grants the entries round-robin over their target peers, at most
+`ATTEST_FETCH_PER_PEER_PER_TICK` (2) per peer and the unchanged 8 in all; below the height the
+fetch fires once to the recorded relayer and the entry is removed (INC-I-293 F1, `periodic.rs`).
 
 **Bond unit (INC-I-289 K-1, N-3).** A branch weighs the bond (`selection_weight_at`, the
 finality unit) of its DISTINCT supporters from the common ancestor; each producer counts once:
