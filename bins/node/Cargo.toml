@@ -332,3 +332,9 @@ path = "tests/inc_i_289_o1_rank_table.rs"
 name = "inc_i_293_f2_orphan_walk"
 path = "tests/inc_i_293_f2_orphan_walk.rs"
 harness = true
+
+# INC-I-293 F3 root-last red (run 647 Q-2) — own binary: the below-gate cells
+# re-exec themselves with the INC-I-288 AH env override.
+[[test]]
+name = "inc_i_293_f3_root_last"
+path = "tests/inc_i_293_f3_root_last.rs"
