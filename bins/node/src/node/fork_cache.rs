@@ -1,4 +1,5 @@
-use super::fork_walk::{cached_branches, select_walk_seed, walk_rank};
+use super::branch_rank::{ranked_branches, BranchRank};
+use super::fork_walk::select_walk_seed;
 use super::*;
 
 const CACHE_CAP: usize = 100;
@@ -6,10 +7,14 @@ const EVICT_BATCH: usize = 50;
 const MAX_PINNED: usize = 50;
 const MAX_DRAIN: u32 = 50;
 
-/// Cached children of `parent` in drain order: longest cached descendant chain
-/// first, then lower slot, then lower hash.
-pub(super) fn drain_order(cache: &HashMap<Hash, Block>, parent: Hash) -> Vec<Hash> {
-    let branches = cached_branches(cache, |_| 1);
+/// Cached children of `parent` in drain order: heaviest cached descendant chain
+/// by `rank` first, then lower slot, then lower hash.
+pub(super) fn drain_order(
+    cache: &HashMap<Hash, Block>,
+    parent: Hash,
+    rank: &BranchRank,
+) -> Vec<Hash> {
+    let branches = ranked_branches(cache, rank);
     let mut kids: Vec<(std::cmp::Reverse<u64>, u32, Hash)> = cache
         .iter()
         .filter(|(_, b)| b.header.prev_hash == parent)
@@ -55,9 +60,9 @@ pub(super) fn admit(
 fn seed_chain(
     cache: &HashMap<Hash, Block>,
     is_canonical: impl Fn(&Hash) -> bool,
-    weight: impl Fn(&Hash) -> u64,
+    rank: &BranchRank,
 ) -> HashSet<Hash> {
-    let Some((seed, tip)) = select_walk_seed(cache, is_canonical, weight) else {
+    let Some((seed, tip)) = select_walk_seed(cache, is_canonical, rank) else {
         return HashSet::new();
     };
     let seed_hash = seed.hash();
@@ -96,9 +101,9 @@ impl Node {
             return true;
         }
         drop(cache);
-        let weights = self.walk_weights().await;
+        let rank = self.branch_rank().await;
         let mut cache = self.fork_block_cache.write().await;
-        let pinned = seed_chain(&cache, |h| self.is_canonical(h), walk_rank(&weights));
+        let pinned = seed_chain(&cache, |h| self.is_canonical(h), &rank);
         let mut by_slot: Vec<(u32, Hash)> = cache
             .iter()
             .filter(|(h, _)| !pinned.contains(*h))
@@ -128,7 +133,16 @@ impl Node {
         let mut attempts = 0u32;
         'tip: while attempts < MAX_DRAIN {
             let tip_hash = self.chain_state.read().await.best_hash;
-            let order = drain_order(&*self.fork_block_cache.read().await, tip_hash);
+            let kids = (self.fork_block_cache.read().await.values())
+                .filter(|b| b.header.prev_hash == tip_hash)
+                .count();
+            // One child needs no rank: skip the support snapshot.
+            let rank = if kids > 1 {
+                self.branch_rank().await
+            } else {
+                BranchRank::Depth
+            };
+            let order = drain_order(&*self.fork_block_cache.read().await, tip_hash, &rank);
             for h in order {
                 if attempts >= MAX_DRAIN {
                     break 'tip;
@@ -179,47 +193,32 @@ impl Node {
         if siblings.is_empty() {
             return false;
         }
-        // Below the INC-I-288 gate the rollback cleared the reorg handler: weigh the
-        // block as the wedge escape weighs a sibling (parent weight + producer weight).
-        let height = self.chain_state.read().await.best_height + 1;
-        let held = {
-            let ps = self.producer_set.read().await;
-            let weight = ps
-                .get_by_pubkey(&block.header.producer)
-                .map(|p| p.effective_weight(height))
-                .unwrap_or(1);
-            let sync = self.sync_manager.read().await;
-            let rh = sync.reorg_handler();
-            let finality = sync.fork_choice_finality();
-            if rh.weighs_from_ancestor(finality.local_tip_height) {
-                // INC-I-288: branch against branch from the shared parent (the tip), by
-                // the plan door's rule: the removed block plus its heaviest cached
-                // continuation against each cached sibling branch. A cached block with
-                // no record and no stored height weighs its producer, as the walk does.
-                let store = &self.block_store;
-                let cache = self.fork_block_cache.read().await;
-                let best = cached_branches(&cache, |h| {
-                    rh.candidate_weight(&[*h], |x| {
-                        super::wedge_escape::stored_weight(store, &ps, x).or_else(|| {
-                            let producer = cache.get(x)?.header.producer;
-                            Some(
-                                ps.get_by_pubkey(&producer)
-                                    .map_or(1, |p| p.effective_weight(height)),
-                            )
-                        })
-                    })
-                });
-                let own = (cache.iter())
-                    .filter(|(_, b)| b.header.prev_hash == hash)
-                    .map(|(h, _)| best[h].0)
-                    .max();
-                let ours = rh
-                    .candidate_weight(&[hash], |_| Some(weight))
-                    .saturating_add(own.unwrap_or(0));
+        let held = match self.branch_rank().await {
+            // INC-I-288/289: branch against branch from the shared parent (the tip), in
+            // the doors' unit: the removed block plus its best cached continuation
+            // against each cached sibling branch.
+            BranchRank::Bond(mut view, store) => {
+                view.include(block);
+                let mut cache = self.fork_block_cache.read().await.clone();
+                cache.insert(hash, block.clone());
+                let best = ranked_branches(&cache, &BranchRank::Bond(view, store));
+                let ours = best[&hash].0;
                 siblings
                     .iter()
                     .any(|s| best.get(s).is_some_and(|(w, _)| *w > ours))
-            } else {
+            }
+            // Below the gate the rollback cleared the reorg handler: weigh the block
+            // as the wedge escape weighs a sibling (parent weight + producer weight).
+            BranchRank::Depth => {
+                let height = self.chain_state.read().await.best_height + 1;
+                let ps = self.producer_set.read().await;
+                let weight = ps
+                    .get_by_pubkey(&block.header.producer)
+                    .map(|p| p.effective_weight(height))
+                    .unwrap_or(1);
+                let sync = self.sync_manager.read().await;
+                let rh = sync.reorg_handler();
+                let finality = sync.fork_choice_finality();
                 let ours = rh.chain_weight(&parent).saturating_add(weight);
                 siblings.iter().any(|s| {
                     matches!(
@@ -330,9 +329,9 @@ mod tests {
             chain.push(prev);
             cache.insert(prev, b);
         }
-        let pinned = seed_chain(&cache, |_| false, |_| 1);
+        let pinned = seed_chain(&cache, |_| false, &BranchRank::Depth);
         assert_eq!(pinned.len(), MAX_PINNED);
         assert!(chain[..MAX_PINNED].iter().all(|h| pinned.contains(h)));
-        assert!(seed_chain(&HashMap::new(), |_| false, |_| 1).is_empty());
+        assert!(seed_chain(&HashMap::new(), |_| false, &BranchRank::Depth).is_empty());
     }
 }

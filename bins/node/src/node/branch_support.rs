@@ -53,6 +53,11 @@ impl SupportView {
         (*pk.as_bytes(), self.bonds.get(pk).copied().unwrap_or(0))
     }
 
+    /// Adds a block the cache snapshot does not hold (a body taken out of the cache).
+    pub(super) fn include(&mut self, block: &Block) {
+        self.cached.insert(block.hash(), Facts::of(block));
+    }
+
     /// The block's support; `None` when neither the store nor the cache holds it.
     pub(super) fn support(&self, store: &BlockStore, hash: &Hash) -> Option<BlockSupport> {
         let facts = match self.cached.get(hash) {

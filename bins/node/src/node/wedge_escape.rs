@@ -63,17 +63,6 @@ fn should_warn_drop(hash: Hash, now: Instant) -> bool {
     true
 }
 
-/// INC-I-288: a stored block's producer weight as apply records it (effective
-/// weight at the block's height); `None` when the store does not hold it.
-pub(super) fn stored_weight(store: &BlockStore, ps: &ProducerSet, hash: &Hash) -> Option<u64> {
-    let producer = store.get_header(hash).ok().flatten()?.producer;
-    let height = store.get_height_by_hash(hash).ok().flatten()?;
-    Some(
-        ps.get_by_pubkey(&producer)
-            .map_or(1, |p| p.effective_weight(height)),
-    )
-}
-
 impl Node {
     /// Retain a competing sibling block the FORK_GUARD would otherwise drop, then
     /// attempt a synchronous reorg onto its branch via the existing reorg engine.

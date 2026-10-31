@@ -17,6 +17,7 @@ mod body_retry;
 pub mod bootstrap_redial;
 #[cfg(test)]
 mod bootstrap_redial_tests;
+mod branch_rank;
 mod branch_support;
 pub mod checkpoint_health;
 mod event_loop;

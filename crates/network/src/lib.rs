@@ -91,12 +91,13 @@ pub use service::{
     GossipHandle, NetworkCommand, NetworkError, NetworkEvent, NetworkService, Verdict,
 };
 pub use sync::{
-    BlockSupport, ChainBreakInfo, EquivocationDetector, EquivocationProof, ForceReorgPoll,
-    ForkChoiceFinality, NetworkEvidence, ProductionAuthorization, RecoveryAction, RecoveryContext,
-    RecoveryEvidence, RecoveryPhase, RecoveryReason, ReorgResult, StagedUtxoMarker, StuckForkAlert,
-    SupporterId, SyncConfig, SyncManager, SyncPhase, SyncPipelineData, SyncState, UtxoChunkSink,
-    VerifiedSnapshot, WedgeReason, WeightVerdict, FORCE_REORG_MAX_HEIGHT_SPAN,
-    FORCE_REORG_TTL_SECS, MAX_CONSECUTIVE_RESYNCS, MAX_EVIDENCE_CHECKS_AFTER_PROOF,
+    candidate_union, BlockSupport, ChainBreakInfo, EquivocationDetector, EquivocationProof,
+    ForceReorgPoll, ForkChoiceFinality, NetworkEvidence, ProductionAuthorization, RecoveryAction,
+    RecoveryContext, RecoveryEvidence, RecoveryPhase, RecoveryReason, ReorgResult,
+    StagedUtxoMarker, StuckForkAlert, SupporterId, SyncConfig, SyncManager, SyncPhase,
+    SyncPipelineData, SyncState, UtxoChunkSink, VerifiedSnapshot, WedgeReason, WeightVerdict,
+    FORCE_REORG_MAX_HEIGHT_SPAN, FORCE_REORG_TTL_SECS, MAX_CONSECUTIVE_RESYNCS,
+    MAX_EVIDENCE_CHECKS_AFTER_PROOF,
 };
 
 // Re-export libp2p types that are part of our public API

@@ -305,8 +305,14 @@ check of its aggregate (the apply check, never skipped as light) accepts; else t
 node's own attestation counts only as a bit in a block on the branch. Not counted: block
 count, the first block's bits. An unsupported own block keeps our tip; an unknown candidate
 block adds nothing; the comparison (strictly heavier; the gossip door's tie switch) is
-unchanged. X3 and the walk's seed rule still rank by per-block sums. Below the height:
-unchanged.
+unchanged. Below the height: unchanged.
+INC-I-289 N-3: no authority added or removed. X3, the walk's seed rule (and the branch tip a
+lost walk marks rejected), the cached-child drain order, the eviction pin and the body-retry
+branch tip rank a cached branch in the same unit: the bond of the distinct supporters of each
+cached chain block..tip, the best chain under a block taken over its cached tips (ties: lower
+slot, then lower hash, child by child). X3 weighs our side as the removed block plus its best
+cached continuation, whole. Below the height: unchanged (cached depth; X3 keeps the handler
+weighing).
 ```
 
 ### Proposed (after M6)

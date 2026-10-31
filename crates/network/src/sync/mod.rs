@@ -35,6 +35,6 @@ pub use manager::{
     FORCE_REORG_MAX_HEIGHT_SPAN, FORCE_REORG_TTL_SECS, MAX_CONSECUTIVE_RESYNCS,
 };
 pub use reorg::{
-    BlockSupport, ForkChoiceFinality, ReorgHandler, ReorgObservations, ReorgResult, SupporterId,
-    WeightVerdict,
+    candidate_union, BlockSupport, ForkChoiceFinality, ReorgHandler, ReorgObservations,
+    ReorgResult, SupporterId, WeightVerdict,
 };
