@@ -33,6 +33,7 @@ pub use manager::{
     RecoveryContext, RecoveryEvidence, RecoveryPhase, RecoveryReason, StuckForkAlert, SyncConfig,
     SyncManager, SyncPhase, SyncPipelineData, SyncState, VerifiedSnapshot, WedgeReason,
     FORCE_REORG_MAX_HEIGHT_SPAN, FORCE_REORG_TTL_SECS, MAX_CONSECUTIVE_RESYNCS,
+    SNAP_DESCENT_PROOF_MAX_HEADERS,
 };
 pub use reorg::{
     candidate_union, BlockSupport, ForkChoiceFinality, ReorgHandler, ReorgObservations,

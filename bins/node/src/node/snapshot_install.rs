@@ -12,7 +12,9 @@ use tracing::{error, info, warn};
 use super::Node;
 
 /// Bound on the local header walk that proves a snapshot anchor descends from
-/// the finalized block; a longer gap is refused (needs a peer-served proof).
+/// the finalized block. Only stored headers are walked, so a lagging node (no
+/// headers for the gap) fails at the second step; it is admitted by the
+/// peer-served chain instead (`SyncManager::snap_descent_proven`).
 const MAX_FINALITY_PROOF_WALK: u64 = 1024;
 
 /// The durable 3-state produced by a successful `SnapshotPrelude::Installed`.
@@ -65,7 +67,8 @@ impl Node {
     /// from it. Unproven is refused (fail-closed); the caller falls back to
     /// normal sync.
     async fn snap_anchor_keeps_finality(&self, snapshot: &network::VerifiedSnapshot) -> bool {
-        let fin = self.sync_manager.read().await.fork_choice_finality();
+        let sm = self.sync_manager.read().await;
+        let fin = sm.fork_choice_finality();
         let gate = self
             .config
             .network
@@ -74,7 +77,10 @@ impl Node {
         let (Some(fh), Some(f)) = (fin.finalized_height, fin.finalized_hash) else {
             return true;
         };
-        if fin.local_tip_height < gate || self.snap_anchor_descends_from(snapshot, fh, f) {
+        if fin.local_tip_height < gate
+            || self.snap_anchor_descends_from(snapshot, fh, f)
+            || sm.snap_descent_proven(snapshot.block_height, snapshot.block_hash, f)
+        {
             return true;
         }
         warn!(

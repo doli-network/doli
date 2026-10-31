@@ -97,7 +97,7 @@ pub use sync::{
     StagedUtxoMarker, StuckForkAlert, SupporterId, SyncConfig, SyncManager, SyncPhase,
     SyncPipelineData, SyncState, UtxoChunkSink, VerifiedSnapshot, WedgeReason, WeightVerdict,
     FORCE_REORG_MAX_HEIGHT_SPAN, FORCE_REORG_TTL_SECS, MAX_CONSECUTIVE_RESYNCS,
-    MAX_EVIDENCE_CHECKS_AFTER_PROOF, MAX_REORG_DEPTH,
+    MAX_EVIDENCE_CHECKS_AFTER_PROOF, MAX_REORG_DEPTH, SNAP_DESCENT_PROOF_MAX_HEADERS,
 };
 
 // Re-export libp2p types that are part of our public API

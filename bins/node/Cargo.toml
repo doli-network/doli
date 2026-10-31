@@ -296,3 +296,9 @@ path = "tests/inc_i_289_l2_epoch_table_store.rs"
 [[test]]
 name = "inc_i_289_l1_ancestor_table"
 path = "tests/inc_i_289_l1_ancestor_table.rs"
+
+# INC-I-289 M-1 snap descent proof (AUDIT-P2-639-001) — own binary: log capture
+# on the bound refusal and a below-AH child re-exec.
+[[test]]
+name = "inc_i_289_m1_snap_descent"
+path = "tests/inc_i_289_m1_snap_descent.rs"

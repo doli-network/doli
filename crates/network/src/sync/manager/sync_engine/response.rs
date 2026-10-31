@@ -60,6 +60,10 @@ impl SyncManager {
                     );
                     return vec![];
                 }
+                if self.snap_descent_owns(peer) {
+                    self.handle_snap_descent_headers(peer, headers);
+                    return vec![];
+                }
                 self.handle_headers_response(peer, headers);
                 vec![]
             }
