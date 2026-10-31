@@ -65,7 +65,7 @@ impl Node {
 
         // 3. Try simple reorg first (works for single-block forks within recent_blocks)
         let fork_tip = recovery.blocks.last().unwrap();
-        let view = self.support_view().await;
+        let view = self.gated_support_view().await;
         let simple_reorg = {
             let sync = self.sync_manager.read().await;
             let store = &self.block_store;
@@ -75,7 +75,7 @@ impl Node {
                 current_tip,
                 last_block_weight,
                 |h| store.get_height_by_hash(h).ok().flatten(),
-                |h| view.support(store, h),
+                |h| view.as_ref()?.support(store, h),
                 finality,
             )
         };
@@ -129,7 +129,7 @@ impl Node {
                 fork_tip_hash,
                 |hash| store.get_header(hash).ok().flatten().map(|h| h.prev_hash),
                 |hash| store.get_height_by_hash(hash).ok().flatten(),
-                |hash| view.support(store, hash),
+                |hash| view.as_ref()?.support(store, hash),
                 sync.fork_choice_finality(),
             )
         };

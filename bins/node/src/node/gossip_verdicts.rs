@@ -86,8 +86,12 @@ impl Node {
     }
 
     /// INC-I-289 K-1: a member's attestation for a fork-cache or retained hash backs
-    /// that hash at the reorg doors; the node's own attestation never does.
+    /// that hash at the reorg doors; the node's own attestation never does. Below
+    /// the INC-I-288 gate no door reads the credit, so none is kept.
     async fn credit_fork_attester(&mut self, a: &Attestation) {
+        if !self.weighs_by_support().await {
+            return;
+        }
         let own = self.producer_key.as_ref().map(|k| *k.public_key());
         let fork_only = self.wedge_retained_tips.contains(&a.block_hash)
             || self
@@ -96,6 +100,7 @@ impl Node {
                 .await
                 .contains_key(&a.block_hash);
         if fork_only && own != Some(a.attester) {
+            crate::metrics::FORK_CREDITS.inc();
             self.attest_seen
                 .fork_credit
                 .credit(a.block_hash, a.attester);

@@ -140,8 +140,26 @@ impl SupportView {
 }
 
 impl Node {
+    /// The doors' INC-I-288 gate predicate at the local tip.
+    pub(super) async fn weighs_by_support(&self) -> bool {
+        let sync = self.sync_manager.read().await;
+        let tip_h = sync.fork_choice_finality().local_tip_height;
+        sync.reorg_handler().weighs_from_ancestor(tip_h)
+    }
+
+    /// [`Self::support_view`] at/above the gate; `None` below it (the doors read
+    /// no support there).
+    pub(super) async fn gated_support_view(&self) -> Option<SupportView> {
+        if self.weighs_by_support().await {
+            Some(self.support_view().await)
+        } else {
+            None
+        }
+    }
+
     /// Snapshot the inputs of [`SupportView::support`] (each lock taken and dropped).
     pub(super) async fn support_view(&self) -> SupportView {
+        crate::metrics::SUPPORT_VIEWS_BUILT.inc();
         let height = self.chain_state.read().await.best_height;
         let audit = self
             .config

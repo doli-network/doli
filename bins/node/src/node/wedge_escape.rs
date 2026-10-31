@@ -218,7 +218,7 @@ impl Node {
         //    handle_completed_fork_recovery (fork_recovery.rs). plan_reorg applies
         //    the finality guard internally — a finalized tip yields None / not-heavier
         //    and no reorg happens (correct; do not bypass).
-        let view = self.support_view().await;
+        let view = self.gated_support_view().await;
         let reorg_result = {
             let sync = self.sync_manager.read().await;
             let store = &self.block_store;
@@ -227,7 +227,7 @@ impl Node {
                 fork_tip_hash,
                 |h| store.get_header(h).ok().flatten().map(|hd| hd.prev_hash),
                 |h| store.get_height_by_hash(h).ok().flatten(),
-                |h| view.support(store, h),
+                |h| view.as_ref()?.support(store, h),
                 sync.fork_choice_finality(),
             )
         };
