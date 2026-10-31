@@ -344,3 +344,9 @@ path = "tests/inc_i_293_f3_root_last.rs"
 [[test]]
 name = "inc_i_293_f1_attest_fetch"
 path = "tests/inc_i_293_f1_attest_fetch.rs"
+
+# INC-I-293 R1 stale walk (run 648) — own binary: the below-gate cell re-execs
+# itself with the INC-I-288 AH env override.
+[[test]]
+name = "inc_i_293_r1_stale_walk"
+path = "tests/inc_i_293_r1_stale_walk.rs"
