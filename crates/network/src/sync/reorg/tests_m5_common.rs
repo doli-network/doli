@@ -70,6 +70,7 @@ pub(super) fn fin(
         finalized_height,
         finalized_hash,
         local_tip_height,
+        finalized_on_canonical: false,
     }
 }
 

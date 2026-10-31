@@ -1266,6 +1266,12 @@ cp -r data_dir/checkpoints/h{HEIGHT}-{TS}/blocks data_dir/blocks
 
 **Resolution:** Fixed by INC-I-143 (D4). The coordinator now emits a non-destructive `RecoveryAction::SiblingFetch { height: local_tip }` instead of `None` — a `GetBlockByHeight` request to up to 3 top peers, logged as `[FINALITY_GUARD] … INC-I-143 non-destructive SiblingFetch attempt N/3`. The fetched sibling flows through normal block handling where the wedge-escape re-evaluates it via `plan_reorg`. It is bounded to 3 consecutive attempts (~90s at the 30s cooldown), then falls through to standard escalation. If you see a handful of SiblingFetch lines followed by recovery, that is the fix working; the finality guard's strict `<` is UNCHANGED (it never rolls back below finality). Upgrade to a build carrying INC-I-143.
 
+### 4.6b. Finality Lock After a Restart (INC-I-289 K-2, M-1, M-2)
+
+**Log lines:** at start, `[FINALITY] Restored finalized height N (hash)` — the persisted checkpoint was re-armed because the stored chain still holds it. Then `FINALITY: plan_reorg rejecting reorg past effective finality Some(N) (ancestor at A)` refuses a reorg, or `FORK_TABLE: no epoch table for common ancestor … reorg refused` refuses one whose ancestor's epoch table is not stored. A snap refusal logs `[SNAP_SYNC] Refusing snapshot … anchor not proven to descend from finalized h=N` or `[SNAP_SYNC] Descent proof refused: …`.
+
+**What to do:** above the INC-I-288 height, nothing for a branch that descends from the finalized block. The plan door admits a branch whose common ancestor with our chain is at or above `N` when our canonical chain holds the finalized block, at any depth (M-2). A lagging node proves snapshot descent with headers served by the snap peer (M-1); a gap above 10,000 headers falls back to block sync. Use `forceReorgTo` or wipe + snap from a canonical donor ONLY when the finalized block itself is off the canonical chain (the `plan_reorg` line repeats with `ancestor at A < N`).
+
 ---
 
 ### 4.7. Gossip Relay Verdicts (INC-I-237)

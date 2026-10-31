@@ -460,6 +460,7 @@ impl SyncManager {
             finalized_height: cp.map(|c| c.height),
             finalized_hash: cp.map(|c| c.block_hash),
             local_tip_height: self.local_height,
+            finalized_on_canonical: false,
         }
     }
 

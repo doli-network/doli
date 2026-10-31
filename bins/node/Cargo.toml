@@ -302,3 +302,9 @@ path = "tests/inc_i_289_l1_ancestor_table.rs"
 [[test]]
 name = "inc_i_289_m1_snap_descent"
 path = "tests/inc_i_289_m1_snap_descent.rs"
+
+# INC-I-289 M-2 finality lock exit (AUDIT-P2-639-006) — own binary: a below-AH
+# child re-exec and a 1,100-block restart rig.
+[[test]]
+name = "inc_i_289_m2_finality_lock_exit"
+path = "tests/inc_i_289_m2_finality_lock_exit.rs"

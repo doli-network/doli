@@ -130,7 +130,8 @@ impl Node {
                 |hash| store.get_header(hash).ok().flatten().map(|h| h.prev_hash),
                 |hash| store.get_height_by_hash(hash).ok().flatten(),
                 |hash| view.as_ref()?.support(store, hash),
-                sync.fork_choice_finality(),
+                sync.fork_choice_finality()
+                    .with_canonical(|h| store.get_hash_by_height(h).ok().flatten()),
             )
         };
 

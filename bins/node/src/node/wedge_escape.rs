@@ -228,7 +228,8 @@ impl Node {
                 |h| store.get_header(h).ok().flatten().map(|hd| hd.prev_hash),
                 |h| store.get_height_by_hash(h).ok().flatten(),
                 |h| view.as_ref()?.support(store, h),
-                sync.fork_choice_finality(),
+                sync.fork_choice_finality()
+                    .with_canonical(|h| store.get_hash_by_height(h).ok().flatten()),
             )
         };
 

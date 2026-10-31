@@ -30,6 +30,9 @@ pub struct ForkChoiceFinality {
     pub finalized_hash: Option<Hash>,
     /// The node's own applied tip height. Also the weight rule's gate input.
     pub local_tip_height: u64,
+    /// INC-I-289 M-2: the caller's canonical index holds `finalized_hash` at
+    /// `finalized_height` (see [`Self::with_canonical`]).
+    pub finalized_on_canonical: bool,
 }
 
 impl ForkChoiceFinality {
@@ -39,6 +42,15 @@ impl ForkChoiceFinality {
     /// mirror's erasure, so it never returns to `None` once something finalized.
     pub fn effective_finality(&self) -> Option<u64> {
         self.finalized_height.map(|f| f.min(self.local_tip_height))
+    }
+
+    /// Set `finalized_on_canonical` from the caller's height-to-hash index.
+    pub fn with_canonical(mut self, canonical_at: impl Fn(u64) -> Option<Hash>) -> Self {
+        self.finalized_on_canonical = match (self.finalized_height, self.finalized_hash) {
+            (Some(h), Some(f)) => canonical_at(h) == Some(f),
+            _ => false,
+        };
+        self
     }
 }
 
@@ -185,6 +197,16 @@ impl ReorgHandler {
             return false;
         }
         if finality.finalized_hash.is_none() {
+            return true;
+        }
+        // INC-I-289 M-2: the ancestor is on our chain; at or above a finalized
+        // block that chain holds, the branch descends from it at any depth.
+        if finality.finalized_on_canonical
+            && self.weighs_from_ancestor(finality.local_tip_height)
+            && finality
+                .finalized_height
+                .is_some_and(|fh| ancestor_real_height >= fh)
+        {
             return true;
         }
         branch_contains_finalized()
