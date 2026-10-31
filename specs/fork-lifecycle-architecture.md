@@ -313,6 +313,9 @@ cached chain block..tip, the best chain under a block taken over its cached tips
 slot, then lower hash, child by child). X3 weighs our side as the removed block plus its best
 cached continuation, whole. Below the height: unchanged (cached depth; X3 keeps the handler
 weighing).
+INC-I-292 (INC-I-289 N-1): no authority added or removed. run_reorg's success tail (Normal mode)
+runs the ExtendsTip drain on the new tip's cached children: the existing drain intake at a second
+call site; X3 still gates re-adoption of a removed block. Not gated: same above and below the height.
 ```
 
 ### Proposed (after M6)
@@ -352,7 +355,7 @@ Every milestone that touches consensus-adjacent code re-answers the three questi
 
 | Metric | Current (measured) | Proposed (after M6) | Radical minimum |
 |--------|---------|----------------|----------|
-| Distinct branch authorities | 13 (A1-A10, F1-F3) | 4 (fork_choice, converge, FinalityTracker, + SiblingFetch until REQ-FORK-019) | 3 |
+| Distinct branch authorities | 12 above the INC-I-288 height (census baseline 13: A1-A10, F1-F3) | 4 (fork_choice, converge, FinalityTracker, + SiblingFetch until REQ-FORK-019) | 3 |
 | Fork-choice planners | 2 + 1 dead wrapper | 1 | 1 |
 | Finality stores | 3 + 2 depths | 1 + 1 depth (D1 deleted in M1) | 1 |
 | Rollback doors / guard regimes | 4 primitives, 2 implicit regimes | 1 door, 4 named authorities | 2 primitives |

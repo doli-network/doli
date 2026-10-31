@@ -178,6 +178,10 @@ async fn lighter_sibling_readopts_at_once_cached_drain() {
 // P2 (Must) — Decision: a failure means the fix dropped the R-3b protection: a removed block is re-adopted outside fork choice while a heavier competing sibling is cached.
 #[tokio::test]
 async fn heavier_sibling_holds_and_adopts_sibling() {
+    // INC-I-289: below-gate pin — the recorded per-block weight only decides below the fork-choice gate; the above-gate twin is heavier_sibling_holds_and_adopts_sibling_above_gate_bond.
+    if !in_below_ah_child("heavier_sibling_holds_and_adopts_sibling") {
+        return;
+    }
     let mut r = rig().await;
     roll_back_to_f(&mut r).await;
     let (d1, c1) = (r.dead[0].clone(), r.canon[0].clone());
@@ -193,6 +197,25 @@ async fn heavier_sibling_holds_and_adopts_sibling() {
         w_s > w_t,
         "precondition: C1 adds {w_s} over F, D1's producer {w_t}"
     );
+    assert!(
+        at_fork_point(&r, &after),
+        "removed D1 re-adopted outside fork choice while a heavier sibling is cached: {after:?}"
+    );
+    gossip(&mut r, &c1).await;
+    assert_on(&r, &c1, F + 1, "the heavier sibling C1 becomes the tip").await;
+    assert!(!on_chain(&r, &d1), "D1 stays off the chain");
+}
+
+// P2 (Must) — Decision: a failure means above the fork-choice gate a removed block is re-adopted outside fork choice while a sibling with more bond support (its producer plus every non-own producer's gossip attestation, INC-I-289) is cached.
+#[tokio::test]
+async fn heavier_sibling_holds_and_adopts_sibling_above_gate_bond() {
+    let mut r = bond_rig().await;
+    roll_back_to_f(&mut r).await;
+    let (d1, c1) = (r.dead[0].clone(), r.canon[0].clone());
+    back_sibling(&mut r, &c1, F + 1).await;
+    assert_bond_heavier(&r, "heavier_sibling", &[&d1], &[&c1]).await;
+    gossip(&mut r, &d1).await;
+    let after = obs(&r).await;
     assert!(
         at_fork_point(&r, &after),
         "removed D1 re-adopted outside fork choice while a heavier sibling is cached: {after:?}"
