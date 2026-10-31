@@ -2,6 +2,7 @@
 //! branch's DISTINCT supporters from the common ancestor, each counted once.
 //! Fork choice and finality weigh in this one unit.
 
+use std::cell::Cell;
 use std::collections::HashSet;
 
 use crypto::Hash;
@@ -21,6 +22,9 @@ pub struct BlockSupport {
     pub backers: Vec<(SupporterId, u64)>,
     /// The attesters the block's bitfield names (support for `parent`).
     pub parent_attesters: Vec<(SupporterId, u64)>,
+    /// The block's slot and its parent's slot, when the caller knows the headers.
+    pub slot: Option<u32>,
+    pub parent_slot: Option<u32>,
 }
 
 impl BlockSupport {
@@ -29,6 +33,14 @@ impl BlockSupport {
         Self {
             backers: vec![(id, weight)],
             ..Self::default()
+        }
+    }
+
+    /// False only when both slots are known and apply's slot rule rejects the block.
+    pub fn advances_slot(&self) -> bool {
+        match (self.slot, self.parent_slot) {
+            (Some(s), Some(p)) => super::fork_choice::slot_advances(s, p),
+            _ => true,
         }
     }
 }
@@ -57,12 +69,23 @@ pub fn union_weight(
     Some(sum)
 }
 
-/// [`union_weight`] of a candidate branch: an unknown block adds nothing.
+/// [`union_weight`] of a candidate branch: an unknown block adds nothing, and a
+/// branch holding a block apply's slot rule rejects weighs 0 (it cannot be applied).
 pub fn candidate_union(
     blocks: &[Hash],
     get_support: impl Fn(&Hash) -> Option<BlockSupport>,
 ) -> u64 {
-    union_weight(blocks, |h| Some(get_support(h).unwrap_or_default())).unwrap_or(0)
+    let stuck = Cell::new(false);
+    let w = union_weight(blocks, |h| {
+        let s = get_support(h).unwrap_or_default();
+        stuck.set(stuck.get() || !s.advances_slot());
+        Some(s)
+    });
+    if stuck.get() {
+        0
+    } else {
+        w.unwrap_or(0)
+    }
 }
 
 impl ReorgHandler {

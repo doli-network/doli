@@ -311,6 +311,9 @@ handle per snapshot; a ranking reads them without copying (no authority added or
 The node builds the support view (gossip door, recovered-fork evaluation, wedge plan) and credits fork-only gossip
 attesters only when its local tip is at/above inc_i_288_fork_choice_activation_height (the
 doors' `weighs_from_ancestor` predicate); below it neither exists (no authority added or removed).
+A candidate branch (both doors and the cached-branch ranking) weighs 0 when one of its blocks has a
+known slot not above its known parent's slot (apply's `SlotNotAdvancing`, the comparator the count
+rule's `slot_weight` uses), so a branch apply would reject never wins a plan.
 INC-I-289 N-3: no authority added or removed. X3, the walk's seed rule (and the branch tip a
 lost walk marks rejected), the cached-child drain order, the eviction pin and the body-retry
 branch tip rank a cached branch in the same unit: the bond of the distinct supporters of each

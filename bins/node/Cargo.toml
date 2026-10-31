@@ -239,6 +239,11 @@ path = "tests/inc_i_281_mb_body_sites.rs"
 name = "inc_i_289_j2_support_view_gate"
 path = "tests/inc_i_289_j2_support_view_gate.rs"
 
+# INC-I-289 J-3 the bond union's slot-advance screen — own binary (log capture on the plan door).
+[[test]]
+name = "inc_i_289_j3_slot_rule"
+path = "tests/inc_i_289_j3_slot_rule.rs"
+
 # INC-I-236 M2 node intake (gossip pre-filter, snap anchor) and apply-entry locks.
 [[test]]
 name = "inc_i_236_m2_intake_node"

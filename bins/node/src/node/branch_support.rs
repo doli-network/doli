@@ -17,6 +17,7 @@ use super::*;
 /// The facts one block contributes to its support.
 struct Facts {
     parent: Hash,
+    slot: u32,
     producer: PublicKey,
     bitfield: Vec<u8>,
     aggregate: Vec<u8>,
@@ -27,6 +28,7 @@ impl Facts {
     fn of(b: &Block) -> Self {
         Self {
             parent: b.header.prev_hash,
+            slot: b.header.slot,
             producer: b.header.producer,
             bitfield: b.attestation_bitfield.clone(),
             aggregate: b.aggregate_bls_signature.clone(),
@@ -78,10 +80,20 @@ impl SupportView {
             .iter()
             .map(|pk| self.bond(pk))
             .collect();
+        let parent_slot = match self.cached.get(&facts.parent) {
+            Some(p) => Some(p.slot),
+            None => store
+                .get_header(&facts.parent)
+                .ok()
+                .flatten()
+                .map(|h| h.slot),
+        };
         Some(BlockSupport {
             parent: facts.parent,
             backers,
             parent_attesters,
+            slot: Some(facts.slot),
+            parent_slot,
         })
     }
 

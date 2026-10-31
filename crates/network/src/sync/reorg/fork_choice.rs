@@ -13,6 +13,11 @@ use crypto::Hash;
 
 use super::{bump, ReorgHandler, MAX_REORG_DEPTH};
 
+/// Apply's slot rule (`SlotNotAdvancing`): a block's slot must exceed its parent's.
+pub(crate) fn slot_advances(slot: u32, parent_slot: u32) -> bool {
+    slot > parent_slot
+}
+
 /// The finality view a caller hands to the fork-choice authority. Built by
 /// `SyncManager::fork_choice_finality` from `FinalityTracker.last_finalized` plus
 /// the local tip; replaces `ReorgHandler.last_finality_height` as the AUTHORITY
@@ -88,7 +93,7 @@ impl ReorgHandler {
         weight: u64,
     ) -> u64 {
         match self.block_slots.get(prev).copied().or(parent_slot) {
-            Some(p) if slot > p => weight,
+            Some(p) if slot_advances(slot, p) => weight,
             _ => 0,
         }
     }
