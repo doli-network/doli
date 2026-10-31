@@ -264,3 +264,10 @@ path = "tests/inc_i_236_m2_p3_arms.rs"
 [[test]]
 name = "inc_i_236_m2_restore_rpc"
 path = "tests/inc_i_236_m2_restore_rpc.rs"
+
+# INC-I-289 / AUDIT-P1-639-001 — own binary, same constraint as
+# m1_snap_install_peak_alloc: the file installs a counting `#[global_allocator]`
+# (per-BINARY) to measure the bytes one cached-branch ranking allocates.
+[[test]]
+name = "inc_i_289_j1_rank_bytes"
+path = "tests/inc_i_289_j1_rank_bytes.rs"
