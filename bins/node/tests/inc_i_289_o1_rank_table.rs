@@ -1,6 +1,7 @@
-//! INC-I-289 O-1 (AUDIT-P2-644-001): the bond rank of the cached branches. A block
-//! no bonded producer signs must not take the weight from an honest cached branch:
-//! an orphan whose parent is `Hash::ZERO` (its epoch has no table) weighs 0 alone.
+//! INC-I-289 O-1 (AUDIT-P2-644-001/-002): the bond rank of the cached branches. A
+//! block no bonded producer signs must not take the weight from an honest cached
+//! branch: neither an orphan whose parent is `Hash::ZERO` (its epoch has no table)
+//! nor a child with its parent's slot (it can never apply).
 //!
 // OUTPUT CONTRACT: fn Node::handle_new_block(D, peer) (ExtendsTip -> hold_removed_block
 //   -> branch_rank -> ranked_branches)
@@ -9,8 +10,10 @@
 //   O3: doli_fork_choice_table_missing_total (moves only on a refused reorg)
 //   PATHS: P1 re-delivery of a rollback-removed D with a cached bond-heavier rival
 //   INPUT PARTITIONS: rival R1..R3 (2 producers) vs D (1) | + ZERO-parent orphan by a
-//     no-bond key (epoch 0 table pruned) | neither (control)
-//   MATRIX: control x O1 O2 · orphan x O1 O2 -> o1a · orphan x O3 -> o1b
+//     no-bond key (epoch 0 table pruned) | + equal-slot child of R3 by a no-bond
+//     key | neither (control)
+//   MATRIX: control x O1 O2 · orphan x O1 O2 -> o1a · orphan x O3 -> o1b ·
+//     equal-slot x O1 O2 -> o1c
 //! covers: bins/node/src/node/epoch_tables.rs branch_rank.rs fork_cache.rs
 
 #[path = "support/block_sig.rs"]
@@ -29,6 +32,7 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 enum Junk {
     None,
     ZeroParentOrphan,
+    EqualSlotLeaf,
 }
 
 /// Tip P = ours[1] (F+2) after a depth-1 rollback removed D = ours[2]. Cached: the
@@ -58,6 +62,7 @@ async fn hold_rig(junk: Junk) -> (Rig, Block, Hash) {
     let junk = match junk {
         Junk::None => None,
         Junk::ZeroParentOrphan => Some(block(1, 1_000, Hash::ZERO, &nobody, &params)),
+        Junk::EqualSlotLeaf => Some(block(F + 6, 215, r3.hash(), &nobody, &params)),
     };
     if let Some(j) = junk {
         r.node.fork_block_cache.write().await.insert(j.hash(), j);
@@ -104,5 +109,17 @@ async fn o1b_ranking_does_not_count_a_refusal() {
         FORK_CHOICE_TABLE_MISSING.get() - m0,
         0,
         "O-1b: the ranking refused nothing, the refusal metric must not move"
+    );
+}
+
+// O-1c INC-I-289 — Decision: a failure means a no-bond key that signs one equal-slot child under an honest cached tip returns the honest branch to rank 0.
+#[tokio::test]
+async fn o1c_equal_slot_any_key_leaf_does_not_zero_the_honest_branch() {
+    let _s = SERIAL.lock().await;
+    let (mut r, d, p) = hold_rig(Junk::EqualSlotLeaf).await;
+    gossip(&mut r, &d).await;
+    assert!(
+        held(&r, &d, &p).await,
+        "O-1c: D held, tip stays P (R1..R3 keep their bond under the stuck leaf)"
     );
 }

@@ -50,7 +50,20 @@ fn bond_branches(
     cache: &HashMap<Hash, Block>,
     support: impl Fn(&Hash, &Hash) -> Option<network::BlockSupport>,
 ) -> HashMap<Hash, BranchInfo> {
-    let parents: HashSet<Hash> = cache.values().map(|b| b.header.prev_hash).collect();
+    // A child apply's slot rule rejects (slot not above its cached parent's) does not
+    // end its parent's chain: the parent stays a tip; the child's own path weighs 0.
+    let advances = |b: &Block| {
+        let parent_slot = cache.get(&b.header.prev_hash).map(|p| p.header.slot);
+        let s = network::BlockSupport {
+            slot: Some(b.header.slot),
+            parent_slot,
+            ..Default::default()
+        };
+        s.advances_slot()
+    };
+    let parents: HashSet<Hash> = (cache.values().filter(|b| advances(b)))
+        .map(|b| b.header.prev_hash)
+        .collect();
     let key = |h: &Hash| (cache[h].header.slot, *h);
     let mut best: HashMap<Hash, (u64, Hash, Vec<Hash>)> = HashMap::with_capacity(cache.len());
     for tip in cache.keys().filter(|h| !parents.contains(*h)) {

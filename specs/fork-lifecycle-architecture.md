@@ -327,7 +327,8 @@ INC-I-289 N-3: no authority added or removed. X3, the walk's seed rule (and the 
 lost walk marks rejected), the cached-child drain order, the eviction pin and the body-retry
 branch tip rank a cached branch in the same unit: the bond of the distinct supporters of each
 cached chain block..tip, the best chain under a block taken over its cached tips (ties: lower
-slot, then lower hash, child by child). X3 weighs our side as the removed block plus its best
+slot, then lower hash, child by child); a cached child whose slot is not above its cached parent's
+does not end the parent's chain (the parent stays a tip, the child's path weighs 0; INC-I-289 O-1). X3 weighs our side as the removed block plus its best
 cached continuation, whole. Below the height: unchanged (cached depth; X3 keeps the handler
 weighing).
 INC-I-292 (INC-I-289 N-1): no authority added or removed. run_reorg's success tail (Normal mode)
