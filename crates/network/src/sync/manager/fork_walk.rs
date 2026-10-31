@@ -66,6 +66,11 @@ impl SyncManager {
             .collect()
     }
 
+    /// (peer, reported best hash) of every peer with a known status.
+    pub fn peer_tips(&self) -> Vec<(PeerId, Hash)> {
+        self.peers.iter().map(|(p, s)| (*p, s.best_hash)).collect()
+    }
+
     /// Was this branch already walked and not adopted on this local tip?
     pub fn is_fork_branch_rejected(&self, branch_tip: Hash, local_tip: Hash) -> bool {
         self.fork

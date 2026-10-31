@@ -60,6 +60,7 @@ impl Node {
         }
 
         info!("Peer disconnected: {}", peer_id);
+        self.hand_off_attest_fetch(peer_id).await;
         self.sync_manager.write().await.remove_peer(&peer_id);
 
         // Rate-limited reconnect: only do an immediate dial if we haven't tried

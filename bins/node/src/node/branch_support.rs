@@ -179,15 +179,48 @@ impl Node {
             || self.fork_block_cache.read().await.contains_key(hash)
     }
 
-    /// INC-I-293 F1: the recorded relayer while it is in the peer table (a
-    /// disconnect removes it), else the highest connected peer. The tracker holds
-    /// only the hash, so the highest reported height stands for the block's.
+    /// INC-I-293 F1/103: the recorded relayer while it is in the peer table, else
+    /// `None`: no peer that showed the hash is connected, so no one is asked.
     pub(super) async fn attest_fetch_peer(&self, recorded: PeerId) -> Option<PeerId> {
         let sync = self.sync_manager.read().await;
-        if sync.has_peer(&recorded) {
-            return Some(recorded);
+        sync.has_peer(&recorded).then_some(recorded)
+    }
+
+    /// INC-I-293 103: a peer other than `skip` whose reported tip is off our chain
+    /// (and is `tip` when given); lowest id first, never chosen by height.
+    pub(super) fn branch_peer(
+        &self,
+        sm: &SyncManager,
+        skip: &PeerId,
+        tip: Option<Hash>,
+    ) -> Option<PeerId> {
+        (sm.peer_tips().into_iter())
+            .filter(|(p, h)| p != skip && tip.is_none_or(|t| t == *h) && !self.is_canonical(h))
+            .map(|(p, _)| p)
+            .min()
+    }
+
+    /// INC-I-293 103: at/above the gate, before `gone` leaves the peer table, its
+    /// tracker entries pass to a connected peer reporting the same off-chain tip
+    /// (it showed the relayer's branch). No such peer: the entries stay unfetched.
+    pub(super) async fn hand_off_attest_fetch(&mut self, gone: PeerId) {
+        let named = self.attest_fetch_tracker.values().any(|e| e.2 == gone);
+        if !named || !self.weighs_by_support().await {
+            return;
         }
-        sync.best_peer_for_recovery()
+        let heir = {
+            let sm = self.sync_manager.read().await;
+            let tip = sm.peer_tips().into_iter().find(|(p, _)| *p == gone);
+            tip.and_then(|(_, t)| self.branch_peer(&sm, &gone, Some(t)))
+        };
+        let Some(heir) = heir else { return };
+        for e in self
+            .attest_fetch_tracker
+            .values_mut()
+            .filter(|e| e.2 == gone)
+        {
+            e.2 = heir;
+        }
     }
 
     /// [`Self::support_view`] at/above the gate toward the branch holding `from`;
