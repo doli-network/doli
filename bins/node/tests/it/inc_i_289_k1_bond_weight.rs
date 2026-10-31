@@ -17,7 +17,7 @@
 //   INPUT PARTITIONS: K1A on A (6 blocks, 2 of 7 producers), B (2 blocks, bits
 //     5 of 7) arrives -> B; K1A2 on B, A arrives -> B kept, A6 never applied;
 //     K1B below AH, on B, A arrives -> A6 (count rule); K1C one-block siblings
-//     1 vs 1, higher-hash and lower-hash -> today's tie outcome; K1D on S1,S2
+//     1 vs 1 (fixed keys), higher-hash and lower-hash -> today's tie outcome; K1D on S1,S2
 //     (2 of 3), E1 on D with bits D by 3 of 3 (E1 hashes above S2) -> E1
 //   MATRIX: K1A O1,O3 · K1A2 O1-O3 · K1B O1,O3 · K1C O1,O3 · K1D O1,O3
 //   covers: doors fork_choice wedge_escape fork_recovery fork_cache fork_walk block_handling block_lifecycle
@@ -419,11 +419,17 @@ async fn k1b_inc_i_289_below_ah_block_count_still_wins() {
     );
 }
 
+/// Fixed keys for K1C. With random keys D hashes below (or above) every
+/// candidate sibling about 1 run in 67, and the search below finds none.
+fn k1c_keys() -> Vec<KeyPair> {
+    (1..=3u8).map(|i| KeyPair::from_seed([i; 32])).collect()
+}
+
 // K1C INC-I-289 — Decision: a failure means equal support (one producer each, no attestations) no longer falls to the existing tie rule.
 #[tokio::test]
 async fn k1c_inc_i_289_equal_support_uses_the_tie_rule() {
     for lower in [false, true] {
-        let mut r = c::rig(&[210]).await;
+        let mut r = c::rig_with_keys(k1c_keys(), &[210]).await;
         let d = r.ours[0].clone();
         let p = r.node.params.clone();
         let sib = (211..411u32)
@@ -432,7 +438,8 @@ async fn k1c_inc_i_289_equal_support_uses_the_tie_rule() {
                 s.header.producer != d.header.producer
                     && ((s.hash().as_bytes() < d.hash().as_bytes()) == lower)
             })
-            .expect("fixture: a sibling by another producer");
+            .expect("fixture: a sibling by another producer (fixed keys: pick another seed)");
+        eprintln!("[K1C] lower={lower}: sibling at slot {}", sib.header.slot);
         give(&mut r.node, &sib).await;
         for _ in 0..3 {
             r.node

@@ -80,8 +80,14 @@ pub fn chain_on(r: &Rig, prev: Hash, height: u64, slots: &[u32]) -> Vec<Block> {
 
 /// Base h=1..=F, then `our_slots` applied on F (`Node::new_for_test` sync config).
 pub async fn rig(our_slots: &[u32]) -> Rig {
+    rig_with_keys((0..3).map(|_| KeyPair::generate()).collect(), our_slots).await
+}
+
+/// `rig` with the caller's 3 producer keys. Test params have genesis_time 0, so
+/// every block hash in the rig is a function of `keys` and the slots alone.
+pub async fn rig_with_keys(keys: Vec<KeyPair>, our_slots: &[u32]) -> Rig {
+    assert_eq!(keys.len(), 3, "fixture: the rig has 3 producers");
     let tmp = TempDir::new().unwrap();
-    let keys: Vec<KeyPair> = (0..3).map(|_| KeyPair::generate()).collect();
     let mut node = Node::new_for_test(tmp.path().to_path_buf(), keys.clone())
         .await
         .expect("Node::new_for_test");
