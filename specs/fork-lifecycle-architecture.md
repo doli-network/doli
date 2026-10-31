@@ -324,6 +324,20 @@ weighing).
 INC-I-292 (INC-I-289 N-1): no authority added or removed. run_reorg's success tail (Normal mode)
 runs the ExtendsTip drain on the new tip's cached children: the existing drain intake at a second
 call site; X3 still gates re-adoption of a removed block. Not gated: same above and below the height.
+INC-I-289 L-1/L-2 (AUDIT-P2-639-004): no authority added or removed; a changed INPUT of A1, A3
+and X3. The support view takes its bonds (selection_weight_at at the epoch start), decode list
+(producer_list) and BLS keys (the applied set) from ONE epoch table for both branches: the table
+of the epoch that holds the common ancestor of the candidate and the local chain (the ranking:
+the lowest point where a cached branch meets the local chain, else the tip's epoch). Tables come
+from a local store in cf_meta (`epoch_table:` ++ epoch start, not in the state root): written
+after every boundary block (and every epoch-0 block) commits, below the height too; pruned to
+every epoch within MAX_REORG_DEPTH of the tip plus one epoch, at least 4 (4 mainnet, 29 testnet,
+251 devnet); deleted when its boundary block is rolled back; a table whose boundary hash is not
+the stored canonical block is not used; a snap install keeps only the anchor epoch's table. Bits
+encoded against a list that changed after the ancestor weigh 0 on both sides. No table for the
+ancestor's epoch (and it is not the tip's epoch): the door refuses the reorg, counts
+doli_fork_choice_table_missing_total, logs one FORK_TABLE line per ancestor hash; the ranking
+weighs every branch 0 (tie rule). Never the tip table. Below the height: unchanged.
 ```
 
 ### Proposed (after M6)

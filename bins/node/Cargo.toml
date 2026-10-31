@@ -290,3 +290,9 @@ path = "tests/inc_i_289_k2_view_bytes_below_gate.rs"
 [[test]]
 name = "inc_i_289_l2_epoch_table_store"
 path = "tests/inc_i_289_l2_epoch_table_store.rs"
+
+# INC-I-289 L-1 the doors weigh with the ancestor-epoch table — own binary: two
+# devnet nodes on competing branches across an epoch boundary.
+[[test]]
+name = "inc_i_289_l1_ancestor_table"
+path = "tests/inc_i_289_l1_ancestor_table.rs"

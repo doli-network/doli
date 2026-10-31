@@ -167,25 +167,17 @@ impl Node {
             return None;
         }
         let anchor = self.attach_point(from).await?;
-        self.ancestor_table(anchor).await?;
-        Some(self.support_view().await)
+        let table = self.ancestor_table(anchor).await?;
+        Some(self.support_view(table).await)
     }
 
     /// Snapshot the inputs of [`SupportView::support`] (each lock taken and dropped).
-    pub(super) async fn support_view(&self) -> SupportView {
+    /// Bonds, decode list and BLS keys come from `table` (INC-I-289 L-1: the epoch
+    /// of the common ancestor, one table for both branches).
+    pub(super) async fn support_view(&self, table: storage::EpochTable) -> SupportView {
         crate::metrics::SUPPORT_VIEWS_BUILT.inc();
-        let height = self.chain_state.read().await.best_height;
-        let audit = self
-            .config
-            .network
-            .params()
-            .security_audit_activation_height;
-        let producers = self.producer_set.read().await.clone();
-        let bonds = producers
-            .all_producers()
-            .iter()
-            .map(|p| (p.public_key, p.selection_weight_at(height, audit)))
-            .collect();
+        let producers = table.producer_set().unwrap_or_default();
+        let bonds = table.bonds.into_iter().collect();
         // The node's own attestation is its tip echoed back, not network evidence.
         let own = self.producer_key.as_ref().map(|k| *k.public_key());
         let mut gossip: HashMap<Hash, Vec<PublicKey>> = HashMap::new();
@@ -201,7 +193,7 @@ impl Node {
             .collect();
         SupportView {
             ah178: self.inc_i_178_attestation_bls_activation_height,
-            base: self.epoch_state.producer_list.clone(),
+            base: table.producer_list,
             producers,
             bonds,
             gossip,

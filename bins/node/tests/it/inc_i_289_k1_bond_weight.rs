@@ -123,7 +123,8 @@ pub(super) fn valid_agg(parent: &Hash, signers: &[&BlsKeyPair]) -> Vec<u8> {
 pub(super) async fn register_bls_all(node: &mut Node, keys: &[KeyPair]) -> Vec<BlsKeyPair> {
     node.inc_i_178_attestation_bls_activation_height = 0;
     let mut ps = node.producer_set.write().await;
-    keys.iter()
+    let bls: Vec<BlsKeyPair> = keys
+        .iter()
         .map(|k| {
             let kb = BlsKeyPair::generate();
             ps.get_by_pubkey_mut(k.public_key())
@@ -131,7 +132,24 @@ pub(super) async fn register_bls_all(node: &mut Node, keys: &[KeyPair]) -> Vec<B
                 .bls_pubkey = kb.public_key().as_bytes().to_vec();
             kb
         })
-        .collect()
+        .collect();
+    // On-chain from genesis: every kept epoch table (INC-I-289 L-1) carries them too.
+    for start in node.state_db.epoch_table_starts() {
+        let mut t = node
+            .state_db
+            .get_epoch_table(start)
+            .expect("fixture: table");
+        let mut set = t.producer_set().expect("fixture: table set");
+        for (k, kb) in keys.iter().zip(&bls) {
+            let p = set
+                .get_by_pubkey_mut(k.public_key())
+                .expect("fixture: member");
+            p.bls_pubkey = kb.public_key().as_bytes().to_vec();
+        }
+        t.producers = bincode::serialize(&set).expect("fixture: set bytes");
+        node.state_db.put_epoch_table(&t);
+    }
+    bls
 }
 
 /// The node's attestation universe at `height` (`[producer_list | active \ list sorted]`).

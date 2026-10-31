@@ -10,7 +10,7 @@ use crate::producer::ProducerSet;
 const PREFIX: &[u8] = b"epoch_table:";
 
 /// The weighing inputs of one epoch, frozen when its opening boundary applied.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EpochTable {
     pub epoch_start: u64,
     /// The opening boundary block; `None` when the node does not hold it.

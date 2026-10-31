@@ -83,6 +83,34 @@ impl Node {
         None
     }
 
+    /// The ranking's table: the epoch of the lowest point where a cached branch
+    /// meets the local chain (the tip's when none does). Missing: an empty table,
+    /// so every branch weighs 0 and the tie rule orders them.
+    pub(super) async fn rank_table(&self) -> EpochTable {
+        let roots: Vec<Hash> = {
+            let cache = self.fork_block_cache.read().await;
+            (cache.values().map(|b| b.header.prev_hash))
+                .filter(|p| !cache.contains_key(p))
+                .collect()
+        };
+        let mut anchor: Option<(u64, Hash)> = None;
+        for root in roots {
+            if let Some(a) = self.attach_point(root).await {
+                if anchor.is_none_or(|(h, _)| a.0 < h) {
+                    anchor = Some(a);
+                }
+            }
+        }
+        let anchor = match anchor {
+            Some(a) => a,
+            None => {
+                let cs = self.chain_state.read().await;
+                (cs.best_height, cs.best_hash)
+            }
+        };
+        self.ancestor_table(anchor).await.unwrap_or_default()
+    }
+
     async fn live_epoch_table(&self, epoch_start: u64) -> EpochTable {
         let audit = (self.config.network.params()).security_audit_activation_height;
         let set = self.producer_set.read().await;

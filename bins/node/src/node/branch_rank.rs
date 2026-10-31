@@ -70,7 +70,7 @@ impl Node {
             sync.reorg_handler().weighs_from_ancestor(tip_h)
         };
         if above {
-            let view = Box::new(self.support_view().await);
+            let view = Box::new(self.support_view(self.rank_table().await).await);
             BranchRank::Bond(view, Arc::clone(&self.block_store))
         } else {
             BranchRank::Depth
