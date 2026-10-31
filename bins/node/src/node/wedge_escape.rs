@@ -83,7 +83,52 @@ impl Node {
     /// Every block is eligibility-gated (FIX A) BEFORE it can enter the reorg
     /// graph, and only eligibility-validated retained blocks (self.wedge_retained_tips,
     /// FIX B) may seed a descendant reroute — see the module header.
+    ///
+    /// INC-I-293 F3: at/above the INC-I-288 gate, a sibling that stays retained
+    /// off the chain hands its cached children to this same door, depth-first,
+    /// so a root that arrives last is weighed with its branch.
     pub(crate) async fn retain_sibling_and_try_escape(&mut self, block: Block) -> Result<()> {
+        let root = block.hash();
+        let walk = self.weighs_by_support().await;
+        self.retain_sibling_once(block).await?;
+        if walk && self.wedge_retained_tips.contains(&root) && !self.is_canonical_hash(&root) {
+            self.weigh_cached_children(root).await?;
+        }
+        Ok(())
+    }
+
+    /// At most `WEDGE_RETAINED_CAP` door calls; stops once the tip moves (a landed
+    /// reorg drains the rest, INC-I-292).
+    async fn weigh_cached_children(&mut self, root: Hash) -> Result<()> {
+        let tip = self.chain_state.read().await.best_hash;
+        let mut stack = self.cached_children(root).await;
+        let mut calls = 0;
+        while let Some(child) = stack.pop() {
+            if calls == WEDGE_RETAINED_CAP || self.chain_state.read().await.best_hash != tip {
+                break;
+            }
+            calls += 1;
+            let hash = child.hash();
+            self.retain_sibling_once(child).await?;
+            if self.wedge_retained_tips.contains(&hash) && !self.is_canonical_hash(&hash) {
+                stack.extend(self.cached_children(hash).await);
+            }
+        }
+        Ok(())
+    }
+
+    /// Cached children of `parent`, ordered so `pop` yields the lowest slot first.
+    async fn cached_children(&self, parent: Hash) -> Vec<Block> {
+        let mut kids: Vec<Block> = (self.fork_block_cache.read().await)
+            .values()
+            .filter(|b| b.header.prev_hash == parent)
+            .cloned()
+            .collect();
+        kids.sort_by_key(|b| std::cmp::Reverse((b.header.slot, b.hash())));
+        kids
+    }
+
+    async fn retain_sibling_once(&mut self, block: Block) -> Result<()> {
         let fork_tip_hash = block.hash();
         let local_tip = self.chain_state.read().await.best_hash;
         if (self.sync_manager.read().await).is_fork_branch_rejected(fork_tip_hash, local_tip) {
