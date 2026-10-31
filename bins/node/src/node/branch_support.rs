@@ -15,7 +15,6 @@ use super::attestation::{commit, keys};
 use super::*;
 
 /// The facts one block contributes to its support.
-#[derive(Clone)]
 struct Facts {
     parent: Hash,
     producer: PublicKey,
@@ -43,7 +42,8 @@ pub(super) struct SupportView {
     producers: ProducerSet,
     bonds: HashMap<PublicKey, u64>,
     gossip: HashMap<Hash, Vec<PublicKey>>,
-    cached: HashMap<Hash, Facts>,
+    /// Shared, so a support call never copies a bitfield or aggregate.
+    cached: HashMap<Hash, Arc<Facts>>,
     /// Per block: the attesters its verified bits name (empty when unverified).
     verified: Mutex<HashMap<Hash, Vec<PublicKey>>>,
 }
@@ -55,15 +55,19 @@ impl SupportView {
 
     /// Adds a block the cache snapshot does not hold (a body taken out of the cache).
     pub(super) fn include(&mut self, block: &Block) {
-        self.cached.insert(block.hash(), Facts::of(block));
+        self.cached.insert(block.hash(), Arc::new(Facts::of(block)));
+    }
+
+    fn facts(&self, store: &BlockStore, hash: &Hash) -> Option<Arc<Facts>> {
+        match self.cached.get(hash) {
+            Some(f) => Some(Arc::clone(f)),
+            None => Some(Arc::new(Facts::of(&store.get_block(hash).ok().flatten()?))),
+        }
     }
 
     /// The block's support; `None` when neither the store nor the cache holds it.
     pub(super) fn support(&self, store: &BlockStore, hash: &Hash) -> Option<BlockSupport> {
-        let facts = match self.cached.get(hash) {
-            Some(f) => f.clone(),
-            None => Facts::of(&store.get_block(hash).ok().flatten()?),
-        };
+        let facts = self.facts(store, hash)?;
         let gossip = self.gossip.get(hash).into_iter().flatten();
         let backers = std::iter::once(&facts.producer)
             .chain(gossip)
@@ -161,7 +165,7 @@ impl Node {
         }
         let cached = (self.fork_block_cache.read().await)
             .iter()
-            .map(|(h, b)| (*h, Facts::of(b)))
+            .map(|(h, b)| (*h, Arc::new(Facts::of(b))))
             .collect();
         SupportView {
             ah178: self.inc_i_178_attestation_bls_activation_height,
@@ -172,5 +176,56 @@ impl Node {
             cached,
             verified: Mutex::new(HashMap::new()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // OUTPUT CONTRACT: SupportView::facts(store, hash) -> Option<Arc<Facts>>, the
+    //   handle support() reads. O1 two calls for one cached hash share one bitfield
+    //   allocation (no per-call copy); O2 the handle holds the block's bitfield.
+    //   PATHS: cached hash. PARTITIONS: a 64 KiB bitfield (the per-call copy the
+    //   ranking repeats once per path offset).
+    // P1b — Decision: a failure means the ranking copies each cached bitfield per call.
+    #[test]
+    fn p1b_support_facts_are_shared_not_cloned() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = BlockStore::open(tmp.path()).unwrap();
+        let header = doli_core::BlockHeader {
+            version: 1,
+            prev_hash: Hash::ZERO,
+            merkle_root: Hash::ZERO,
+            presence_root: Hash::ZERO,
+            genesis_hash: Hash::ZERO,
+            timestamp: 10,
+            slot: 1,
+            producer: crypto::PublicKey::from_bytes([1; 32]),
+            vdf_output: vdf::VdfOutput { value: vec![] },
+            vdf_proof: vdf::VdfProof::empty(),
+            missed_producers: Vec::new(),
+            data_root: Hash::ZERO,
+            fork_id: Hash::ZERO,
+        };
+        let mut b = Block::new(header, vec![]);
+        b.attestation_bitfield = vec![0u8; 64 * 1024];
+        let mut view = SupportView {
+            ah178: u64::MAX,
+            base: Vec::new(),
+            producers: ProducerSet::new(),
+            bonds: HashMap::new(),
+            gossip: HashMap::new(),
+            cached: HashMap::new(),
+            verified: Mutex::new(HashMap::new()),
+        };
+        view.include(&b);
+        let (a, c) = (view.facts(&store, &b.hash()), view.facts(&store, &b.hash()));
+        let (a, c) = (a.expect("cached facts"), c.expect("cached facts"));
+        assert!(
+            std::ptr::eq(a.bitfield.as_ptr(), c.bitfield.as_ptr()),
+            "P1b: support() copied the bitfield on a repeated call"
+        );
+        assert_eq!(a.bitfield, b.attestation_bitfield, "P1b: wrong facts");
     }
 }

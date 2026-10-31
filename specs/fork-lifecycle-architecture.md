@@ -306,6 +306,8 @@ node's own attestation counts only as a bit in a block on the branch. Not counte
 count, the first block's bits. An unsupported own block keeps our tip; an unknown candidate
 block adds nothing; the comparison (strictly heavier; the gossip door's tie switch) is
 unchanged. Below the height: unchanged.
+The support view shares each cached block's attestation facts (bitfield, aggregate) behind one
+handle per snapshot; a ranking reads them without copying (no authority added or removed).
 INC-I-289 N-3: no authority added or removed. X3, the walk's seed rule (and the branch tip a
 lost walk marks rejected), the cached-child drain order, the eviction pin and the body-retry
 branch tip rank a cached branch in the same unit: the bond of the distinct supporters of each
