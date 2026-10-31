@@ -20,7 +20,7 @@ impl Node {
         let bpe = self.config.network.blocks_per_reward_epoch();
         let at_boundary = doli_core::EpochSnapshot::is_epoch_boundary_with(height, bpe);
         if !(at_boundary || height < bpe) {
-            return;
+            return self.seed_tip_epoch_table().await;
         }
         let mut table = self.live_epoch_table(height - height % bpe).await;
         table.boundary_hash = at_boundary.then_some(hash);
@@ -29,6 +29,23 @@ impl Node {
         let keep_from = (height + 1).saturating_sub(window);
         self.state_db
             .prune_epoch_tables(keep_from, MIN_EPOCH_TABLES);
+    }
+
+    /// A tip epoch without a stored table (first start of this build, a boundary put
+    /// lost to a crash) gets the live one, keyed as a capture keys it.
+    pub(super) async fn seed_tip_epoch_table(&self) {
+        let tip = self.chain_state.read().await.best_height;
+        let start = tip - tip % self.config.network.blocks_per_reward_epoch();
+        if self.state_db.get_epoch_table(start).is_some() {
+            return;
+        }
+        let mut table = self.live_epoch_table(start).await;
+        table.boundary_hash = match start {
+            0 => None,
+            s => self.block_store.get_hash_by_height(s).ok().flatten(),
+        };
+        self.state_db.put_epoch_table(&table);
+        info!("EPOCH_TABLE: seeded the live table of tip epoch {start} (h={tip})");
     }
 
     /// Seed the store from an installed snapshot: only the anchor's epoch.

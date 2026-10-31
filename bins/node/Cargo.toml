@@ -314,3 +314,8 @@ path = "tests/inc_i_289_m2_finality_lock_exit.rs"
 [[test]]
 name = "inc_i_289_n1_snap_descent_red"
 path = "tests/inc_i_289_n1_snap_descent_red.rs"
+
+# INC-I-289 N-4 epoch-table bootstrap (AUDIT-P1-644-001) — own binary: restart rigs.
+[[test]]
+name = "inc_i_289_n4_table_bootstrap"
+path = "tests/inc_i_289_n4_table_bootstrap.rs"

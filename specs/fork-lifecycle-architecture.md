@@ -342,7 +342,9 @@ from a local store in cf_meta (`epoch_table:` ++ epoch start, not in the state r
 after every boundary block (and every epoch-0 block) commits, below the height too; pruned to
 every epoch within MAX_REORG_DEPTH of the tip plus one epoch, at least 4 (4 mainnet, 29 testnet,
 251 devnet); deleted when its boundary block is rolled back; a table whose boundary hash is not
-the stored canonical block is not used; a snap install keeps only the anchor epoch's table. Bits
+the stored canonical block is not used; a snap install keeps only the anchor epoch's table; at
+node start and after every non-boundary block, a tip epoch with no stored table gets the live
+table, keyed by the canonical block at the epoch start (first start of a build, lost put). Bits
 encoded against a list that changed after the ancestor weigh 0 on both sides. No table for the
 ancestor's epoch (and it is not the tip's epoch): the door refuses the reorg, counts
 doli_fork_choice_table_missing_total, logs one FORK_TABLE line per ancestor hash; the ranking

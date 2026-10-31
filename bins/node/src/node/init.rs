@@ -1232,6 +1232,7 @@ impl Node {
             .set_utxo_chunk_sink(Arc::new(super::StateDbChunkSink::new(
                 node.state_db.clone(),
             )));
+        node.seed_tip_epoch_table().await;
 
         Ok(node)
     }
