@@ -357,3 +357,9 @@ path = "tests/inc_i_293_r1_stale_walk.rs"
 [[test]]
 name = "inc_i_293_r2_branch_peer"
 path = "tests/inc_i_293_r2_branch_peer.rs"
+
+# INC-I-293 R-2 root priority red (run 648, SEC-FIXVERIFY-647-101) — own binary:
+# real loopback libp2p services and a below-AH child re-exec.
+[[test]]
+name = "inc_i_293_r2_root_priority"
+path = "tests/inc_i_293_r2_root_priority.rs"
