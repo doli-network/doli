@@ -338,3 +338,9 @@ harness = true
 [[test]]
 name = "inc_i_293_f3_root_last"
 path = "tests/inc_i_293_f3_root_last.rs"
+
+# INC-I-293 F1 attest-fetch red (run 647 Q-2) — own binary: real loopback
+# libp2p services and a below-AH child re-exec.
+[[test]]
+name = "inc_i_293_f1_attest_fetch"
+path = "tests/inc_i_293_f1_attest_fetch.rs"
