@@ -269,8 +269,9 @@ impl Node {
                 // intermediate body was evicted from the fork cache. A would-be-
                 // winning branch must NOT be silently dropped — if the tip did not
                 // actually move to the sibling, signal the periodic peer-download
-                // recovery so it can complete the escape.
-                if self.chain_state.read().await.best_hash != fork_tip_hash {
+                // recovery so it can complete the escape. Landed = on the chain:
+                // the reorg may drain cached children past it (INC-I-292).
+                if !self.is_canonical_hash(&fork_tip_hash) {
                     record_wedge_escape_outcome(WedgeOutcome::ReorgDidNotLand.reason());
                     warn!(
                         "[WEDGE_ESCAPE] Heavier sibling {:.8} did not land (missing body) — signaling fork recovery (INC-I-143)",

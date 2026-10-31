@@ -202,7 +202,8 @@ impl Node {
             return ForceReorgOutcome::ReorgDidNotLand;
         }
 
-        if self.chain_state.read().await.best_hash == target {
+        // On the chain, not the tip: the reorg drains cached children of the target (INC-I-292).
+        if self.is_canonical_hash(&target) {
             ForceReorgOutcome::Executed
         } else {
             warn!(
@@ -214,7 +215,7 @@ impl Node {
     }
 
     /// True when `hash` is on our own canonical chain (tip or ancestor).
-    fn is_canonical_hash(&self, hash: &Hash) -> bool {
+    pub(super) fn is_canonical_hash(&self, hash: &Hash) -> bool {
         let Some(height) = self.block_store.get_height_by_hash(hash).ok().flatten() else {
             return false;
         };

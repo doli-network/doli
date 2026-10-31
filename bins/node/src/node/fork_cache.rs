@@ -111,8 +111,19 @@ impl Node {
         true
     }
 
+    /// The mode for a block that extends the tip: Light in the post-snap and
+    /// floor-fallback windows (INC-I-010, INC-I-190), else Full.
+    pub(super) fn tip_apply_mode(&self) -> ValidationMode {
+        if self.snap_sync_height.is_some() || self.floor_fallback_window {
+            ValidationMode::Light
+        } else {
+            ValidationMode::Full
+        }
+    }
+
     /// Apply cached blocks that chain on the tip, in `drain_order`. A child
-    /// that fails to apply is dropped and its next sibling is tried.
+    /// that fails to apply is dropped and its next sibling is tried. Runs after
+    /// an ExtendsTip apply and after a reorg lands (INC-I-292).
     pub(super) async fn drain_cached_children(&mut self, mode: ValidationMode) {
         let mut attempts = 0u32;
         'tip: while attempts < MAX_DRAIN {

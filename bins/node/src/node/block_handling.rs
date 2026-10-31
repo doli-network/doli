@@ -399,11 +399,7 @@ impl Node {
         // than that divergence needs, but narrowing it to eligibility-only re-arms the
         // Full-only strict EpochReward check (validation_checks.rs:1033), which decodes
         // the bitfield against the SAME divergent list — valid epoch blocks would bail.
-        let mode = if self.snap_sync_height.is_some() || self.floor_fallback_window {
-            ValidationMode::Light
-        } else {
-            ValidationMode::Full
-        };
+        let mode = self.tip_apply_mode();
         if let Err(e) = self.apply_peer_body(block, mode).await {
             let err_str = e.to_string();
             warn!(
@@ -1078,6 +1074,13 @@ impl Node {
         let new_tip_height = self.chain_state.read().await.best_height;
 
         info!("Reorg complete: now at height {}", new_tip_height);
+
+        // INC-I-292: the landed tip's cached children chain on it now, as after an
+        // ExtendsTip apply; the drain keeps the INC-I-281 hold. Restore mode must
+        // end on its prior tip, so it does not drain.
+        if mode == ReorgMode::Normal {
+            self.drain_cached_children(self.tip_apply_mode()).await;
+        }
 
         Ok(None)
     }
