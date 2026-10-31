@@ -325,3 +325,10 @@ path = "tests/inc_i_289_n4_table_bootstrap.rs"
 [[test]]
 name = "inc_i_289_o1_rank_table"
 path = "tests/inc_i_289_o1_rank_table.rs"
+
+# INC-I-293 F2 orphan walk (run 647 Q-2) — own binary: the below-AH cell re-execs
+# itself with the INC-I-288 AH env override.
+[[test]]
+name = "inc_i_293_f2_orphan_walk"
+path = "tests/inc_i_293_f2_orphan_walk.rs"
+harness = true
