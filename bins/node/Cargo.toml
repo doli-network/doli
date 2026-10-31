@@ -350,3 +350,10 @@ path = "tests/inc_i_293_f1_attest_fetch.rs"
 [[test]]
 name = "inc_i_293_r1_stale_walk"
 path = "tests/inc_i_293_r1_stale_walk.rs"
+
+# INC-I-293 R-2 (run 648, finding 103) — own binary: the orphan walk and the
+# attestation refetch ask a peer on the heavier branch; real loopback libp2p
+# services and below-AH child re-execs.
+[[test]]
+name = "inc_i_293_r2_branch_peer"
+path = "tests/inc_i_293_r2_branch_peer.rs"
