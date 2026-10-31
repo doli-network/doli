@@ -24,14 +24,20 @@
 //   O1: chain_state best_hash / best_height, canonical entry, persisted tip, sync tip
 //   O2: the fork walk: is_fork_recovery_active() after the first orphan and the
 //     GetBlockByHash requests next_request() hands to the peer (R4's parent R3 first)
-//   O3: fork_block_cache holds R4..R6; the shallow-rollback counters (reported)
+//   O3: fork_block_cache holds R4..R6 (or the catch-up orphan X2); the shallow-rollback
+//     counters (reported)
+//   O4: sync network_tip_slot, raised by the orphan bookkeeping beside ORPHAN_CHASE
 //   PATHS: P1 at/above the INC-I-288 AH, descendants only (red); P2 = P1 + the walk
 //     started by hand at the first orphan (control: walk + fork choice + cached-child
 //     drain reach R6 in the bound); P3 = P1 + the roots R1..R3 gossiped first
-//     (control: the existing doors); P4 below the AH (child re-exec), descendants only (pin)
+//     (control: the existing doors); P4 below the AH (child re-exec), descendants only (pin);
+//     P5 at/above the AH, a same-chain catch-up orphan X2 (parent X1 unknown) at slot
+//     best_slot + MAX_REORG_DEPTH + 1 (red at 05126061); P6 = P5 at slot
+//     best_slot + MAX_REORG_DEPTH exactly (boundary control)
 //   INPUT PARTITIONS: D = 4 blocks + 1 own block per slot, all by keys[0] (support 1);
-//     R = 6 blocks by keys[1], keys[2] (support 2); fixed-seed keys
+//     R = 6 blocks by keys[1], keys[2] (support 2); X1, X2 on D4; fixed-seed keys
 //   MATRIX: P1 x O1 O2 -> f2a · P2 x O1 O2 -> f2c1 · P3 x O1 -> f2c2 · P4 x O1 O2 O3 -> f2d
+//     · P5 x O1 O2 O3 O4 -> f2e · P6 x O2 O3 -> f2f
 //   covers: block_handling fork_walk fork_recovery periodic recovery block_lifecycle
 
 #[path = "support/block_sig.rs"]
@@ -318,4 +324,72 @@ async fn f2d_below_gate_orphan_starts_no_walk_today() {
             "below AH pin: R4..R6 cached"
         );
     }
+}
+
+struct CatchUp {
+    walk_active: bool,
+    /// The first request the sync manager hands out after the orphan.
+    first_request: Option<SyncRequest>,
+    x1: Hash,
+}
+
+/// A same-chain catch-up: X1 on our tip D4 (never sent), X2 on X1 at
+/// `best_slot + gap` sent by the peer as gossip.
+async fn catch_up_orphan(gap: u32) -> (Run, CatchUp, Block) {
+    let mut run = arrange().await;
+    let (tip, height, best_slot) = {
+        let cs = run.r.node.chain_state.read().await;
+        (cs.best_hash, cs.best_height, cs.best_slot)
+    };
+    let x = chain_on(&run.r, tip, height + 1, &[best_slot + 1, best_slot + gap]);
+    from_peer(&mut run, &x[1]).await;
+    let walk_active = (run.r.node.sync_manager.read().await).is_fork_recovery_active();
+    let first_request = (run.r.node.sync_manager.write().await)
+        .next_request()
+        .map(|(_, q)| q);
+    let obs = CatchUp {
+        walk_active,
+        first_request,
+        x1: x[0].hash(),
+    };
+    (run, obs, x[1].clone())
+}
+
+fn by_hash(q: &Option<SyncRequest>, want: &Hash) -> bool {
+    matches!(q, Some(SyncRequest::GetBlockByHash { hash }) if hash == want)
+}
+
+// F2 INC-I-293 catch-up — Decision: a failure means a node behind on the same chain starts a by-hash walk from a tip gossip orphan more than MAX_REORG_DEPTH slots ahead, which pre-empts header-first sync for up to 1000 ticks and is then discarded (SEC-FIXVERIFY-647-001).
+#[tokio::test]
+async fn f2e_catch_up_orphan_beyond_reorg_depth_starts_no_walk() {
+    let gap = network::MAX_REORG_DEPTH as u32 + 1;
+    let (run, obs, x2) = catch_up_orphan(gap).await;
+    assert!(
+        !obs.walk_active && !by_hash(&obs.first_request, &obs.x1),
+        "F2 catch-up: an orphan {gap} slots above our tip (> MAX_REORG_DEPTH) started a \
+         by-hash walk: walk active {}, first request {:?}",
+        obs.walk_active,
+        obs.first_request
+    );
+    assert!(cached(&run.r, &x2.hash()).await, "F2 catch-up: X2 cached");
+    let tip_slot = (run.r.node.sync_manager.read().await).network_tip_slot();
+    assert_eq!(
+        tip_slot, x2.header.slot,
+        "F2 catch-up: the orphan bookkeeping beside ORPHAN_CHASE still ran"
+    );
+}
+
+// F2 INC-I-293 boundary control — Decision: a failure means an orphan exactly MAX_REORG_DEPTH slots above our tip no longer starts the walk, so the depth screen cuts F2 coverage inside the window.
+#[tokio::test]
+async fn f2f_orphan_within_reorg_depth_starts_the_walk() {
+    let gap = network::MAX_REORG_DEPTH as u32;
+    let (run, obs, x2) = catch_up_orphan(gap).await;
+    assert!(
+        obs.walk_active && by_hash(&obs.first_request, &obs.x1),
+        "F2 boundary: an orphan {gap} slots above our tip did not start the by-hash walk: \
+         walk active {}, first request {:?}",
+        obs.walk_active,
+        obs.first_request
+    );
+    assert!(cached(&run.r, &x2.hash()).await, "F2 boundary: X2 cached");
 }
