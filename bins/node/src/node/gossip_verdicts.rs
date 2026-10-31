@@ -103,7 +103,7 @@ impl Node {
             crate::metrics::FORK_CREDITS.inc();
             self.attest_seen
                 .fork_credit
-                .credit(a.block_hash, a.attester);
+                .credit(a.block_hash, a.attester, a.slot);
         }
     }
 

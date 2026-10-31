@@ -305,7 +305,9 @@ ancestor, each producer once: the producers of its blocks, the attesters named b
 each branch block whose parent is on the branch (a block's bits attest its parent), and the
 verified gossip attesters the node holds for its blocks from OTHER producers (the finality
 tracker for applied blocks; a bounded map of at most 64 hashes, oldest evicted, for fork-cache
-and retained blocks; neither feeds attendance, the BLS pool or finality). A block's bits count
+and retained blocks; neither feeds attendance, the BLS pool or finality). In that map each
+attester holds one credit, its latest by slot: it moves only to a strictly higher slot (a
+same-slot conflict keeps the first) and frees a hash left with no attester. A block's bits count
 only when the block is at/above inc_i_178_attestation_bls_activation_height and the door's
 check of its aggregate (the apply check, never skipped as light) accepts; else they add 0. The
 node's own attestation counts only as a bit in a block on the branch. Not counted: block
