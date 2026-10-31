@@ -272,6 +272,7 @@ mod inc_i_289_h4_unrecorded_continuation;
 mod inc_i_289_k1_bond_weight;
 mod inc_i_289_k2_finality;
 mod inc_i_289_l1_verified_bits;
+mod inc_i_289_n2_tied_fork_above_gate;
 mod inc_i_289_n3_ranking_unit;
 mod inc_i_292_cached_child_after_reorg;
 mod m1_snap_install_identity;
