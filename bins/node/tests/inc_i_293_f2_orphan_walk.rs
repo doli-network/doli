@@ -203,8 +203,11 @@ async fn rounds(run: &mut Run, feed: Feed) -> Obs {
         from_peer(run, &b).await;
         if k == 1 {
             if feed == Feed::WalkStartedByHand {
+                // After the F2 fix the orphan arm has already started it (one walk at a time).
+                let started = run.r.node.try_trigger_fork_recovery().await;
+                let active = (run.r.node.sync_manager.read().await).is_fork_recovery_active();
                 assert!(
-                    run.r.node.try_trigger_fork_recovery().await,
+                    started || active,
                     "control: the walk starts by hand from the cached orphan"
                 );
             }
