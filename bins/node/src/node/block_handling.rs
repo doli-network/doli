@@ -271,7 +271,7 @@ impl Node {
                 let within_reorg_depth =
                     block_slot <= best_slot.saturating_add(network::MAX_REORG_DEPTH as u32);
                 if within_reorg_depth && self.weighs_by_support().await {
-                    self.try_trigger_fork_recovery().await;
+                    self.try_trigger_fork_recovery_from(Some(source_peer)).await;
                 }
                 return Ok(());
             }

@@ -103,6 +103,12 @@ impl Node {
     /// Called from the ReorgCandidate gossip path and the Wedged terminal.
     /// Returns true when a walk was started.
     pub async fn try_trigger_fork_recovery(&mut self) -> bool {
+        self.try_trigger_fork_recovery_from(None).await
+    }
+
+    /// INC-I-293 103: `sender` (the orphan's) is asked when connected, else a peer
+    /// whose reported tip is off our chain; no sender keeps the tallest peer.
+    pub(super) async fn try_trigger_fork_recovery_from(&mut self, sender: Option<PeerId>) -> bool {
         if !self.sync_manager.read().await.can_start_fork_recovery() {
             return false;
         }
@@ -137,7 +143,12 @@ impl Node {
             return false;
         };
         let mut sm = self.sync_manager.write().await;
-        let Some(peer) = sm.best_peer_for_recovery() else {
+        let peer = match sender {
+            None => sm.best_peer_for_recovery(),
+            Some(s) if sm.has_peer(&s) => Some(s),
+            Some(s) => self.branch_peer(&sm, &s, None),
+        };
+        let Some(peer) = peer else {
             return false;
         };
         let seed_hash = seed.hash();
