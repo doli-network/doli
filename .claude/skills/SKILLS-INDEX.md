@@ -53,11 +53,11 @@ Index path: `.claude/skills/SKILLS-INDEX.md`
 | delegation | `delegation/SKILL.md` | Bond delegation CLI, RPC fields, constants, epoch-deferred processing | — |
 | faucet | `faucet/SKILL.md` | Discord `/faucet` intake, `faucet-approve` human approval, dispenser hot wallet + vault, anti-abuse gates, refill | — |
 | guardian | `guardian/SKILL.md` | Mainnet protection, fork detection, emergency halt, checkpoint recovery, canonical anchors | reference/overview.md, procedures.md, node-heal.md, hostile-recovery.md, anchors.md, deployment.md |
-| mainnet | `mainnet/SKILL.md` | Full mainnet fleet deploy (ai1-ai5), per-service binary layout, confirmation gates | RECOVERY.md |
+| mainnet | `mainnet/SKILL.md` | THE ONLY fleet deploy procedure (ai1-ai5 and the external servers we deploy): order, per-service binary layout, confirmation gate after every server; live with the operator | RECOVERY.md |
 | auto-update | `auto-update/SKILL.md` | Auto-update implementation guide, vote weight formula (DELETED — head count), devnet E2E test scripts, staged upgrade path + `UPDATE_TARGET_NOT_WRITABLE` WARN (INC-I-215) | — |
 | network-setup | `network-setup/SKILL.md` | Node setup, devnet/testnet/mainnet parameters, DHT rules, producer activation lifecycle | — |
 | testnet-deploy | `testnet-deploy/SKILL.md` | Testnet binary deploy (ai1/ai3), compilation on ai2, MD5 verification checklist | — |
-| release | `release/SKILL.md` | Release cut + signing + publication: `chore(release)` bump PR, tag via the `doli-network` account API route (`gh api …/git/refs`, `GH013`), `Deploy Install Scripts` flake rerun, then the post-tag `draft -> sign -> verify -> promote -> confirm` sequence (`sign-release.sh`, `doli release verify`, `publish-release.sh`, `monitor-release-signed.sh`); how a signed release reaches a sandboxed `doli service install` node (staged handoff, INC-I-215); per-node binary layout map for all servers, deploy procedure one-liners | — |
+| release | `release/SKILL.md` | Release cut + signing + publication: `chore(release)` bump PR, tag via the `doli-network` account API route (`gh api …/git/refs`, `GH013`), `Deploy Install Scripts` flake rerun, then the post-tag `draft -> sign -> verify -> promote -> confirm` sequence (`sign-release.sh`, `doli release verify`, `publish-release.sh`, `monitor-release-signed.sh`); how a signed release reaches a sandboxed `doli service install` node (staged handoff, INC-I-215); fleet deploys follow `mainnet/SKILL.md` | — |
 | explorer | `explorer/SKILL.md` | explorer.doli.network, PRODUCER_KEYS/NODES config, auto-bond script | — |
 | hetzner | `hetzner/SKILL.md` | Hetzner VPS manager, server types/prices, cloud-init provisioning | — |
 | sync-docs | `sync-docs/SKILL.md` | Documentation alignment workflow, truth hierarchy, 8-step commit process | — |
@@ -161,7 +161,7 @@ Line ranges reflect verified actual content positions (15 domains re-validated 2
 | delegation | `delegation/SKILL.md` | full file | — |
 | `DELEGATE_REWARD_PCT` | `delegation/SKILL.md` | full file | — |
 | `DELEGATION_UNBONDING_SLOTS` | `delegation/SKILL.md` | full file | — |
-| deploy producers | `producers/SKILL.md` | full index | — |
+| deploy producers | `mainnet/SKILL.md` | full file | — |
 | deploy testnet | `testnet-deploy/SKILL.md` | full file | — |
 | deploy mainnet | `mainnet/SKILL.md` | full file | — |
 | `DeterministicScheduler` | `core/SKILL.md` | ENTRY-POINTS | 15-53 |
