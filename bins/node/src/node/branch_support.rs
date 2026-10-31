@@ -14,6 +14,28 @@ use super::attestation::verify::{decide_attestation, Outcome};
 use super::attestation::{commit, keys};
 use super::*;
 
+/// INC-I-293 101: by-hash refetches to one peer per tick, at/above the gate.
+pub(super) const ATTEST_FETCH_PER_PEER_PER_TICK: usize = 2;
+
+/// Round-robin over target peers, oldest first: each round grants every peer one
+/// more slot, at most `per_peer` each and `cap` in all.
+pub(super) fn round_robin<T: Copy>(queue: &[(T, PeerId)], cap: usize, per_peer: usize) -> Vec<T> {
+    let mut taken = vec![false; queue.len()];
+    let mut granted: HashMap<PeerId, usize> = HashMap::new();
+    let mut out = Vec::new();
+    for round in 1..=per_peer {
+        for (i, (item, peer)) in queue.iter().enumerate() {
+            let n = granted.entry(*peer).or_default();
+            if out.len() < cap && !taken[i] && *n < round {
+                *n += 1;
+                taken[i] = true;
+                out.push(*item);
+            }
+        }
+    }
+    out
+}
+
 /// The facts one block contributes to its support.
 struct Facts {
     parent: Hash,
@@ -220,6 +242,24 @@ impl Node {
             .filter(|e| e.2 == gone)
         {
             e.2 = heir;
+        }
+    }
+
+    /// INC-I-049 deferred fetch: one GetBlockByHash for `hash` to `peer`.
+    pub(super) async fn send_attest_fetch(
+        &self,
+        hash: Hash,
+        peer: PeerId,
+        attempt: u8,
+        grace_ms: u128,
+    ) {
+        info!(
+            "[ATTEST_FETCH] fetching block {:.8} from peer {} after {}ms grace (attempt {})",
+            hash, peer, grace_ms, attempt
+        );
+        if let Some(ref network) = self.network {
+            let req = network::protocols::SyncRequest::get_block_by_hash(hash);
+            let _ = network.request_sync(peer, req).await;
         }
     }
 

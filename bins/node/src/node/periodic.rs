@@ -371,6 +371,7 @@ impl Node {
             let refetch = !matured.is_empty() && self.weighs_by_support().await;
 
             let mut fired = 0;
+            let mut queue = Vec::new();
             for (_, block_hash, recorded_peer, attempt) in matured {
                 // Check if gossip delivered the block during the grace period
                 if let Ok(Some(_)) = self.block_store.get_height_by_hash(&block_hash) {
@@ -378,45 +379,33 @@ impl Node {
                     self.attest_fetch_tracker.remove(&block_hash);
                     continue;
                 }
-                if refetch && self.attested_block_held(&block_hash).await {
-                    self.attest_fetch_tracker.remove(&block_hash);
+                if refetch {
+                    if self.attested_block_held(&block_hash).await {
+                        self.attest_fetch_tracker.remove(&block_hash);
+                    } else if let Some(p) = self.attest_fetch_peer(recorded_peer).await {
+                        queue.push(((block_hash, p, attempt), p));
+                    }
                     continue;
                 }
                 if fired == FETCH_CAP_PER_TICK {
                     continue;
                 }
-                let source_peer = if refetch {
-                    match self.attest_fetch_peer(recorded_peer).await {
-                        Some(p) => p,
-                        None => continue,
-                    }
-                } else {
-                    recorded_peer
-                };
                 fired += 1;
-
-                // Still missing — genuine recovery, fire one fetch and remove.
-                // If another attestation arrives for this hash later, it will
-                // re-create the entry with a fresh 500ms grace period.
-                info!(
-                    "[ATTEST_FETCH] fetching block {:.8} from peer {} after {}ms grace (attempt {})",
-                    block_hash, source_peer, GRACE_MS, attempt
-                );
-
-                if let Some(ref network) = self.network {
-                    let _ = network
-                        .request_sync(
-                            source_peer,
-                            network::protocols::SyncRequest::get_block_by_hash(block_hash),
-                        )
-                        .await;
-                }
-
-                // Remove after firing — prevents repeated fetches every tick.
-                // New attestations will re-add if the block still hasn't arrived.
-                if !refetch {
-                    self.attest_fetch_tracker.remove(&block_hash);
-                }
+                // Below the gate: one shot, then the entry is removed; a later
+                // attestation re-creates it with a fresh 500ms grace period.
+                self.send_attest_fetch(block_hash, recorded_peer, attempt, GRACE_MS)
+                    .await;
+                self.attest_fetch_tracker.remove(&block_hash);
+            }
+            // INC-I-293 101: one peer's unservable hashes cannot hold every slot.
+            let picked = super::branch_support::round_robin(
+                &queue,
+                FETCH_CAP_PER_TICK,
+                super::branch_support::ATTEST_FETCH_PER_PEER_PER_TICK,
+            );
+            for (block_hash, peer, attempt) in picked {
+                self.send_attest_fetch(block_hash, peer, attempt, GRACE_MS)
+                    .await;
             }
 
             // Clean stale entries (>30s old) to bound memory
