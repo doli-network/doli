@@ -83,9 +83,15 @@
 #   Launchd nodes stop/start only via scripts/testnet.sh with ONE target; never pkill; signals only
 #   to PIDs the runner spawned (or the single process on a data dir launchd does not track). The
 #   seed is never stopped (unless GS033_ALLOW_SEED=1 and TN_BINMAP names it) and never wiped.
-#   Failure modes and their restore: a minority node, X and any TN_BINMAP node run outside launchd
-#   on moved P2P ports with their peers.cache set aside; the restore kills those PIDs, puts every
-#   peers.cache back and starts each launchd job. A node still off the seed's chain after
+#   Every node the runner restarts (each TN_BINMAP node, the minority, X) runs outside launchd and
+#   starts with its peers.cache set aside: a cached address can be a minority internal port from
+#   an earlier run. Order: the mapped majority nodes restart first (the seed last), then the
+#   minority moves to its internal ports, so no majority node starts while one is open; X follows
+#   on its own timeline (--no-dht --no-discv5, own forwarder). The restore (end of the run, the
+#   abort handler, or --restore RUN_DIR from state.json) kills those PIDs, puts every peers.cache
+#   back (a cache written where none was is removed) and starts each launchd job. Each isolation
+#   check logs `isolation[<check>]: ... direct-to-minority=N direct-to-majority=N ... ok|FAIL ..`
+#   to the run's harness.log. A node still off the seed's chain after
 #   GS033_RESTORE_WAIT s gets a full-history restore from the stopped donor: its data/* is wiped
 #   except signed_slots.db and maintainer_state.bin (refused if a wallet or seed file is inside),
 #   blocks/ and state_db/ are rsync'd from the donor, pending_update.json is removed. state.json in

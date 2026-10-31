@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """inject.py — one dead-branch injection on the LOCAL testnet for the GS-033 runner (INC-I-281).
 
-run(out, M, dead_len, obs, binmap, bins) writes OUT/result.json and returns it:
- 1. Front each minority node right after its own block: stop its launchd job, set its peers.cache
+run(out, M, dead_len, obs, binmap, bins) writes OUT/result.json and returns it. Every node it
+restarts starts with its peers.cache set aside (restart_plan: order and set-aside list):
+ 1. Any TN_BINMAP node outside the minority and X restarts on its mapped binary right after its
+    own slot (the seed last). This comes first: a node that starts after step 2 can dial a
+    minority node's internal port directly (an isolation leak).
+ 2. Front each minority node right after its own block: stop its launchd job, set its peers.cache
     aside, restart it (plist args, mapped binary if any) with its P2P listener on an internal port,
     --no-dht --no-discv5, --external-address = its public port and <= 5 bootstraps (the libp2p
     pending-dial limit): every majority node except X through its own fwd.py, plus the other
     minority node's internal port. Isolation check (lsof) at setup, every 60 s, pre-cut, cut+10 s
     and pre-heal; a leak before the cut aborts the run.
- 2. Any other TN_BINMAP node restarts on its mapped binary right after its own slot.
  3. Plan from the live tip; X stops right after its own block at slot sx.
  4. X follower (non-producer) from B-FOLLOW_AT; X producer starts isolated behind its own forwarder
     X_LEAD s before S+1 (its startup gate clears; it attests nothing); released at the cut.
@@ -46,6 +49,20 @@ def strip_opt(args, opt, has_val=True):
 
 def bin_for(i, argv):
     return ([BINCOPY[i]] + argv[1:]) if i in BINCOPY else argv
+
+
+def restart_plan(M, X, mapped):
+    """(actions, set_aside): every node start of one injection in order, as (kind, node), and the
+    nodes whose peers.cache is set aside first (= the caches the restore puts back). The setup
+    kinds run in this order; X's two starts follow later on its own timeline."""
+    major = sorted((e for e in mapped if e not in M and e != X), key=lambda j: (j == 0, j))
+    acts = [("mapped", e) for e in major] + [("minority", m) for m in M]
+    acts += [("x-follower", X), ("x-producer", X)]
+    aside = []
+    for _, i in acts:
+        if i not in aside:
+            aside.append(i)
+    return acts, aside
 
 
 def setup_binmap(binmap):
@@ -128,6 +145,11 @@ def spawn_fwd(tag, owner, M, ctl, held):
     return fp
 
 
+def x_follower_start(x, M):
+    tn.move_cache(x)
+    spawn_node("xf", x, x_follower_argv(x, M), "%s.follower.log" % tn.name(x))
+
+
 def x_isolated_start(x, M):
     """Replace the X follower by the X producer with every X link held, so it attests nothing and
     its startup gate (60 s timer) clears before its slot S+1; released at the cut."""
@@ -159,27 +181,28 @@ def fleet_healthy():
     return bad
 
 
-def front_minority(M, X, order):
-    for m in M:
-        wait_own_slot(m, order)
-        tn.stop_launchd(m)
-        tn.move_cache(m)
-        spawn_fwd("fwd%d" % m, m, M, os.path.join(tn.OUT, "minority.ctl"), held=False)
-        time.sleep(1)
-        spawn_node("m%d" % m, m, minority_argv(m, M, X), "%s.node.log" % tn.name(m))
-        if not tn.wait_rpc(m, 60):
-            raise RuntimeError("%s RPC not up behind the forwarder" % tn.name(m))
+def front_one(m, M, X, order):
+    wait_own_slot(m, order)
+    tn.stop_launchd(m)
+    tn.move_cache(m)
+    spawn_fwd("fwd%d" % m, m, M, os.path.join(tn.OUT, "minority.ctl"), held=False)
+    time.sleep(1)
+    spawn_node("m%d" % m, m, minority_argv(m, M, X), "%s.node.log" % tn.name(m))
+    if not tn.wait_rpc(m, 60):
+        raise RuntimeError("%s RPC not up behind the forwarder" % tn.name(m))
 
 
-def restart_mapped_others(M, X, order):
-    for e in sorted(BINCOPY):
-        if e in M or e == X:
-            continue
-        wait_own_slot(e, order)
-        tn.stop_launchd(e)
-        spawn_node("e%d" % e, e, bin_for(e, args(e)), "%s.node.log" % tn.name(e))
-        if not tn.wait_rpc(e, 90):
-            raise RuntimeError("%s RPC not up on the mapped binary" % tn.name(e))
+def restart_mapped(e, M, X, order):
+    """A cached address can be a minority node's internal port from an earlier run."""
+    wait_own_slot(e, order)
+    tn.stop_launchd(e)
+    tn.move_cache(e)
+    spawn_node("e%d" % e, e, bin_for(e, args(e)), "%s.node.log" % tn.name(e))
+    if not tn.wait_rpc(e, 240 if e == 0 else 90):  # the seed's RPC answers slowly after a restart
+        raise RuntimeError("%s RPC not up on the mapped binary" % tn.name(e))
+
+
+SETUP = {"mapped": restart_mapped, "minority": front_one}
 
 
 def stop_x_after_its_block(order, M, dead_len, X):
@@ -239,8 +262,7 @@ def wait_for_boundary(order, M, dead_len, X, B):
             if probes.lsof_check("wait-%d" % t[0], M):
                 raise RuntimeError("direct link to the minority before the cut (isolation leak)")
         if not follower and t[0] >= follow_at:
-            tn.move_cache(X)
-            spawn_node("xf", X, x_follower_argv(X, M), "%s.follower.log" % tn.name(X))
+            x_follower_start(X, M)
             follower = True
         time.sleep(1)
 
@@ -293,8 +315,14 @@ def run(out, M, dead_len, obs, binmap, bins):
         tn.say("PRE-PLAN B=%d X=%s X-stop-slot=%d | %s" % (pre[1], tn.name(X), pre[3], plan.fmt_plan(pre[5])))
         result["log_offsets"] = {n["name"]: probes.size(n["log"]) for n in tn.NODES}
         setup_binmap(binmap)
-        front_minority(M, X, order)
-        restart_mapped_others(M, X, order)
+        acts, aside = restart_plan(M, X, BINCOPY)
+        result["restarts"] = ["%s:%s" % (k, tn.name(i)) for k, i in acts]
+        result["cache_set_aside"] = [tn.name(i) for i in aside]
+        tn.say("restart order: %s; peers.cache set aside: %s" % (
+            " ".join(result["restarts"]), " ".join(result["cache_set_aside"])))
+        for kind, i in acts:
+            if kind in SETUP:
+                SETUP[kind](i, M, X, order)
         time.sleep(25)
         if probes.lsof_check("setup", M, tolerate=(tn.name(X),)):  # X's launchd links end when X stops
             raise RuntimeError("direct link to the minority before the cut")

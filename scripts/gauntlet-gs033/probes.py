@@ -72,7 +72,9 @@ def slice_to(path, start, end, dst):
 # ---------------------------------------------------------------------------------- isolation
 def lsof_check(label, M, tolerate=()):
     """Every ESTABLISHED P2P socket of a minority node must lead to its forwarder or to another
-    minority node; the owner of a remote endpoint = the tracked process holding it locally."""
+    minority node; the owner of a remote endpoint = the tracked process holding it locally. A leak
+    on a minority internal listen port counts as direct-to-minority (a majority node dialed in),
+    any other leak as direct-to-majority. The log line ends in `ok` or `FAIL <leaks>`."""
     pids = {p.pid: tag for tag, p in tn.ST["procs"].items() if p.poll() is None}
     for n in tn.NODES:
         for pid in tn.datadir_pids(n["i"]):
@@ -89,7 +91,8 @@ def lsof_check(label, M, tolerate=()):
     owner = {loc: pids.get(pid, str(pid)) for pid, loc, _ in socks}
     mtags = {"m%d" % m for m in M}
     svc = {n["rpc"] for n in tn.NODES} | {n["met"] for n in tn.NODES}
-    bad, cnt = [], 0
+    listen = {tn.internal(m) for m in M}
+    bad, cnt, inbound = [], 0, 0
     for pid, loc, rem in socks:
         tag = pids.get(pid)
         if tag not in mtags:
@@ -100,13 +103,16 @@ def lsof_check(label, M, tolerate=()):
         o = owner.get(rem, "untracked")
         if not (o in {"fwd%d" % mm for mm in M} or o in mtags or o in tolerate):
             bad.append("%s %s->%s owner=%s" % (tag, loc, rem, o))
+            inbound += int(loc.rsplit(":", 1)[1]) in listen
     with open(os.path.join(tn.OUT, "lsof-%s.txt" % label), "w") as f:
         f.write("\n".join("%s %s->%s" % (pids.get(p), lo, r) for p, lo, r in socks) + "\n")
     pair = sum(1 for pid, loc, rem in socks if pids.get(pid) in mtags and owner.get(rem) in mtags)
-    tn.say("isolation[%s]: minority P2P sockets=%d direct-to-majority=%d minority-pair sockets=%d %s" % (
-        label, cnt, len(bad), pair, "; ".join(bad)[:300]))
+    leaks = len(bad)
     if len(M) > 1 and pair == 0:
         bad.append("minority nodes not linked to each other")
+    tn.say("isolation[%s]: minority P2P sockets=%d direct-to-minority=%d direct-to-majority=%d "
+           "minority-pair sockets=%d %s" % (label, cnt, inbound, leaks - inbound, pair,
+                                            "FAIL " + "; ".join(bad)[:300] if bad else "ok"))
     return bad
 
 
