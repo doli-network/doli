@@ -78,31 +78,8 @@ impl ReorgHandler {
                 if to_rollback.is_empty() {
                     return None; // No reorg needed
                 }
-                // INC-I-289: an unsupported own block keeps our tip. The candidate
-                // counts when recorded or when its slot advances on its parent.
-                let (ours, cand) = if from_ancestor {
-                    let ours = union_weight(&to_rollback, &get_support)?;
-                    let slot = block.header.slot;
-                    let counts = self.block_weights.contains_key(&block_hash)
-                        || self.slot_weight(slot, &prev_hash, None, 1) > 0;
-                    let own = || {
-                        let id = *block.header.producer.as_bytes();
-                        BlockSupport::single(id, block_producer_weight)
-                    };
-                    let cand = if counts {
-                        candidate_union(&[block_hash], |h| get_support(h).or_else(|| Some(own())))
-                    } else {
-                        0
-                    };
-                    (ours, cand)
-                } else {
-                    (self.current_chain_weight, new_chain_weight)
-                };
-                if from_ancestor && self.gossip_refuses(ours, cand, &current_tip, &block_hash) {
-                    return None;
-                }
-
-                // Finality check: never reorg past the last finalized block.
+                // Finality check: never reorg past the last finalized block. It runs
+                // before our side is weighed, so a refused branch costs no support read.
                 let ancestor_real = get_height(&current);
                 if let Some(ancestor_h) = ancestor_real.filter(|h| self.fork_choice_active(*h)) {
                     bump(&self.counters.check_reorg_finality_entries);
@@ -140,6 +117,30 @@ impl ReorgHandler {
                         );
                         return None;
                     }
+                }
+
+                // INC-I-289: an unsupported own block keeps our tip. The candidate
+                // counts when recorded or when its slot advances on its parent.
+                let (ours, cand) = if from_ancestor {
+                    let ours = union_weight(&to_rollback, &get_support)?;
+                    let slot = block.header.slot;
+                    let counts = self.block_weights.contains_key(&block_hash)
+                        || self.slot_weight(slot, &prev_hash, None, 1) > 0;
+                    let own = || {
+                        let id = *block.header.producer.as_bytes();
+                        BlockSupport::single(id, block_producer_weight)
+                    };
+                    let cand = if counts {
+                        candidate_union(&[block_hash], |h| get_support(h).or_else(|| Some(own())))
+                    } else {
+                        0
+                    };
+                    (ours, cand)
+                } else {
+                    (self.current_chain_weight, new_chain_weight)
+                };
+                if from_ancestor && self.gossip_refuses(ours, cand, &current_tip, &block_hash) {
+                    return None;
                 }
 
                 let weight_delta = cand as i64 - ours as i64;

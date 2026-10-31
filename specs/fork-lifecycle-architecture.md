@@ -313,7 +313,8 @@ check of its aggregate (the apply check, never skipped as light) accepts; else t
 node's own attestation counts only as a bit in a block on the branch. Not counted: block
 count, the first block's bits. An unsupported own block keeps our tip; an unknown candidate
 block adds nothing; the comparison (strictly heavier; the gossip door's tie switch) is
-unchanged. Below the height: unchanged.
+unchanged. Below the height: unchanged. Like the plan door, the gossip door applies its
+finality refusal before it weighs either side, so a branch past finality reads no support.
 The support view shares each cached block's attestation facts (bitfield, aggregate) behind one
 handle per snapshot; a ranking reads them without copying (no authority added or removed).
 The node builds the support view (gossip door, recovered-fork evaluation, wedge plan) and credits fork-only gossip

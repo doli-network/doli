@@ -96,3 +96,31 @@ fn inc_i_288_re_records_keep_one_lru_slot_at_the_gate() {
     assert!(!flood_cell(DORMANT), "dormant: duplicate pushes evict A");
     assert!(flood_cell(0), "active: S keeps one slot, A stays tracked");
 }
+
+/// Gossip door call above both gates; F (height 1) is the common ancestor.
+/// Returns (verdict, get_support calls).
+fn finality_cell(finality: ForkChoiceFinality) -> (Option<ReorgResult>, u32) {
+    let mut rh = ReorgHandler::new().with_inc_i_288_gate(0);
+    rh.inc_i_204_fork_choice_activation_height = 0;
+    let (f, a3) = our_branch(&mut rh);
+    let calls = std::cell::Cell::new(0u32);
+    let support = |_: &Hash| {
+        calls.set(calls.get() + 1);
+        Some(support::BlockSupport::single([1; 32], 1))
+    };
+    let x = fork_block(f, 99);
+    let r = rh.check_reorg_supported(&x, a3, 1, |h| (*h == f).then_some(1), support, finality);
+    (r, calls.get())
+}
+
+#[test]
+fn inc_i_288_gossip_door_refuses_past_finality_before_weighing_our_side() {
+    let (_, open) = finality_cell(fin(None, None, 4));
+    assert!(
+        open > 0,
+        "control: with no finality the door weighs our side"
+    );
+    let (r, calls) = finality_cell(fin(Some(3), None, 4));
+    assert!(r.is_none(), "F (1) is below effective finality 3");
+    assert_eq!(calls, 0, "no support is read for a branch past finality");
+}
