@@ -277,3 +277,10 @@ path = "tests/inc_i_289_j1_rank_bytes.rs"
 [[test]]
 name = "inc_i_289_j4_gate_edge"
 path = "tests/inc_i_289_j4_gate_edge.rs"
+
+# INC-I-289 K-2 support view bytes below the fork-choice gate: own binary — its
+# counting #[global_allocator] (per-BINARY) measures one recovered-fork door, and its
+# below-gate cell re-execs itself with the gate env override.
+[[test]]
+name = "inc_i_289_k2_view_bytes_below_gate"
+path = "tests/inc_i_289_k2_view_bytes_below_gate.rs"
