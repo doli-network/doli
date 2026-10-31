@@ -2133,24 +2133,30 @@ def accumulated_weight(block):
 
 This prevents Sybil attacks where an attacker creates many low-weight blocks.
 
-**Weight decides after a rollback and at an occupied height (INC-I-288).** At and above
-`inc_i_288_fork_choice_activation_height` (mainnet not scheduled, testnet 366,891, devnet 0) these node-local rules change, and nothing else: (1) every `rollback_one_block` (a
+**Fork choice from the activation height (INC-I-288, INC-I-289).** Every rule in this paragraph
+and in the four that follow is node-local fork choice. Each is on at and above
+`inc_i_288_fork_choice_activation_height` (mainnet `u64::MAX`, not scheduled; testnet 366,891;
+devnet 0) and unchanged below it. A site is on when the height it compares is `>=` the gate;
+that height is the local tip height, except: the FORK_GUARD arm compares the fork block's
+height, the own-block progress rule and the LRU re-record compare the block's height, the
+finality sink compares the applied tip height, and the checkpoint restore compares the stored
+tip height at start. Which door holds which authority is in
+`specs/fork-lifecycle-architecture.md` ("Architecture Maps", "Current (measured)"); this
+section lists the rules only. The INC-I-288 rules: (1) every `rollback_one_block` (a
 recovery rollback and a production self-apply rollback alike) keeps the fork-choice memory
 (`SyncManager::reset_sync_for_rollback` no longer clears the
 `ReorgHandler`; our weight becomes the new tip's recorded weight); (1a) every weight door
-compares the two branches from their common ancestor: each side weighs the sum of the
-producer weights of its blocks after the ancestor (`ReorgHandler::branch_weight`). A block's
-weight is its `ReorgHandler` entry, else the weight `apply_block` records for a stored block
-(producer `effective_weight` at the block's height), else unknown. On the candidate side an
-unknown block adds nothing (`ReorgHandler::candidate_weight`), so it never makes the candidate
-heavier. On our side an unknown block (a store read error, or a hole in the canonical
-hash-to-height index) keeps our tip: `plan_reorg` returns no plan and `check_reorg_weighted`
-no reorg. The base-relative accumulated weight of the lossy cache
-(0 for a tip that a restart or an eviction left untracked) no longer decides. This holds in
-`plan_reorg` (its `weight_delta`), in the gossip door `check_reorg_weighted` (its verdict
-waits for the walk to the ancestor) and in the wedge-escape door, which does not call
-`weigh_branches`, has no accumulated-weight short-circuit and acts on the plan's
-`weight_delta > 0`; (1b) a re-record of a block
+compares the two branches from their common ancestor (`ReorgHandler::weighs_from_ancestor`):
+our side is the blocks a reorg would roll back, the candidate side the blocks after the
+ancestor, both weighed in the bond unit below (`union_weight`, `candidate_union`). On the
+candidate side an unknown block adds nothing, so it never makes the candidate heavier. On our
+side a block with no support (a store read error, or a hole in the canonical hash-to-height
+index) keeps our tip: `plan_reorg` returns no plan and the gossip door no reorg. The
+base-relative accumulated weight of the lossy cache (0 for a tip that a restart or an eviction
+left untracked) no longer decides. This holds in `plan_reorg` (its `weight_delta`), in the
+gossip door `check_reorg_supported` (its verdict waits for the walk to the ancestor) and in the
+wedge-escape door, which does not call `weigh_branches`, has no accumulated-weight
+short-circuit and acts on the plan's `weight_delta > 0`; (1b) a re-record of a block
 the `ReorgHandler` already tracks keeps its one LRU slot, so repeated deliveries of one block
 cannot evict our tip; (1c) the slot-advance rule of apply (`SlotNotAdvancing`: slot not above
 the parent's) is a weight input in one place, `ReorgHandler::slot_weight`: a fork block whose
@@ -2162,17 +2168,16 @@ here: the wedge-escape door, including a block recorded while its
 parent body was gone, and the fork-recovery walk), and so does the untracked one-block
 candidate of `check_reorg_weighted`; the plan's branch sum reads the recorded weights. A slot
 leader cannot stack same-slot blocks into branch weight on any path; such a block is still
-cached and retained, at weight 0; (1d) the INC-I-281 hold (`hold_removed_block`) uses the plan
-door's branch rule from the shared parent (the tip), branch against branch: our side is the
-removed block plus its heaviest cached continuation, a rival is a sibling plus its heaviest
-cached descendants (per block `candidate_weight`); it holds the re-apply of our removed block
-only when a rival is strictly heavier; one equal-weight, lower-hash sibling does not hold;
-(1e) the fork walk (`try_trigger_fork_recovery`) ranks its seeds by the cached branch weight
-they root (per block the `ReorgHandler` weight, else its producer's weight, which the walk
-records), not by cached depth, so a same-slot chain at weight 0 ranks below a branch that can
-add weight; a seed whose branch already lost fork choice on our tip passes the walk to the
-next seed. Below the height the walk takes the deepest cached chain and a rejected one ends
-the search; (2) a sibling at an occupied height with a better (lower)
+cached and retained, at weight 0; (1d) the INC-I-281 hold (`hold_removed_block`) weighs
+branch against branch from the shared parent (the tip): our side is the removed block plus its
+best cached continuation, whole; a rival is a sibling plus its best cached descendants; it
+holds the re-apply of our removed block only when a rival is strictly heavier in the bond
+unit; one equal-weight, lower-hash sibling does not hold; (1e) the fork walk
+(`try_trigger_fork_recovery`) ranks its seeds by the bond of the cached branch they root, not
+by cached depth, and tries every seed; a seed whose branch already lost fork choice on our tip
+passes the walk to the next seed. Below the height the hold keeps the handler weighing, the
+walk takes the deepest cached chain and a rejected one ends the search; (1f) blocks a reorg
+rewinds are remembered (rollback memory) and retained like blocks a rollback removes; (2) a sibling at an occupied height with a better (lower)
 slot than our block is weighed by the wedge-escape door (`retain_sibling_and_try_escape`) like
 any other sibling, instead of being dropped by FORK_GUARD. The slot no longer decides; (3) an
 orphan gossip block (parent unknown, so its height is unknown) no longer raises the network tip
@@ -2181,8 +2186,82 @@ reported as evidence, and the tip height comes only from peer status and applied
 of a lighter branch do not make a gap of 1 that rolls back a heavier tip; (4) a block this
 node produced (producer = its own key) is not post-rollback progress for coordinator Gate 1
 (`block_applied_with_origin`); a block a peer delivered by gossip or reorg still is, whatever
-its producer. Below the height every rule above is unchanged. This is fork choice only: no
-block-validity, block-content, wire or protocol-version change, so the binary can roll.
+its producer.
+
+**Bond unit (INC-I-289 K-1, N-3).** A branch weighs the bond (`selection_weight_at`, the
+finality unit) of its DISTINCT supporters from the common ancestor; each producer counts once:
+the producers of its blocks, the attesters named by the bits of each branch block whose parent
+is on the branch (a block's bits attest its parent), and the verified gossip attesters the node
+holds for its blocks from other producers. A block's bits count only when the block is at or
+above `inc_i_178_attestation_bls_activation_height` and the door's check of its aggregate (the
+apply check, never skipped as light) accepts; else they add 0. The node's own key never counts
+at the door: its own attestation counts only as a bit inside a block on the branch, and an
+unsupported own block keeps our tip. Block count does not count. Ties: the plan door, the
+wedge-escape door and the hold take a branch only when it is strictly heavier, so equal support
+keeps our tip and the node keeps producing on it; the gossip door keeps its lower-hash tie
+switch. Slot screen: the one candidate-side bond sum (`candidate_union`, shared by the gossip
+door, the plan door and the cached-branch ranking) weighs a branch 0 when one of its blocks has
+a known slot not above its known parent's slot (`fork_choice::slot_advances`, the comparator of
+apply's `SlotNotAdvancing` and of `slot_weight`), so a branch apply would refuse never wins a
+plan. Ranking: the hold, the walk's seed rule (and the branch tip a lost walk marks rejected),
+the cached-child drain order, the eviction pin and the body-retry branch tip rank a cached
+branch in this unit (best chain under a block over its cached tips; ties to the lower slot,
+then the lower hash, child by child). Fork credits: verified gossip attestations for fork-cache
+or retained hashes go to a map of at most 64 hashes (oldest evicted) that holds one credit per
+attester, its latest by slot: a credit moves only to a strictly higher slot, a same-slot
+conflict keeps the first, and a hash left with no attester is freed. The map feeds no
+attendance, BLS pool or finality. The node builds the support view (gossip door, recovered-fork
+evaluation, wedge plan) and keeps fork credits only at or above the gate; below it neither
+exists.
+
+**Epoch table of the common ancestor (INC-I-289 L-1, L-2).** The bonds, the bit decode list
+(`producer_list`) and the BLS keys come from ONE epoch table for both branches: the table of the
+epoch that holds the common ancestor of the candidate and the local chain (the ranking: the
+lowest point where a cached branch meets the local chain, else the tip's epoch). Bits encoded
+against a list that changed after the ancestor weigh 0 on both sides. Tables come from a bounded
+local store (`cf_meta` key `epoch_table:` ++ epoch start, not in the state root): every epoch
+within `MAX_REORG_DEPTH` of the tip plus one, at least 4 (4 mainnet, 29 testnet, 251 devnet); a
+table whose boundary hash is not the stored canonical block is not used. No table for the
+ancestor's epoch (and it is not the tip's epoch): the door refuses the reorg, counts
+`doli_fork_choice_table_missing_total` and logs one `FORK_TABLE` line per ancestor hash; the
+ranking weighs every branch 0 and the tie rule orders them. Never the tip table.
+
+**Finality is kept (INC-I-289 K-2, M-1, M-2).** A new finalized checkpoint is persisted
+(`cf_meta` key `finality_checkpoint`) when the applied tip is at or above the gate. At start it
+is restored when the stored tip is at or above the gate and the stored chain still holds that
+hash at that height. A finalized block is not reverted by a reorg, a restart or a snap install:
+both doors refuse a branch whose common ancestor is below effective finality, and the gossip
+door applies that refusal before it weighs either side, so a branch past finality reads no
+support; the checkpoint survives a restart; snap install refuses an anchor not proven to descend
+from the finalized block and the node falls back to block sync. Descent is proven by the local
+headers (the anchor is the canonical block at its height, or a walk of at most 1024 local parent
+headers meets the canonical chain at or above the finalized height) or, for a node without
+those headers, by a peer-served chain: before the manifest the snap peer serves the headers
+`f+1..=anchor` through the existing `GetHeaders` request (batches of 500), every parent link is
+checked and the last header must hash to the anchor; a broken or foreign chain moves to an
+alternate peer; a span above `SNAP_DESCENT_PROOF_MAX_HEADERS` (10,000) falls back to block sync
+before any download. Plan-door admission: when our canonical index holds the finalized block at
+its height and the common ancestor is at or above that height, the plan door admits the branch
+at any depth, without the 1000-block ancestry walk; otherwise the walk decides as before.
+`forceReorgTo` is unchanged.
+
+**Recovery and production (INC-I-289).** The coordinator's blind depth-1 rollback on a height
+claim (Rules 1/1b) is removed: it weighed nothing. A Syncing state started by a peer's height
+claim no longer blocks production; the height-based defer in production still applies. With
+items (3) and (4) above, an orphan's guessed height and an own block no longer steer recovery.
+
+**Not gated.** These changes are the same on every network from install: (a) INC-I-292: after a
+reorg lands in Normal mode the node runs the existing drain on the new tip's cached children
+(full validation, the INC-I-281 hold, at most 50 applies; not in Restore mode), and the
+wedge-escape door and `forceReorgTo` treat a target on the canonical chain as landed. Neutral:
+it is the intake a block that extends the tip already uses, with the same validation; (b) the
+epoch-table capture after each boundary block commits: a local `cf_meta` write outside the
+state root, read only at or above the gate; (c) the support view shares each cached block's
+attestation facts behind one `Arc` handle: an in-memory representation, the same values feed
+the same support; (d) `ReorgHandler::note_block_slot` records the slot of each applied and fork
+block in a bounded map that only the gated slot rule reads. None of the rules or changes in
+this section changes block validity, block content, the state root, the wire format or the
+protocol version, so the binary can roll.
 
 ### 5.6 Emission Schedule
 
@@ -2708,7 +2787,7 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | Equivocation slashing (`inc_i_255_slashing_activation_height`, §3.10.1) | 806,859 | 330,849 | 0 | Devnet only (`DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT`) |
 | Unbonding lock (`inc_i_257_unbonding_activation_height`, §3.13.1) | 806,859 | 330,849 | 0 | Devnet only (`DOLI_INC_I_257_UNBONDING_ACTIVATION_HEIGHT`) |
 | Producer authorization (`inc_i_182_producer_auth_activation_height`, §3.13.2) | 806,859 | 330,849 | 0 | Devnet only (`DOLI_INC_I_182_PRODUCER_AUTH_ACTIVATION_HEIGHT`) |
-| INC-I-288 fork choice: rollback memory, common-ancestor weight (`inc_i_288_fork_choice_activation_height`, §5.5) | `u64::MAX` (not scheduled) | 366,891 | 0 | Non-mainnet (`DOLI_INC_I_288_FORK_CHOICE_ACTIVATION_HEIGHT`) |
+| INC-I-288/INC-I-289 fork choice: rollback memory, bond weight from the common ancestor with its epoch table, persistent finality, snap descent proof, no blind rollback (`inc_i_288_fork_choice_activation_height`, §5.5) | `u64::MAX` (not scheduled) | 366,891 | 0 | Non-mainnet (`DOLI_INC_I_288_FORK_CHOICE_ACTIVATION_HEIGHT`) |
 | Data Directory | `~/.doli/mainnet/` | `~/.doli/testnet/` | `~/.doli/devnet/` | - |
 | Config File | `.env` in data dir | `.env` in data dir | `.env` in data dir | - |
 

@@ -1268,9 +1268,37 @@ cp -r data_dir/checkpoints/h{HEIGHT}-{TS}/blocks data_dir/blocks
 
 ### 4.6b. Finality Lock After a Restart (INC-I-289 K-2, M-1, M-2)
 
-**Log lines:** at start, `[FINALITY] Restored finalized height N (hash)` — the persisted checkpoint was re-armed because the stored chain still holds it. Then `FINALITY: plan_reorg rejecting reorg past effective finality Some(N) (ancestor at A)` refuses a reorg, or `FORK_TABLE: no epoch table for common ancestor … reorg refused` refuses one whose ancestor's epoch table is not stored. A snap refusal logs `[SNAP_SYNC] Refusing snapshot … anchor not proven to descend from finalized h=N` or `[SNAP_SYNC] Descent proof refused: …`.
+**Background:** at and above `inc_i_288_fork_choice_activation_height` (mainnet not scheduled) a finalized block is kept across a restart, a reorg and a snap install, and fork choice weighs each branch by the bond of its verified supporters with the epoch table of the common ancestor. Below that height the `[FINALITY]`, `FORK_TABLE`, `Refusing snapshot` and `Descent proof` lines do not appear; the `FINALITY:` and `[WEDGE_ESCAPE]` lines can, because they predate INC-I-289. Rules: `specs/protocol.md` §5.5.
 
-**What to do:** above the INC-I-288 height, nothing for a branch that descends from the finalized block. The plan door admits a branch whose common ancestor with our chain is at or above `N` when our canonical chain holds the finalized block, at any depth (M-2). A lagging node proves snapshot descent with headers served by the snap peer (M-1); a gap above 10,000 headers falls back to block sync. Use `forceReorgTo` or wipe + snap from a canonical donor ONLY when the finalized block itself is off the canonical chain (the `plan_reorg` line repeats with `ancestor at A < N`).
+**Log lines** (`…` = a value; the text is otherwise verbatim):
+
+| Line | Level | Meaning and action |
+|------|-------|--------------------|
+| `[FINALITY] Restored finalized height … (…)` | info | At start the persisted checkpoint was re-armed because the stored chain still holds that hash at that height. No action. |
+| `[FINALITY] Persisted checkpoint h=… is not on the stored chain; not restored` | warn | The stored chain no longer holds the checkpoint (for example after a manual rollback or a data copy from another node). The node starts with no finality and gets it again from new checkpoints. No action unless it repeats at every start; then compare the tip with other nodes (§4.2). |
+| `FINALITY: plan_reorg rejecting reorg past effective finality … (ancestor at …)` | warn | The plan door refused a branch that forks below the finalized height. Expected for a branch off the finalized block. See "What to do". |
+| `FINALITY: Rejecting reorg past effective finality … (ancestor at …)` | warn | The same refusal at the gossip door. It now runs before the door weighs either side, so it costs no support reads. |
+| `FORK_TABLE: no epoch table for common ancestor … (h=…, epoch start …); reorg refused` | warn | The common ancestor is in an epoch whose table the node does not keep (older than the reorg window, or a node that snap-synced after it). The reorg is refused. Logged once per ancestor hash; `doli_fork_choice_table_missing_total` counts every refusal. If the node is on the wrong side, use the exit in "What to do". |
+| `[SNAP_SYNC] Refusing snapshot h=… hash=…: anchor not proven to descend from finalized h=… …` | warn | Snap install refused an anchor that is not proven to descend from the finalized block. The node falls back to normal sync. |
+| `[SNAP_SYNC] Descent proof complete: anchor h=… links to finalized block via …` | info | The snap peer served a linked header chain from the finalized block to the anchor. The snapshot can install. No action. |
+| `[SNAP_SYNC] Descent proof refused: anchor h=… is … headers above finalized h=… (max …) — falling back to block sync` | warn | The gap is above 10,000 headers. No snapshot is downloaded; the node syncs by blocks. No action; it is slower, not stuck. |
+| `[SNAP_SYNC] Descent proof refused from …: … — trying alternate peer` | warn | That peer served a broken or foreign header chain. The node asks another peer. Report it if every peer is refused. |
+| `[SNAP_SYNC] Descent proof refused: chain stops before the anchor` / `[SNAP_SYNC] Descent proof refused: …` | warn | The served chain ended early or failed a check. The proof is dropped. |
+| `[WEDGE_ESCAPE] Sibling branch heavier (delta=…, fork=…, ours=…) — reorging (INC-I-143)` | info | The wedge-escape door found a strictly heavier sibling branch and reorgs onto it. No action. |
+| `[WEDGE_ESCAPE] Sibling … retained (not strictly heavier) — signaling fork recovery (INC-I-143)` | info | Equal or lighter support: the node keeps its tip and keeps producing. No action. |
+| `[WEDGE_ESCAPE] Sibling … retained (plan_reorg refused: finality guard, unknown ancestor, reorg depth, or a block on our side has no weight) — signaling fork recovery (INC-I-143)` | info | The plan door refused the branch; look for a `FINALITY:` or `FORK_TABLE:` line next to it. |
+| `[WEDGE_ESCAPE] Sibling … cannot out-weight tip (fork_w=… <= our_w=…) — retained, signaling recovery (INC-I-143)` | info | The sibling cannot win on weight; it is kept for re-evaluation. No action. |
+| `[WEDGE_ESCAPE] Heavier sibling … did not land (missing body) — signaling fork recovery (INC-I-143)` | warn | The reorg target is not on the chain after the attempt. Fork recovery fetches the missing body. Report it if it repeats for one hash. |
+
+**Metrics:**
+
+| Metric | Meaning |
+|--------|---------|
+| `doli_fork_choice_table_missing_total` | Reorgs refused because the common ancestor's epoch table is not kept. |
+| `doli_support_views_built_total` | Support views built for the reorg doors. Stays 0 below the activation height. |
+| `doli_fork_credits_total` | Fork-only gossip attestations credited for the reorg doors. Stays 0 below the activation height. |
+
+**What to do:** above the INC-I-288 height, nothing for a branch that descends from the finalized block. The plan door admits a branch whose common ancestor with our chain is at or above the finalized height when our canonical chain holds the finalized block, at any depth (M-2). A lagging node proves snapshot descent with headers served by the snap peer (M-1). A restart does NOT clear finality above the height: the checkpoint is restored. Use `forceReorgTo` (`docs/rpc_reference.md`) or a wipe + snap from a canonical donor ONLY when the finalized block itself is off the canonical chain (the `plan_reorg` line repeats with an ancestor below the finalized height on every attempt). Before any wipe, move `wallet.json` and `producer.seed.txt` out of the data directory.
 
 ---
 
