@@ -11,7 +11,25 @@ pub(super) enum BranchRank {
     /// 1 per block (below the gate).
     Depth,
     /// Bond of the chain's distinct supporters (at/above the gate).
-    Bond(Box<SupportView>, Arc<BlockStore>),
+    Bond(Box<RankViews>, Arc<BlockStore>),
+}
+
+/// One support view per epoch table, and the view each cached root's branch is
+/// weighed with (the table of its own attach point); an unmapped root weighs 0.
+pub(super) struct RankViews {
+    views: Vec<SupportView>,
+    by_root: HashMap<Hash, usize>,
+}
+
+impl RankViews {
+    /// Adds a block the cache snapshot does not hold, in every view.
+    pub(super) fn include(&mut self, block: &Block) {
+        self.views.iter_mut().for_each(|v| v.include(block));
+    }
+
+    fn support(&self, store: &BlockStore, root: &Hash, h: &Hash) -> Option<network::BlockSupport> {
+        self.views.get(*self.by_root.get(root)?)?.support(store, h)
+    }
 }
 
 /// Weight and tip of the best cached chain under every cached block, by `rank`.
@@ -22,14 +40,15 @@ pub(super) fn ranked_branches(
 ) -> HashMap<Hash, BranchInfo> {
     match rank {
         BranchRank::Depth => cached_branches(cache, |_| 1),
-        BranchRank::Bond(view, store) => bond_branches(cache, |h| view.support(store, h)),
+        BranchRank::Bond(views, store) => bond_branches(cache, |r, h| views.support(store, r, h)),
     }
 }
 
-/// A set union is not additive, so each path block..tip under a block is weighed whole.
+/// A set union is not additive, so each path block..tip under a block is weighed
+/// whole. `support(root, block)`: `root` is the out-of-cache parent of the path.
 fn bond_branches(
     cache: &HashMap<Hash, Block>,
-    support: impl Fn(&Hash) -> Option<network::BlockSupport>,
+    support: impl Fn(&Hash, &Hash) -> Option<network::BlockSupport>,
 ) -> HashMap<Hash, BranchInfo> {
     let parents: HashSet<Hash> = cache.values().map(|b| b.header.prev_hash).collect();
     let key = |h: &Hash| (cache[h].header.slot, *h);
@@ -43,8 +62,9 @@ fn bond_branches(
             path.push(prev);
         }
         path.reverse();
+        let root = cache[&path[0]].header.prev_hash;
         for i in 0..path.len() {
-            let w = network::candidate_union(&path[i..], &support);
+            let w = network::candidate_union(&path[i..], |h| support(&root, h));
             let rest = &path[i + 1..];
             let wins = best.get(&path[i]).is_none_or(|(bw, _, brest)| {
                 let tie = || brest.iter().map(key).cmp(rest.iter().map(key));
@@ -70,11 +90,27 @@ impl Node {
             sync.reorg_handler().weighs_from_ancestor(tip_h)
         };
         if above {
-            let view = Box::new(self.support_view(self.rank_table().await).await);
-            BranchRank::Bond(view, Arc::clone(&self.block_store))
+            BranchRank::Bond(
+                Box::new(self.rank_views().await),
+                Arc::clone(&self.block_store),
+            )
         } else {
             BranchRank::Depth
         }
+    }
+
+    /// One snapshot, re-weighed per table of [`Self::rank_tables`].
+    async fn rank_views(&self) -> RankViews {
+        let (by_root, tables) = self.rank_tables().await;
+        let mut tables = tables.into_iter();
+        let mut views = Vec::new();
+        if let Some(first) = tables.next() {
+            let first = self.support_view(first).await;
+            let rest: Vec<SupportView> = tables.map(|t| first.with_table(t)).collect();
+            views.push(first);
+            views.extend(rest);
+        }
+        RankViews { views, by_root }
     }
 }
 
@@ -118,7 +154,7 @@ mod tests {
         for b in [&root, &s1, &s2].into_iter().chain(&l) {
             cache.insert(b.hash(), b.clone());
         }
-        let support = |h: &Hash| {
+        let support = |_: &Hash, h: &Hash| {
             let b = cache.get(h)?;
             Some(BlockSupport::single(*b.header.producer.as_bytes(), 1))
         };
@@ -136,7 +172,7 @@ mod tests {
         let t2 = blk(t.hash(), 4, 1);
         cache.insert(t.hash(), t.clone());
         cache.insert(t2.hash(), t2.clone());
-        let tied = bond_branches(&cache, |h: &Hash| {
+        let tied = bond_branches(&cache, |_: &Hash, h: &Hash| {
             Some(BlockSupport::single(
                 *cache.get(h)?.header.producer.as_bytes(),
                 1,

@@ -319,3 +319,9 @@ path = "tests/inc_i_289_n1_snap_descent_red.rs"
 [[test]]
 name = "inc_i_289_n4_table_bootstrap"
 path = "tests/inc_i_289_n4_table_bootstrap.rs"
+
+# INC-I-289 O-1 cached-branch rank (AUDIT-P2-644-001/-002) — own binary: the
+# process-wide table-missing metric is read as a delta.
+[[test]]
+name = "inc_i_289_o1_rank_table"
+path = "tests/inc_i_289_o1_rank_table.rs"

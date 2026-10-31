@@ -70,20 +70,9 @@ impl Node {
     /// live one when that epoch is the tip's. `None` = refuse the reorg (never the
     /// tip table for an older epoch).
     pub(super) async fn ancestor_table(&self, ancestor: (u64, Hash)) -> Option<EpochTable> {
-        let tip = self.chain_state.read().await.best_height;
-        let bpe = self.config.network.blocks_per_reward_epoch();
-        let start = ancestor.0 - ancestor.0 % bpe;
-        // A table from an abandoned boundary block is not this chain's.
-        let stored_at = self.block_store.get_hash_by_height(start).ok().flatten();
-        let canonical = |t: &EpochTable| match (t.boundary_hash, stored_at) {
-            (Some(b), Some(c)) => b == c,
-            _ => true,
-        };
-        if let Some(t) = self.state_db.get_epoch_table(start).filter(canonical) {
+        let start = ancestor.0 - ancestor.0 % self.config.network.blocks_per_reward_epoch();
+        if let Some(t) = self.epoch_table(start).await {
             return Some(t);
-        }
-        if start == tip - tip % bpe {
-            return Some(self.live_epoch_table(start).await);
         }
         crate::metrics::FORK_CHOICE_TABLE_MISSING.inc();
         let mut logged = LOGGED.lock().unwrap_or_else(|e| e.into_inner());
@@ -100,32 +89,65 @@ impl Node {
         None
     }
 
-    /// The ranking's table: the epoch of the lowest point where a cached branch
-    /// meets the local chain (the tip's when none does). Missing: an empty table,
-    /// so every branch weighs 0 and the tie rule orders them.
-    pub(super) async fn rank_table(&self) -> EpochTable {
-        let roots: Vec<Hash> = {
+    /// The stored table of the epoch at `start`, else the live one when that epoch
+    /// is the tip's. Counts and logs nothing.
+    async fn epoch_table(&self, start: u64) -> Option<EpochTable> {
+        let tip = self.chain_state.read().await.best_height;
+        let bpe = self.config.network.blocks_per_reward_epoch();
+        // A table from an abandoned boundary block is not this chain's.
+        let stored_at = self.block_store.get_hash_by_height(start).ok().flatten();
+        let canonical = |t: &EpochTable| match (t.boundary_hash, stored_at) {
+            (Some(b), Some(c)) => b == c,
+            _ => true,
+        };
+        if let Some(t) = self.state_db.get_epoch_table(start).filter(canonical) {
+            return Some(t);
+        }
+        if start == tip - tip % bpe {
+            return Some(self.live_epoch_table(start).await);
+        }
+        None
+    }
+
+    /// The ranking's tables: each cached root (the out-of-cache parent of a cached
+    /// chain) maps to the table of the epoch where its branch meets the local chain
+    /// (the tip's when that point is unknown). A root without a table is not mapped:
+    /// its branch alone weighs 0. Ranking refuses nothing, so nothing is counted.
+    pub(super) async fn rank_tables(&self) -> (HashMap<Hash, usize>, Vec<EpochTable>) {
+        let roots: HashSet<Hash> = {
             let cache = self.fork_block_cache.read().await;
             (cache.values().map(|b| b.header.prev_hash))
                 .filter(|p| !cache.contains_key(p))
                 .collect()
         };
-        let mut anchor: Option<(u64, Hash)> = None;
+        let tip = {
+            let cs = self.chain_state.read().await;
+            (cs.best_height, cs.best_hash)
+        };
+        let bpe = self.config.network.blocks_per_reward_epoch();
+        let (mut by_root, mut tables, mut by_start) = (HashMap::new(), Vec::new(), HashMap::new());
         for root in roots {
-            if let Some(a) = self.attach_point(root).await {
-                if anchor.is_none_or(|(h, _)| a.0 < h) {
-                    anchor = Some(a);
+            let at = self.attach_point(root).await.unwrap_or(tip);
+            let start = at.0 - at.0 % bpe;
+            let i = match by_start.get(&start) {
+                Some(i) => *i,
+                None => {
+                    let i = self.epoch_table(start).await.map(|t| {
+                        tables.push(t);
+                        tables.len() - 1
+                    });
+                    *by_start.entry(start).or_insert(i)
                 }
+            };
+            if let Some(i) = i {
+                by_root.insert(root, i);
+            } else {
+                debug!(
+                    "FORK_RANK: no epoch table at {start} for root {root:.16}; its branch ranks 0"
+                );
             }
         }
-        let anchor = match anchor {
-            Some(a) => a,
-            None => {
-                let cs = self.chain_state.read().await;
-                (cs.best_height, cs.best_hash)
-            }
-        };
-        self.ancestor_table(anchor).await.unwrap_or_default()
+        (by_root, tables)
     }
 
     async fn live_epoch_table(&self, epoch_start: u64) -> EpochTable {

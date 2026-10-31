@@ -60,6 +60,19 @@ impl SupportView {
         self.cached.insert(block.hash(), Arc::new(Facts::of(block)));
     }
 
+    /// The same snapshot weighed with `table` (no block bytes copied).
+    pub(super) fn with_table(&self, table: storage::EpochTable) -> Self {
+        Self {
+            ah178: self.ah178,
+            producers: table.producer_set().unwrap_or_default(),
+            bonds: table.bonds.into_iter().collect(),
+            base: table.producer_list,
+            gossip: self.gossip.clone(),
+            cached: self.cached.clone(),
+            verified: Mutex::new(HashMap::new()),
+        }
+    }
+
     fn facts(&self, store: &BlockStore, hash: &Hash) -> Option<Arc<Facts>> {
         match self.cached.get(hash) {
             Some(f) => Some(Arc::clone(f)),
