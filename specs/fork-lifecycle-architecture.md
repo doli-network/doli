@@ -352,7 +352,8 @@ encoded against a list that changed after the ancestor weigh 0 on both sides. No
 ancestor's epoch (and it is not the tip's epoch): the door refuses the reorg, counts
 doli_fork_choice_table_missing_total, logs one FORK_TABLE line per ancestor hash; the ranking
 weighs only that branch 0 (a Hash::ZERO-parent orphan past epoch 0's window included) and counts
-nothing. Never the tip table, never an empty table for other branches. Below the height: unchanged.
+nothing. A door never takes the tip table for an older epoch; the ranking takes the tip's epoch
+only for an unknown attach point, and a missing table zeroes only its own branch. Below the height: unchanged.
 ```
 
 ### Proposed (after M6)

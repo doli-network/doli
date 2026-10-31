@@ -2206,7 +2206,10 @@ apply's `SlotNotAdvancing` and of `slot_weight`), so a branch apply would refuse
 plan. Ranking: the hold, the walk's seed rule (and the branch tip a lost walk marks rejected),
 the cached-child drain order, the eviction pin and the body-retry branch tip rank a cached
 branch in this unit (best chain under a block over its cached tips; ties to the lower slot,
-then the lower hash, child by child). Fork credits: verified gossip attestations for fork-cache
+then the lower hash, child by child). A cached child whose slot is not above its cached parent's
+slot does not end its parent's chain when the bond ranking picks branch tips: the parent stays a
+tip and the child's own path weighs 0 (`bond_branches`, `BlockSupport::advances_slot`), so a
+non-advancing child by any key does not zero the honest branch below it. Fork credits: verified gossip attestations for fork-cache
 or retained hashes go to a map of at most 64 hashes (oldest evicted) that holds one credit per
 attester, its latest by slot: a credit moves only to a strictly higher slot, a same-slot
 conflict keeps the first, and a hash left with no attester is freed. The map feeds no
@@ -2214,17 +2217,23 @@ attendance, BLS pool or finality. The node builds the support view (gossip door,
 evaluation, wedge plan) and keeps fork credits only at or above the gate; below it neither
 exists.
 
-**Epoch table of the common ancestor (INC-I-289 L-1, L-2).** The bonds, the bit decode list
+**Epoch table of the common ancestor (INC-I-289 L-1, L-2, O-1).** The bonds, the bit decode list
 (`producer_list`) and the BLS keys come from ONE epoch table for both branches: the table of the
-epoch that holds the common ancestor of the candidate and the local chain (the ranking: the
-lowest point where a cached branch meets the local chain, else the tip's epoch). Bits encoded
+epoch that holds the common ancestor of the candidate and the local chain. Bits encoded
 against a list that changed after the ancestor weigh 0 on both sides. Tables come from a bounded
 local store (`cf_meta` key `epoch_table:` ++ epoch start, not in the state root): every epoch
 within `MAX_REORG_DEPTH` of the tip plus one, at least 4 (4 mainnet, 29 testnet, 251 devnet); a
 table whose boundary hash is not the stored canonical block is not used. No table for the
 ancestor's epoch (and it is not the tip's epoch): the door refuses the reorg, counts
-`doli_fork_choice_table_missing_total` and logs one `FORK_TABLE` line per ancestor hash; the
-ranking weighs every branch 0 and the tie rule orders them. Never the tip table.
+`doli_fork_choice_table_missing_total` and logs one `FORK_TABLE` line per ancestor hash
+(`ancestor_table`). A door never takes the tip table for an older epoch. The ranking weighs each
+cached branch with the table of ITS OWN attach point (`rank_tables`, `RankViews`,
+`SupportView::with_table`): the branch root (the out-of-cache parent of the cached chain) is
+walked back to the first block the canonical index holds (`attach_point`); a `Hash::ZERO` root
+attaches at height 0 and takes epoch 0's table by the same rule; an attach point the walk does not
+find (a header it lacks, or none within `MAX_REORG_DEPTH` + 1 parents) takes the tip's epoch. A
+root with no table (`epoch_table`) weighs 0 alone and the other branches keep their tables; the
+ranking counts no metric and logs no `FORK_TABLE` line.
 
 **Finality is kept (INC-I-289 K-2, M-1, M-2).** A new finalized checkpoint is persisted
 (`cf_meta` key `finality_checkpoint`) when the applied tip is at or above the gate. At start it
@@ -2246,7 +2255,9 @@ what the pacing allows: one 500-header batch per 1 s sync tick and the manifest 
 served at the peer's current tip, so 4 batches + the manifest tick take 5 s, half a 10 s slot. Plan-door admission: when our canonical index holds the finalized block at
 its height and the common ancestor is at or above that height, the plan door admits the branch
 at any depth, without the 1000-block ancestry walk; otherwise the walk decides as before.
-`forceReorgTo` is unchanged.
+`forceReorgTo` is unchanged. The over-span move is per peer (`snap_descent_leave_over_span`):
+the node leaves that peer for an alternate quorum peer while any alternate's anchor is within the
+bound; only when none is does the whole snap attempt fall back to block sync.
 
 **Recovery and production (INC-I-289).** The coordinator's blind depth-1 rollback on a height
 claim (Rules 1/1b) is removed: it weighed nothing. A Syncing state started by a peer's height
@@ -2262,7 +2273,11 @@ epoch-table capture after each boundary block commits: a local `cf_meta` write o
 state root, read only at or above the gate; (c) the support view shares each cached block's
 attestation facts behind one `Arc` handle: an in-memory representation, the same values feed
 the same support; (d) `ReorgHandler::note_block_slot` records the slot of each applied and fork
-block in a bounded map that only the gated slot rule reads. None of the rules or changes in
+block in a bounded map that only the gated slot rule reads; (e) the tip-epoch seed
+(`seed_tip_epoch_table`): at `Node::new` and after every block that is not a boundary or epoch-0
+block, one `cf_meta` read of `epoch_table:` ++ the tip epoch's start, and a write of the live
+table only when none is stored (log line `EPOCH_TABLE: seeded …`); outside the state root, read
+only at or above the gate. None of the rules or changes in
 this section changes block validity, block content, the state root, the wire format or the
 protocol version, so the binary can roll.
 
