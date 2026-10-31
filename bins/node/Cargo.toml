@@ -363,3 +363,9 @@ path = "tests/inc_i_293_r2_branch_peer.rs"
 [[test]]
 name = "inc_i_293_r2_root_priority"
 path = "tests/inc_i_293_r2_root_priority.rs"
+
+# INC-I-293 R-2 junk-fetch bound (run 648, SEC-FIXVERIFY-647-102) — own binary:
+# real loopback libp2p services and a below-AH child re-exec.
+[[test]]
+name = "inc_i_293_r2_junk_bound"
+path = "tests/inc_i_293_r2_junk_bound.rs"
