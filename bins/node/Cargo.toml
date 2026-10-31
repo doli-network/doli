@@ -271,3 +271,9 @@ path = "tests/inc_i_236_m2_restore_rpc.rs"
 [[test]]
 name = "inc_i_289_j1_rank_bytes"
 path = "tests/inc_i_289_j1_rank_bytes.rs"
+
+# INC-I-289 gate edge (QA-639-003): every test re-execs itself in a child process
+# with the INC-I-288 gate env override at tip, tip+1 or tip-1 (per-process OnceLock).
+[[test]]
+name = "inc_i_289_j4_gate_edge"
+path = "tests/inc_i_289_j4_gate_edge.rs"
