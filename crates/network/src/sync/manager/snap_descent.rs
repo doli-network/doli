@@ -129,7 +129,7 @@ impl SyncManager {
 
     /// Dispatch hook for `SnapDownloading` before the manifest: the next proof
     /// batch, `Ok(None)` when no proof is needed or it is complete, `Err` when
-    /// the span exceeds the bound (the caller falls back before any download).
+    /// the span exceeds the bound (the caller leaves the peer before any download).
     pub(super) fn snap_descent_next_request(
         &mut self,
         target_height: u64,
@@ -152,6 +152,26 @@ impl SyncManager {
             None => Err(()),
             Some(p) => Ok((!p.is_complete()).then(|| p.next_request())),
         }
+    }
+
+    /// An over-span primary is a per-peer fault: leave it for the next quorum
+    /// peer when one has an anchor within the bound. `false` when none has.
+    pub(super) fn snap_descent_leave_over_span(&mut self, peer: PeerId) -> bool {
+        let Some((fh, _)) = self.snap_descent_finality() else {
+            return false;
+        };
+        let in_bound = match &self.pipeline_data {
+            SyncPipelineData::SnapDownloading {
+                alternate_peers, ..
+            } => alternate_peers
+                .iter()
+                .any(|(_, _, h)| h.saturating_sub(fh) <= SNAP_DESCENT_PROOF_MAX_HEADERS),
+            _ => false,
+        };
+        if in_bound {
+            self.handle_snap_download_error(peer);
+        }
+        in_bound
     }
 
     /// `true` when a `Headers` response from `peer` answers a pending proof batch.

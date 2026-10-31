@@ -159,3 +159,73 @@ fn m1_inc_i_289_span_over_bound_falls_back_before_download() {
         "over the bound the node falls back to block sync before any download"
     );
 }
+
+/// Quorum: `anchors[0]` is the primary, the rest are its alternates.
+fn quorum(f: Hash, anchors: &[(u64, Hash)]) -> (SyncManager, Vec<PeerId>) {
+    let (mut m, primary) = mgr(f, anchors[0]);
+    let mut peers = vec![primary];
+    let mut alts = Vec::new();
+    for a in &anchors[1..] {
+        let p = PeerId::random();
+        m.add_peer(p, a.0, a.1, a.0 as u32);
+        alts.push((p, a.1, a.0));
+        peers.push(p);
+    }
+    if let SyncPipelineData::SnapDownloading {
+        alternate_peers, ..
+    } = &mut m.pipeline_data
+    {
+        *alternate_peers = alts;
+    }
+    (m, peers)
+}
+
+/// AUDIT-P2-644-003: one over-span vote is a per-peer fault, not the end of the attempt.
+#[test]
+fn o1_inc_i_289_over_span_vote_moves_the_proof_to_an_honest_peer() {
+    let f = crypto::hash::hash(b"f");
+    let headers = chain(f, 600);
+    let honest = (FH + 600, headers.last().unwrap().hash());
+    let over = (
+        FH + SNAP_DESCENT_PROOF_MAX_HEADERS + 1,
+        crypto::hash::hash(b"a"),
+    );
+    let (mut m, peers) = quorum(f, &[over, honest, honest]);
+
+    assert!(
+        next(&mut m, peers[0]).is_none(),
+        "no request to the over-span peer"
+    );
+    assert_eq!(
+        m.snap.attempts, 0,
+        "one over-span vote must not end the attempt"
+    );
+    let (to, req) = m
+        .next_request()
+        .expect("the proof continues with an honest peer");
+    assert!(
+        peers[1..].contains(&to),
+        "the next request goes to an honest quorum peer"
+    );
+    assert!(
+        matches!(req, SyncRequest::GetHeaders { start_hash, max_count: 500 } if start_hash == f),
+        "the proof starts from f at the honest anchor, got {req:?}"
+    );
+}
+
+/// Control: when every quorum peer is over the span the attempt falls back once.
+#[test]
+fn o1_inc_i_289_all_over_span_falls_back() {
+    let f = crypto::hash::hash(b"f");
+    let over = (
+        FH + SNAP_DESCENT_PROOF_MAX_HEADERS + 1,
+        crypto::hash::hash(b"a"),
+    );
+    let (mut m, peers) = quorum(f, &[over, over, over]);
+    assert!(next(&mut m, peers[0]).is_none(), "no request");
+    assert_eq!(m.snap.attempts, 1, "the attempt ends once");
+    assert!(
+        !m.pipeline_data.is_snap_syncing(),
+        "no quorum peer is in bound: block sync"
+    );
+}

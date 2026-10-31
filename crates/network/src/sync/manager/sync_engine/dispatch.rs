@@ -234,7 +234,9 @@ impl SyncManager {
                             proof.unwrap_or_else(|| SyncRequest::get_state_manifest(target_hash))
                         }
                         Err(()) => {
-                            self.snap_fallback_to_normal();
+                            if !self.snap_descent_leave_over_span(peer) {
+                                self.snap_fallback_to_normal();
+                            }
                             return None;
                         }
                     },

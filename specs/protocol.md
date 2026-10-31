@@ -2239,8 +2239,9 @@ headers meets the canonical chain at or above the finalized height) or, for a no
 those headers, by a peer-served chain: before the manifest the snap peer serves the headers
 `f+1..=anchor` through the existing `GetHeaders` request (batches of 500), every parent link is
 checked and the last header must hash to the anchor; a broken or foreign chain moves to an
-alternate peer; a span above `SNAP_DESCENT_PROOF_MAX_HEADERS` (10,000) falls back to block sync
-before any download. Plan-door admission: when our canonical index holds the finalized block at
+alternate peer; an anchor more than `SNAP_DESCENT_PROOF_MAX_HEADERS` (10,000) above the finalized
+height moves the proof to the next quorum peer whose anchor is within that bound, and only when no
+quorum peer is within it does the node fall back to block sync, before any download. Plan-door admission: when our canonical index holds the finalized block at
 its height and the common ancestor is at or above that height, the plan door admits the branch
 at any depth, without the 1000-block ancestry walk; otherwise the walk decides as before.
 `forceReorgTo` is unchanged.
