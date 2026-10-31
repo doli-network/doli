@@ -265,8 +265,12 @@ impl Node {
                 // Cache the orphan so it's available when the missing parent arrives.
                 self.cache_block_with_eviction(block_hash, block).await;
                 // INC-I-293 F2: at/above the gate the by-height chase cannot reach a
-                // missing fork root at or below our tip; the by-hash walk can.
-                if self.weighs_by_support().await {
+                // missing fork root at or below our tip; the by-hash walk can. An orphan
+                // beyond the reorg depth is a catch-up: header-first sync's job.
+                let best_slot = self.chain_state.read().await.best_slot;
+                let within_reorg_depth =
+                    block_slot <= best_slot.saturating_add(network::MAX_REORG_DEPTH as u32);
+                if within_reorg_depth && self.weighs_by_support().await {
                     self.try_trigger_fork_recovery().await;
                 }
                 return Ok(());

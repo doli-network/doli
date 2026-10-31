@@ -2186,10 +2186,11 @@ reported as evidence, and the tip height comes only from peer status and applied
 of a lighter branch do not make a gap of 1 that rolls back a heavier tip; (4) a block this
 node produced (producer = its own key) is not post-rollback progress for coordinator Gate 1
 (`block_applied_with_origin`); a block a peer delivered by gossip or reorg still is, whatever
-its producer; (5) an orphan gossip block whose parent is neither stored nor a retained sibling
+its producer; (5) an orphan gossip block whose parent is neither stored nor a retained sibling,
+and whose slot is within the reorg depth of our tip (`slot <= best_slot + MAX_REORG_DEPTH`),
 also starts the by-hash fork walk (`try_trigger_fork_recovery`, Orphan arm of `handle_new_block`
-in `block_handling.rs`) after the unchanged by-height ORPHAN_CHASE request; below the height
-only the chase runs (INC-I-293 F2); (6) a sibling that the wedge-escape door keeps retained and
+in `block_handling.rs`) after the unchanged by-height ORPHAN_CHASE request; a catch-up orphan
+beyond that depth and any orphan below the height get only the chase (INC-I-293 F2); (6) a sibling that the wedge-escape door keeps retained and
 off the chain hands each of its cached children, depth-first, to the same door
 (`retain_sibling_and_try_escape` in `wedge_escape.rs`), at most `WEDGE_RETAINED_CAP` (64) door
 calls, and stops when the tip moves; so a root that arrives after its children is weighed with
