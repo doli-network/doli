@@ -73,7 +73,9 @@ async fn stuck_with_burst_and_heavier_orphan(r: &mut Rig, n: u64) -> Shape {
 
 /// One trigger; when a walk starts, drive it to its connection point.
 async fn trigger_and_walk(r: &mut Rig, serve: &[Block]) -> (bool, Vec<crypto::Hash>) {
-    let started = r.node.try_trigger_fork_recovery().await;
+    // INC-I-293 F2: above the gate the orphan's arrival may already have started it.
+    let started = r.node.try_trigger_fork_recovery().await
+        || (r.node.sync_manager.read().await).is_fork_recovery_active();
     let fetched = if started {
         drive_walk(r, serve, 8).await
     } else {
