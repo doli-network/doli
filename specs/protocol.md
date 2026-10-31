@@ -2193,7 +2193,12 @@ only the chase runs (INC-I-293 F2); (6) a sibling that the wedge-escape door kee
 off the chain hands each of its cached children, depth-first, to the same door
 (`retain_sibling_and_try_escape` in `wedge_escape.rs`), at most `WEDGE_RETAINED_CAP` (64) door
 calls, and stops when the tip moves; so a root that arrives after its children is weighed with
-its branch, as if it had arrived first (INC-I-293 F3).
+its branch, as if it had arrived first (INC-I-293 F3); (7) a block that an attestation names
+and the node lacks keeps its attestation-fetch entry until the block is stored, cached or
+retained, or the unchanged 30 s expiry ends it, and each periodic tick sends one
+`GetBlockByHash` for it to the recorded relayer while it is connected, else to the highest
+connected peer (`best_peer_for_recovery`); below the height the fetch fires once to the
+recorded relayer and the entry is removed (INC-I-293 F1, `periodic.rs`).
 
 **Bond unit (INC-I-289 K-1, N-3).** A branch weighs the bond (`selection_weight_at`, the
 finality unit) of its DISTINCT supporters from the common ancestor; each producer counts once:

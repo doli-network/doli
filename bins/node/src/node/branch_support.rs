@@ -172,6 +172,24 @@ impl Node {
         sync.reorg_handler().weighs_from_ancestor(tip_h)
     }
 
+    /// INC-I-293 F1: the attested block is on the node (stored, cached or retained).
+    pub(super) async fn attested_block_held(&self, hash: &Hash) -> bool {
+        matches!(self.block_store.has_block(hash), Ok(true))
+            || self.wedge_retained_tips.contains(hash)
+            || self.fork_block_cache.read().await.contains_key(hash)
+    }
+
+    /// INC-I-293 F1: the recorded relayer while it is in the peer table (a
+    /// disconnect removes it), else the highest connected peer. The tracker holds
+    /// only the hash, so the highest reported height stands for the block's.
+    pub(super) async fn attest_fetch_peer(&self, recorded: PeerId) -> Option<PeerId> {
+        let sync = self.sync_manager.read().await;
+        if sync.has_peer(&recorded) {
+            return Some(recorded);
+        }
+        sync.best_peer_for_recovery()
+    }
+
     /// [`Self::support_view`] at/above the gate toward the branch holding `from`;
     /// `None` below it (the doors read no support there) or when the common
     /// ancestor's epoch table is not kept (the doors then refuse the reorg).

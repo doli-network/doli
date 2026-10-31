@@ -361,6 +361,8 @@ INC-I-293 F3: no authority added or removed. At/above the height a sibling the w
 retained and off the chain hands its cached children, depth-first, to the same door call
 (at most WEDGE_RETAINED_CAP = 64 calls, stops when the tip moves), so a root that arrives last
 is weighed with its branch by A3. Below the height: unchanged.
+INC-I-293 F1: no authority added or removed. At/above the height the attestation fetch keeps its
+entry until the block is held (or the 30 s expiry) and re-asks one connected peer per tick.
 ```
 
 ### Proposed (after M6)

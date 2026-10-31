@@ -350,8 +350,8 @@ impl Node {
         // INC-I-049 DEFERRED ATTEST_FETCH: check entries >500ms old.
         // If block_store now has the block → gossip delivered it, silently clear.
         // If still missing → genuine recovery, send GetBlockByHash to recorded peer,
-        // then REMOVE the entry. If the block still doesn't arrive and a new
-        // attestation comes in, it re-creates the entry with a fresh grace period.
+        // then REMOVE the entry (below the INC-I-288 gate). If the block still doesn't
+        // arrive and a new attestation comes in, it re-creates the entry.
         {
             let now = Instant::now();
             const GRACE_MS: u128 = 500;
@@ -366,18 +366,33 @@ impl Node {
                 .map(|(hash, (t, count, peer))| (*t, *hash, *peer, *count))
                 .collect();
             matured.sort_by_key(|(t, ..)| *t);
+            // INC-I-293 F1: at/above the gate the entry lives until the block is
+            // held or the 30 s sweep below; each tick re-asks a peer connected now.
+            let refetch = !matured.is_empty() && self.weighs_by_support().await;
 
             let mut fired = 0;
-            for (_, block_hash, source_peer, attempt) in matured {
+            for (_, block_hash, recorded_peer, attempt) in matured {
                 // Check if gossip delivered the block during the grace period
                 if let Ok(Some(_)) = self.block_store.get_height_by_hash(&block_hash) {
                     // Block arrived via gossip — no fetch needed
                     self.attest_fetch_tracker.remove(&block_hash);
                     continue;
                 }
+                if refetch && self.attested_block_held(&block_hash).await {
+                    self.attest_fetch_tracker.remove(&block_hash);
+                    continue;
+                }
                 if fired == FETCH_CAP_PER_TICK {
                     continue;
                 }
+                let source_peer = if refetch {
+                    match self.attest_fetch_peer(recorded_peer).await {
+                        Some(p) => p,
+                        None => continue,
+                    }
+                } else {
+                    recorded_peer
+                };
                 fired += 1;
 
                 // Still missing — genuine recovery, fire one fetch and remove.
@@ -399,7 +414,9 @@ impl Node {
 
                 // Remove after firing — prevents repeated fetches every tick.
                 // New attestations will re-add if the block still hasn't arrived.
-                self.attest_fetch_tracker.remove(&block_hash);
+                if !refetch {
+                    self.attest_fetch_tracker.remove(&block_hash);
+                }
             }
 
             // Clean stale entries (>30s old) to bound memory
@@ -1836,6 +1853,19 @@ mod attest_fetch_integration_tests {
         (node, tmp)
     }
 
+    /// The test node with its sync manager below the INC-I-288 gate (one-shot fetch).
+    async fn make_below_gate_node() -> (Node, tempfile::TempDir) {
+        let (mut node, tmp) = make_test_node().await;
+        let genesis = node.chain_state.read().await.genesis_hash;
+        let config = SyncConfig {
+            inc_i_288_fork_choice_activation_height: u64::MAX,
+            ..SyncConfig::default()
+        };
+        node.sync_manager = Arc::new(RwLock::new(SyncManager::new(config, genesis)));
+        assert!(!node.weighs_by_support().await, "fixture: below the gate");
+        (node, tmp)
+    }
+
     fn make_hash(b: u8) -> Hash {
         let mut bytes = [0u8; 32];
         bytes[0] = b;
@@ -1966,7 +1996,7 @@ mod attest_fetch_integration_tests {
     /// a no-op since network=None), entry removed from tracker.
     #[tokio::test]
     async fn test_c_grace_expiry_missing_block_fires_once_and_removes() {
-        let (mut node, _tmp) = make_test_node().await;
+        let (mut node, _tmp) = make_below_gate_node().await;
         let block_hash = make_hash(44);
         let peer = PeerId::random();
 
@@ -2010,7 +2040,7 @@ mod attest_fetch_integration_tests {
     /// of the entry being removed.
     #[tokio::test]
     async fn test_d_second_periodic_tick_no_refire() {
-        let (mut node, _tmp) = make_test_node().await;
+        let (mut node, _tmp) = make_below_gate_node().await;
         let block_hash = make_hash(45);
         let peer = PeerId::random();
 
@@ -2039,6 +2069,59 @@ mod attest_fetch_integration_tests {
         assert!(
             node.attest_fetch_tracker.is_empty(),
             "After third tick: tracker must still be empty (no re-fire)"
+        );
+    }
+
+    /// Test E (INC-I-293 F1, above the gate): a missing block with no peer
+    /// connected keeps its entry across ticks; the existing 30 s sweep ends it;
+    /// a block held in the fork cache ends it at once.
+    #[tokio::test]
+    async fn test_e_above_gate_entry_kept_until_held_or_30s_expiry() {
+        let (mut node, _tmp) = make_test_node().await;
+        assert!(node.weighs_by_support().await, "fixture: above the gate");
+        let (missing, held) = (make_hash(46), make_hash(47));
+        for h in [missing, held] {
+            node.maybe_fetch_attested_block(&h, PeerId::random()).await;
+            node.attest_fetch_tracker.get_mut(&h).unwrap().0 =
+                Instant::now() - Duration::from_millis(600);
+        }
+        node.run_periodic_tasks().await.expect("periodic 1 failed");
+        node.run_periodic_tasks().await.expect("periodic 2 failed");
+        assert_eq!(
+            node.attest_fetch_tracker.len(),
+            2,
+            "the entries of missing blocks outlive the fetch tick above the gate"
+        );
+
+        let any = doli_core::BlockHeader {
+            version: 2,
+            prev_hash: Hash::ZERO,
+            merkle_root: Hash::ZERO,
+            presence_root: Hash::ZERO,
+            genesis_hash: Hash::ZERO,
+            timestamp: 0,
+            slot: 1,
+            producer: *crypto::KeyPair::generate().public_key(),
+            vdf_output: vdf::VdfOutput { value: vec![0; 32] },
+            vdf_proof: vdf::VdfProof::empty(),
+            missed_producers: Vec::new(),
+            data_root: Hash::ZERO,
+            fork_id: Hash::ZERO,
+        };
+        let block = doli_core::Block::new(any, vec![]);
+        node.fork_block_cache.write().await.insert(held, block);
+        node.run_periodic_tasks().await.expect("periodic 3 failed");
+        assert!(
+            !node.attest_fetch_tracker.contains_key(&held),
+            "a block held in the fork cache ends its entry"
+        );
+
+        node.attest_fetch_tracker.get_mut(&missing).unwrap().0 =
+            Instant::now() - Duration::from_secs(31);
+        node.run_periodic_tasks().await.expect("periodic 4 failed");
+        assert!(
+            node.attest_fetch_tracker.is_empty(),
+            "the existing 30 s sweep ends the kept entry"
         );
     }
 }
