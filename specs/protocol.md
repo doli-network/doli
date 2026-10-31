@@ -2186,7 +2186,14 @@ reported as evidence, and the tip height comes only from peer status and applied
 of a lighter branch do not make a gap of 1 that rolls back a heavier tip; (4) a block this
 node produced (producer = its own key) is not post-rollback progress for coordinator Gate 1
 (`block_applied_with_origin`); a block a peer delivered by gossip or reorg still is, whatever
-its producer.
+its producer; (5) an orphan gossip block whose parent is neither stored nor a retained sibling
+also starts the by-hash fork walk (`try_trigger_fork_recovery`, Orphan arm of `handle_new_block`
+in `block_handling.rs`) after the unchanged by-height ORPHAN_CHASE request; below the height
+only the chase runs (INC-I-293 F2); (6) a sibling that the wedge-escape door keeps retained and
+off the chain hands each of its cached children, depth-first, to the same door
+(`retain_sibling_and_try_escape` in `wedge_escape.rs`), at most `WEDGE_RETAINED_CAP` (64) door
+calls, and stops when the tip moves; so a root that arrives after its children is weighed with
+its branch, as if it had arrived first (INC-I-293 F3).
 
 **Bond unit (INC-I-289 K-1, N-3).** A branch weighs the bond (`selection_weight_at`, the
 finality unit) of its DISTINCT supporters from the common ancestor; each producer counts once:

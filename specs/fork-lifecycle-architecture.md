@@ -354,6 +354,13 @@ doli_fork_choice_table_missing_total, logs one FORK_TABLE line per ancestor hash
 weighs only that branch 0 (a Hash::ZERO-parent orphan past epoch 0's window included) and counts
 nothing. A door never takes the tip table for an older epoch; the ranking takes the tip's epoch
 only for an unknown attach point, and a missing table zeroes only its own branch. Below the height: unchanged.
+INC-I-293 F2: no authority added or removed. At/above the height the Orphan arm (parent neither
+stored nor retained) also calls the existing walk starter try_trigger_fork_recovery after the
+unchanged ORPHAN_CHASE; the walk still feeds A3. Below the height: unchanged.
+INC-I-293 F3: no authority added or removed. At/above the height a sibling the wedge door keeps
+retained and off the chain hands its cached children, depth-first, to the same door call
+(at most WEDGE_RETAINED_CAP = 64 calls, stops when the tip moves), so a root that arrives last
+is weighed with its branch by A3. Below the height: unchanged.
 ```
 
 ### Proposed (after M6)
