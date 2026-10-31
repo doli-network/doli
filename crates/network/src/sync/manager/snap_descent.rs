@@ -13,11 +13,12 @@ use tracing::{info, warn};
 use super::{SyncManager, SyncPipelineData};
 use crate::protocols::SyncRequest;
 
-/// Most headers one descent proof may span: 20 `GetHeaders` batches of the
-/// 500-header `max_headers_per_request`, about 27.8 h of 10 s slots. Snap starts
-/// at a 500-block gap, so a node offline for a day still proves descent; a
+/// Most headers one descent proof may span. One 500-header batch goes out per
+/// 1 s sync tick and the manifest one tick after the last batch; the peer serves
+/// the manifest at its current tip, so the proof must end before its next block.
+/// 4 batches + 1 manifest tick = 5 s, half a 10 s slot (about 5.5 h of lag); a
 /// longer gap falls back to block sync. Only the chain tail is kept (O(1) memory).
-pub const SNAP_DESCENT_PROOF_MAX_HEADERS: u64 = 10_000;
+pub const SNAP_DESCENT_PROOF_MAX_HEADERS: u64 = 2_000;
 
 /// Headers asked per proof request: the header-first batch size.
 const PROOF_BATCH: u64 = 500;

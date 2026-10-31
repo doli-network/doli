@@ -229,3 +229,56 @@ fn o1_inc_i_289_all_over_span_falls_back() {
         "no quorum peer is in bound: block sync"
     );
 }
+
+/// AUDIT-P2-644-004: one proof batch per 1 s tick and the manifest is served at
+/// the peer's current tip, so a proof of exactly the bound must reach the
+/// manifest within half a slot of ticks.
+#[test]
+fn o1_inc_i_289_proof_of_the_bound_reaches_the_manifest_within_half_a_slot() {
+    let f = crypto::hash::hash(b"f");
+    let headers = chain(f, SNAP_DESCENT_PROOF_MAX_HEADERS);
+    let anchor = (
+        FH + SNAP_DESCENT_PROOF_MAX_HEADERS,
+        headers.last().unwrap().hash(),
+    );
+    let (mut m, peer) = mgr(f, anchor);
+    let budget = doli_core::consensus::SLOT_DURATION / 2;
+    let mut served = 0usize;
+    for tick in 1..=budget {
+        match next(&mut m, peer) {
+            Some(SyncRequest::GetHeaders { max_count, .. }) => {
+                let end = served + max_count as usize;
+                m.handle_response(peer, SyncResponse::Headers(headers[served..end].to_vec()));
+                served = end;
+            }
+            Some(SyncRequest::GetStateManifest { .. }) => return,
+            other => panic!("tick {tick}: expected a proof batch or the manifest, got {other:?}"),
+        }
+    }
+    panic!(
+        "a proof of the bound ({SNAP_DESCENT_PROOF_MAX_HEADERS} headers) did not reach the manifest within {budget} ticks; {served} headers served"
+    );
+}
+
+/// The documented window is the constant.
+#[test]
+fn o1_inc_i_289_documented_bound_is_the_constant() {
+    let n = SNAP_DESCENT_PROOF_MAX_HEADERS;
+    let shown = format!("{},{:03}", n / 1000, n % 1000);
+    let spec = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../specs/protocol.md"
+    ));
+    let doc = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/troubleshooting.md"
+    ));
+    assert!(
+        spec.contains(&format!("`SNAP_DESCENT_PROOF_MAX_HEADERS` ({shown}")),
+        "specs/protocol.md states the bound {shown}"
+    );
+    assert!(
+        doc.contains(&format!("anchor is above {shown} headers")),
+        "docs/troubleshooting.md states the bound {shown}"
+    );
+}

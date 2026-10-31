@@ -295,8 +295,9 @@ finalized height); unproven is refused and the node falls back to normal sync. B
 height: unchanged. M-1 (AUDIT-P2-639-001): before the manifest, the snap peer serves the
 headers `f+1..=anchor` through the existing `GetHeaders` request (batches of 500); each parent
 link is checked and the last header must hash to the anchor, which admits a lagging node with
-no local headers; a span above `SNAP_DESCENT_PROOF_MAX_HEADERS` (10,000) falls back to block
-sync before any download. M-2 (AUDIT-P2-639-006): when our canonical index holds the finalized
+no local headers; a span above `SNAP_DESCENT_PROOF_MAX_HEADERS` (2,000: one batch per 1 s tick,
+4 batches + the manifest tick is half a 10 s slot) is never proven: the proof moves to a quorum
+peer within the bound, else falls back to block sync before any download. M-2 (AUDIT-P2-639-006): when our canonical index holds the finalized
 block at its height and the common ancestor is at or above that height, the plan door admits
 the branch without the 1000-block ancestry walk (any depth); otherwise the walk decides as before.
 INC-I-289 K-1: no authority added or removed. A1 and A3 weigh a branch as the bond
