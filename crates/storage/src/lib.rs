@@ -128,7 +128,9 @@ pub use snapshot::{
     compute_state_root_from_bytes_gated, compute_state_root_gated, verify_state_root_from_bytes,
     verify_state_root_from_bytes_gated, StateSnapshot,
 };
-pub use state_db::{BlockBatch, LastApplied, MaintainerUndoSnapshot, StateDb, UndoData};
+pub use state_db::{
+    BlockBatch, EpochTable, LastApplied, MaintainerUndoSnapshot, StateDb, UndoData,
+};
 pub use update::UpdateState;
 pub use utxo::{
     uid_key, InMemoryUtxoStore, Outpoint, PinnedUtxoRows, UtxoEntry, UtxoSet, UID_PREFIX_ASSET,

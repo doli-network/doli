@@ -622,6 +622,10 @@ lazy_static! {
     pub static ref FORK_CREDITS: IntCounter = IntCounter::new(
         "doli_fork_credits_total", "Fork-only attestations credited for the reorg doors"
     ).unwrap();
+    /// INC-I-289 L-2: reorgs refused because the ancestor's epoch table is not kept.
+    pub static ref FORK_CHOICE_TABLE_MISSING: IntCounter = IntCounter::new(
+        "doli_fork_choice_table_missing_total", "Reorgs refused: no epoch table for the common ancestor"
+    ).unwrap();
 }
 
 lazy_static! {
@@ -883,6 +887,7 @@ pub fn register_metrics() {
     let _ = REGISTRY.register(Box::new(WEDGE_ESCAPE_OUTCOMES.clone()));
     let _ = REGISTRY.register(Box::new(SUPPORT_VIEWS_BUILT.clone()));
     let _ = REGISTRY.register(Box::new(FORK_CREDITS.clone()));
+    let _ = REGISTRY.register(Box::new(FORK_CHOICE_TABLE_MISSING.clone()));
     let _ = REGISTRY.register(Box::new(PRE_ACTIVATION_BRANCH.clone()));
     let _ = REGISTRY.register(Box::new(REORG_FINALITY_PROBE.clone()));
     // INC-I-204 M4.1: the operator escape counter.

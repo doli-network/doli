@@ -65,7 +65,7 @@ impl Node {
 
         // 3. Try simple reorg first (works for single-block forks within recent_blocks)
         let fork_tip = recovery.blocks.last().unwrap();
-        let view = self.gated_support_view().await;
+        let view = self.gated_support_view(fork_tip.hash()).await;
         let simple_reorg = {
             let sync = self.sync_manager.read().await;
             let store = &self.block_store;
@@ -732,6 +732,7 @@ impl Node {
             snapshot.block_height, snapshot.block_hash
         );
 
+        (self.seed_epoch_table_after_snap(snapshot.block_height, snapshot.block_hash)).await;
         self.reset_maintainer_root_to_snapshot(snapshot.block_height)
             .await;
         self.arm_maintainer_quorum(super::maintainer_quorum::ProbeReason::PostSnapInstall)

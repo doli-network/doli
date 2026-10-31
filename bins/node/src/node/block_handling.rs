@@ -291,7 +291,7 @@ impl Node {
                         .unwrap_or(1)
                 };
 
-                let view = self.gated_support_view().await;
+                let view = self.gated_support_view(block.header.prev_hash).await;
                 let reorg_result = {
                     let store = &self.block_store;
                     self.sync_manager.write().await.handle_new_block_weighted(

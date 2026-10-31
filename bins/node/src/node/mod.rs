@@ -20,6 +20,7 @@ mod bootstrap_redial_tests;
 mod branch_rank;
 mod branch_support;
 pub mod checkpoint_health;
+mod epoch_tables;
 mod event_loop;
 mod floor_window;
 mod force_reorg;

@@ -36,5 +36,5 @@ pub use manager::{
 };
 pub use reorg::{
     candidate_union, BlockSupport, ForkChoiceFinality, ReorgHandler, ReorgObservations,
-    ReorgResult, SupporterId, WeightVerdict,
+    ReorgResult, SupporterId, WeightVerdict, MAX_REORG_DEPTH,
 };

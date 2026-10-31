@@ -348,6 +348,7 @@ impl Node {
         batch
             .commit()
             .map_err(|e| anyhow::anyhow!("StateDb batch commit failed: {}", e))?;
+        self.capture_epoch_table(height, block_hash).await;
 
         // AUDIT-P1-001: refresh the mempool's active-producer snapshot after
         // every block commit. Mempool admission reads this snapshot to build

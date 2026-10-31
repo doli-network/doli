@@ -159,14 +159,16 @@ impl Node {
         sync.reorg_handler().weighs_from_ancestor(tip_h)
     }
 
-    /// [`Self::support_view`] at/above the gate; `None` below it (the doors read
-    /// no support there).
-    pub(super) async fn gated_support_view(&self) -> Option<SupportView> {
-        if self.weighs_by_support().await {
-            Some(self.support_view().await)
-        } else {
-            None
+    /// [`Self::support_view`] at/above the gate toward the branch holding `from`;
+    /// `None` below it (the doors read no support there) or when the common
+    /// ancestor's epoch table is not kept (the doors then refuse the reorg).
+    pub(super) async fn gated_support_view(&self, from: Hash) -> Option<SupportView> {
+        if !self.weighs_by_support().await {
+            return None;
         }
+        let anchor = self.attach_point(from).await?;
+        self.ancestor_table(anchor).await?;
+        Some(self.support_view().await)
     }
 
     /// Snapshot the inputs of [`SupportView::support`] (each lock taken and dropped).

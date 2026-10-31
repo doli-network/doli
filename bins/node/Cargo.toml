@@ -284,3 +284,9 @@ path = "tests/inc_i_289_j4_gate_edge.rs"
 [[test]]
 name = "inc_i_289_k2_view_bytes_below_gate"
 path = "tests/inc_i_289_k2_view_bytes_below_gate.rs"
+
+# INC-I-289 L-2 bounded persisted epoch-table store — own binary: it reads the
+# process-wide table-missing counter and captures the refusal log line.
+[[test]]
+name = "inc_i_289_l2_epoch_table_store"
+path = "tests/inc_i_289_l2_epoch_table_store.rs"

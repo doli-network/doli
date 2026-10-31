@@ -30,7 +30,7 @@ use observe::{bump, ReorgCounters};
 pub use support::{candidate_union, BlockSupport, SupporterId};
 
 /// Maximum depth for reorg detection (must handle network partitions up to ~2.7 hours)
-const MAX_REORG_DEPTH: usize = 1000;
+pub const MAX_REORG_DEPTH: usize = 1000;
 
 /// Block metadata for fork choice rule
 #[derive(Clone, Debug)]
