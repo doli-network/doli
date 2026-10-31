@@ -264,6 +264,11 @@ impl Node {
                 );
                 // Cache the orphan so it's available when the missing parent arrives.
                 self.cache_block_with_eviction(block_hash, block).await;
+                // INC-I-293 F2: at/above the gate the by-height chase cannot reach a
+                // missing fork root at or below our tip; the by-hash walk can.
+                if self.weighs_by_support().await {
+                    self.try_trigger_fork_recovery().await;
+                }
                 return Ok(());
             }
 
