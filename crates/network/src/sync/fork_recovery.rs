@@ -340,3 +340,7 @@ impl Default for ForkRecoveryTracker {
 #[cfg(test)]
 #[path = "fork_recovery_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "fork_recovery_walk_bytes_tests.rs"]
+mod walk_bytes_tests;
