@@ -19,6 +19,15 @@ pub async fn live_rig(our_slots: &[u32], their_slots: &[u32]) -> Rig {
     rig_on(our_slots, their_slots, Some(sync_config(true))).await
 }
 
+/// [`live_rig`] on fixed producer `keys` (every block hash is then fixed).
+pub async fn live_rig_keys(
+    keys: Vec<crypto::KeyPair>,
+    our_slots: &[u32],
+    their_slots: &[u32],
+) -> Rig {
+    rig_on_keys(keys, our_slots, their_slots, Some(sync_config(true))).await
+}
+
 /// A process restart as `Node::new` does it (init.rs: a new SyncManager, then
 /// `update_local_tip` and the post-restart lockout only). Fork cache and the
 /// retained set are in-memory, so a new process starts with them empty.

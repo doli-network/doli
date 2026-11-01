@@ -106,8 +106,20 @@ pub fn fresh_sync_manager(cfg: SyncConfig) -> SyncManager {
 
 /// [`rig`], with the node's SyncManager replaced by one on `cfg` before any block.
 pub async fn rig_on(our_slots: &[u32], their_slots: &[u32], cfg: Option<SyncConfig>) -> Rig {
-    let tmp = TempDir::new().unwrap();
     let keys: Vec<KeyPair> = (0..3).map(|_| KeyPair::generate()).collect();
+    rig_on_keys(keys, our_slots, their_slots, cfg).await
+}
+
+/// [`rig_on`] on fixed producer `keys`. The block hash covers no signature and
+/// the test node's genesis time is 0, so fixed keys fix every block hash.
+pub async fn rig_on_keys(
+    keys: Vec<KeyPair>,
+    our_slots: &[u32],
+    their_slots: &[u32],
+    cfg: Option<SyncConfig>,
+) -> Rig {
+    assert_eq!(keys.len(), 3, "fixture: the rig has 3 producers");
+    let tmp = TempDir::new().unwrap();
     let mut node = Node::new_for_test(tmp.path().to_path_buf(), keys.clone())
         .await
         .expect("Node::new_for_test");

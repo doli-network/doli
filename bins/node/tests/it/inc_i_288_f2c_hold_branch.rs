@@ -26,14 +26,23 @@
 //
 //! covers: fork_cache.rs block_handling.rs fork_choice.rs doors.rs rollback_memory.rs
 
-use crypto::Hash;
+use crypto::{Hash, KeyPair};
 use doli_core::Block;
 
 use super::inc_i_288_f2c_common::*;
 
+/// Fixed producer keys (INC-I-293 V-1). A candidate sibling differs from D only
+/// in slot, timestamp and producer, so D and the 199 candidates are 200
+/// independent uniform hashes: with fresh random keys the search below fails
+/// when D is the largest of the 200, 1 run in 200. With these keys every hash
+/// is fixed and the search finds the same sibling on every run.
+fn f2c_keys() -> Vec<KeyPair> {
+    (1..=3u8).map(|i| KeyPair::from_seed([i; 32])).collect()
+}
+
 /// Tip A3 = D on P = A2; the coordinator rolls D back. Returns (rig, D, P).
 async fn roll_back_d() -> (Rig, Block, Block) {
-    let mut r = live_rig(&[210, 211, 212], &[]).await;
+    let mut r = live_rig_keys(f2c_keys(), &[210, 211, 212], &[]).await;
     let (p, d) = (r.ours[1].clone(), r.ours[2].clone());
     rollback_depth_one(&mut r).await;
     assert_on(&r, &p, F + 2, "precondition: tip P = A2 after the rollback").await;
