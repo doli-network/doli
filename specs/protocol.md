@@ -2222,9 +2222,12 @@ the ReorgCandidate fallback too (`try_trigger_fork_recovery_from`). A walk peer 
 `None` is marked for that walk and the same attempt moves to the next evidence peer; the walk
 is cancelled, with the unchanged 30 s cooldown, only when no evidence peer is left
 (`ForkRecoveryTracker::handle_block`) (INC-I-293 S-2); (10) a by-hash walk holds at most
-`WALK_HELD_BYTES_MAX` (32 MiB, 16 full Era-0 blocks) of body bytes; the answer that would pass
-the bound cancels the walk, drops the held set and blames the peer, without the genesis-resync
-escalation, and header-first sync reaches a longer branch; a walked body that does not match
+64 × the era block size limit of body bytes (`WALK_FULL_BLOCKS` × `max_block_size(local height
++ 1)`, the limit block validation uses; 64 full blocks, the seed included); the peer whose
+answer would pass the bound is marked for that walk and not blamed, and the same walk moves to
+the next evidence peer; with no evidence peer left the walk is cancelled and the held set is
+dropped, without the genesis-resync escalation, and header-first sync reaches a longer branch
+(INC-I-293 U-1); a walked body that does not match
 its header (merkle root, presence root at either arm) is refused at intake, not held, and its
 peer is blamed (INV-FORK-005; `walk_intake` in `sync/manager/fork_walk.rs`) (INC-I-293 S-2).
 Below the height the doors keep their depth rule, the Wedged and ReorgCandidate walks ask the

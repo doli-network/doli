@@ -30,10 +30,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bound on remembered (branch tip, local tip) verdicts that did not win fork choice.
 const MAX_REJECTED_BRANCHES: usize = 32;
 
-/// INC-I-293 S-2: body bytes one walk may hold at/above the INC-I-288 gate. It
-/// holds 16 full Era-0 blocks (2 MB each); a longer heavy branch is reached by
-/// header-first sync, which streams bodies instead of holding a whole branch.
-pub(crate) const WALK_HELD_BYTES_MAX: usize = 32 * 1024 * 1024;
+/// INC-I-293 U-1: at/above the INC-I-288 gate one walk holds at most this many
+/// blocks of the era block size limit (`consensus::max_block_size`), seed included.
+pub(crate) const WALK_FULL_BLOCKS: usize = 64;
 
 /// Active recovery session state
 struct ActiveRecovery {
@@ -230,22 +229,34 @@ impl ForkRecoveryTracker {
                 true
             }
             None => {
-                // The peer is marked for this walk: never asked again by it.
-                recovery.handover.retain(|p| *p != peer);
-                recovery.alternate_peers.retain(|p| *p != peer);
-                if let Some(next) = recovery.handover.pop_front() {
-                    warn!(
-                        "Fork recovery: {} does not have block {:.16} — asking evidence peer {}",
-                        peer, recovery.next_parent, next
-                    );
-                    recovery.peer = next;
-                    recovery.request_sent_at = None;
-                    return true;
+                if !self.hand_over(peer, "does not have") {
+                    self.cancel("peer does not have block");
                 }
-                self.cancel("peer does not have block");
                 true
             }
         }
+    }
+
+    /// INC-I-293 U-1: `peer` gave no usable answer for the pending fetch. It is
+    /// marked for this walk (never asked again) and the same fetch moves to the
+    /// next evidence peer; false: no evidence peer is left (the caller decides).
+    pub fn hand_over(&mut self, peer: PeerId, what: &str) -> bool {
+        let Some(recovery) = self.active.as_mut() else {
+            return false;
+        };
+        recovery.handover.retain(|p| *p != peer);
+        recovery.alternate_peers.retain(|p| *p != peer);
+        let Some(next) = recovery.handover.pop_front() else {
+            return false;
+        };
+        warn!(
+            "Fork recovery: {} {} block {:.16} — asking evidence peer {}",
+            peer, what, recovery.next_parent, next
+        );
+        recovery.peer = next;
+        recovery.pending = false;
+        recovery.request_sent_at = None;
+        true
     }
 
     /// INC-I-293 S-2: false (nothing counted) when holding `blk` would pass `max`

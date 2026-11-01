@@ -370,7 +370,8 @@ candidate already on our chain (gossip door: candidate block canonical; plan doo
 chain); the walk-level R1 fence in fork_walk.rs is removed (one authority). Below: unchanged.
 INC-I-293 S-2: no authority added or removed. At/above the height every walk caller (Orphan,
 Wedged, ReorgCandidate fallback) asks an evidence peer (tip off our chain), a None answer moves
-the walk to the next one, the walk holds at most 32 MiB of bodies and refuses a body that does
+the walk to the next one, the walk holds at most 64 × `max_block_size` of bodies (a bound trip
+marks the peer without blame and hands the walk on, INC-I-293 U-1) and refuses a body that does
 not match its header at intake. Below the height: unchanged.
 ```
 

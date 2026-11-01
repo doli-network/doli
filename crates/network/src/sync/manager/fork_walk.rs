@@ -1,12 +1,13 @@
 //! Fork recovery walk entry points on `SyncManager` (INC-I-235).
 
 use crypto::Hash;
+use doli_core::consensus::max_block_size;
 use doli_core::validation::verify_block_signature_at;
 use libp2p::PeerId;
 use tracing::warn;
 
 use super::SyncManager;
-use crate::sync::fork_recovery::WALK_HELD_BYTES_MAX;
+use crate::sync::fork_recovery::WALK_FULL_BLOCKS;
 
 /// Alternate peers handed to a walk for REQUEST_TIMEOUT failover.
 const MAX_WALK_ALTERNATES: usize = 4;
@@ -42,7 +43,8 @@ impl SyncManager {
     /// answer whose signature fails is consumed without advancing the walk; the
     /// fetch fails over on its request timeout. At/above the INC-I-288 gate the
     /// same holds for a body that does not match its header (INV-FORK-005), and
-    /// an answer that would pass `WALK_HELD_BYTES_MAX` cancels the walk.
+    /// an answer that would pass `WALK_FULL_BLOCKS` x `max_block_size(local + 1)`
+    /// marks its peer (no blame) and hands the walk to the next evidence peer.
     pub(super) fn walk_intake(&mut self, peer: PeerId, block: Option<doli_core::Block>) -> bool {
         let ah = self.config.inc_i_236_block_signature_activation_height;
         let height = self.local_height.saturating_add(1);
@@ -73,16 +75,16 @@ impl SyncManager {
                 self.blame_body_supplier(peer, b.header.slot);
                 return true;
             }
-            if !self.fork.fork_recovery.admit_bytes(b, WALK_HELD_BYTES_MAX) {
-                let slot = b.header.slot;
+            let max = WALK_FULL_BLOCKS.saturating_mul(max_block_size(height));
+            if !self.fork.fork_recovery.admit_bytes(b, max) {
                 warn!(
-                    "Fork recovery: walk from {} would hold more than {} body bytes — header-first sync takes over",
-                    peer, WALK_HELD_BYTES_MAX
+                    "Fork recovery: walk from {} would hold more than {} body bytes ({} full era blocks) — the peer is marked, not blamed",
+                    peer, max, WALK_FULL_BLOCKS
                 );
-                self.fork
-                    .fork_recovery
-                    .cancel("held body bytes over the walk bound");
-                self.blame_body_supplier(peer, slot);
+                let tracker = &mut self.fork.fork_recovery;
+                if !tracker.hand_over(peer, "overflowed the walk bound at") {
+                    tracker.cancel("held body bytes over the walk bound");
+                }
                 return true;
             }
         }

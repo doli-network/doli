@@ -13,13 +13,14 @@
 //!   O4 next fetch: next_request() -> (walk peer, GetBlockByHash{next parent})
 //!   O5 completion: check_fork_recovery_connection(true) -> blocks, connection_point
 //!   O6 escalation flag: take_exceeded_max_depth() (node -> genesis resync)
-//!   O7 peer blame: no crate-level observable today -> not asserted (reported)
-//! PATHS: answer held | refused by size (cancel, held set dropped) | refused by
+//!   O7 peer blame: take_refused_body_suppliers() (U-1: a bound trip marks, never blames)
+//! PATHS: answer held | refused by size (64 x max_block_size; no evidence peer
+//!   left: cancel, held set dropped, no blame) | refused by
 //!   commitment (consumed, not held) | completion.
 //! INPUT PARTITIONS: body {64 KiB honest, 1 MiB self-consistent (merkle + presence
 //!   match the attacker's own header), small junk not matching its header}
 //!   x height {local_height+1 > GATE, SIG_AH < local_height+1 < GATE}.
-//! MATRIX: b1 -> O1,O2,O3,O4,O5,O6 | b2 -> O1,O3,O4,O5 | control -> O1,O2,O3,O4,O5,O6
+//! MATRIX: b1 -> O1,O2,O3,O4,O5,O6,O7 | b2 -> O1,O3,O4,O5 | control -> O1,O2,O3,O4,O5,O6
 //!   | pin -> O1,O2,O3,O4,O5.
 //! ROUTES: b1 = primary route (byte bound). b2 = the alternative route (per-hop
 //!   commitment). b2 alone does NOT close SEC-IN-648-002: the attacker signs its own
@@ -31,6 +32,7 @@
 use std::collections::HashMap;
 
 use crypto::{Hash, KeyPair};
+use doli_core::consensus::max_block_size;
 use doli_core::{Block, BlockHeader, Transaction};
 use libp2p::PeerId;
 use vdf::{VdfOutput, VdfProof};
@@ -42,7 +44,7 @@ use crate::protocols::{SyncRequest, SyncResponse};
 const SIG_AH: u64 = 100;
 /// INC-I-288 fork-choice gate (testnet 366_891, mainnet MAX in production).
 const GATE: u64 = 10_000;
-/// Proposed bound B on the body bytes one walk holds (developer may rename).
+/// The run-649 32 MiB bound; the below-gate pin shows that walk holds more.
 const WALK_HELD_BYTES_MAX: usize = 32 * 1024 * 1024;
 const MIB: usize = 1024 * 1024;
 const TS: u64 = 1_700_000_000;
@@ -180,23 +182,25 @@ fn answer(r: &mut Rig, b: Block) {
     );
 }
 
-// S2B1 INC-I-293 AUDIT-P2-648-002 (Must) — Decision: a failure means one unstaked walk peer can still make the node hold far more than WALK_HELD_BYTES_MAX of self-consistent bodies (≈ 16 GiB at 1000 × 16 MiB), so ruling 3 is not met and the gate cannot be pinned on mainnet.
+// S2B1 INC-I-293 AUDIT-P2-648-002 / AUDIT-P2-649-003 (Must) — Decision: a failure means one unstaked walk peer can still make the node hold more than 64 x max_block_size of self-consistent bodies (≈ 16 GiB at 1000 × 16 MiB), so ruling 3 is not met and the gate cannot be pinned on mainnet.
 #[test]
 fn s2_b1_walk_holds_at_most_walk_held_bytes_max_above_gate() {
-    let mut r = rig(GATE + 50, 64, MIB);
-    for k in 0..r.parents.len() {
-        let want = r.parents[k].hash();
+    let h = GATE + 50;
+    let bound = 64 * max_block_size(h + 1);
+    let mut r = rig(h, 34, 4 * MIB);
+    let wants: Vec<Hash> = r.parents.iter().map(Block::hash).collect();
+    let answers = std::mem::take(&mut r.parents);
+    for (k, (want, b)) in wants.into_iter().zip(answers).enumerate() {
         if !r.m.is_fork_recovery_active() || !ask(&mut r, want) {
             break;
         }
-        let b = r.parents[k].clone();
         answer(&mut r, b);
         let (n, bytes) = (held(&r.m).len(), held_bytes(&r));
         assert!(
-            bytes <= WALK_HELD_BYTES_MAX,
-            "WALK_HELD_BYTES_MAX = {} B: the walk holds {} bytes in {} bodies after hop {} \
-             of 64 self-consistent 1 MiB answers from one walk peer",
-            WALK_HELD_BYTES_MAX,
+            bytes <= bound,
+            "64 x max_block_size = {} B: the walk holds {} bytes in {} bodies after hop {} \
+             of 34 self-consistent 4 MiB answers from one walk peer",
+            bound,
             bytes,
             n,
             k + 1
@@ -204,9 +208,13 @@ fn s2_b1_walk_holds_at_most_walk_held_bytes_max_above_gate() {
     }
     assert!(
         !r.m.is_fork_recovery_active(),
-        "O2: the answer that would pass WALK_HELD_BYTES_MAX must cancel the walk"
+        "O2: with no evidence peer left the answer that would pass the bound cancels the walk"
     );
     assert!(held(&r.m).is_empty(), "O1: the held set is dropped");
+    assert!(
+        r.m.take_refused_body_suppliers().is_empty(),
+        "O7: a bound trip marks the peer and does not blame it"
+    );
     assert!(
         !r.m.fork.fork_recovery.take_exceeded_max_depth(),
         "O6: a byte cancel must not raise the genesis-resync escalation"
