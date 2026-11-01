@@ -40,6 +40,11 @@ impl SyncManager {
         self.fork.fork_recovery.set_handover_peers(peers);
     }
 
+    /// INC-I-293 U-2: (peer, hash) of the walk's pending by-hash fetch, if any.
+    pub fn fork_walk_pending_fetch(&self) -> Option<(PeerId, Hash)> {
+        self.fork.fork_recovery.pending_fetch()
+    }
+
     /// Feed a block response to the walk. At `local_height + 1 >= AH` a pending
     /// answer whose signature fails is consumed without advancing the walk; the
     /// fetch fails over on its request timeout. At/above the INC-I-288 gate a body

@@ -10,6 +10,7 @@ pub mod attestation;
 mod attestation_authority_tests;
 #[allow(unused_imports)]
 pub use apply_block::state_fp_sr_field;
+mod attest_refetch;
 mod block_handling;
 mod block_serve;
 mod body_commitments;
@@ -426,6 +427,8 @@ pub struct Node {
     pub attest_fetch_tracker: HashMap<Hash, (Instant, u8, PeerId)>,
     /// INC-I-293 S-2: last ask per tracked hash, at/above the INC-I-288 gate.
     pub attest_fetch_asked: HashMap<Hash, Instant>,
+    /// INC-I-293 U-2: (hash, peer) that answered `None` for the hash, 30 s TTL.
+    pub attest_fetch_retired: HashMap<(Hash, PeerId), Instant>,
 
     /// INC-I-111: Counter for how many times the defi_health_inputs() scan
     /// has actually run (cache miss). Used by integration tests to verify

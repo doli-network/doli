@@ -382,7 +382,9 @@ impl Node {
                 if refetch {
                     if self.attested_block_held(&block_hash).await {
                         self.attest_fetch_tracker.remove(&block_hash);
-                    } else if let Some(p) = self.attest_fetch_peer(recorded_peer).await {
+                    } else if let Some(p) =
+                        self.attest_refetch_peer(block_hash, recorded_peer).await
+                    {
                         queue.push(((block_hash, p, attempt), p));
                     }
                     continue;

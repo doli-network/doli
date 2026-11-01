@@ -295,6 +295,12 @@ impl ForkRecoveryTracker {
             .map(|r| r.next_parent)
     }
 
+    /// (peer, hash) of the walk's pending fetch: a `None` from that peer answers it.
+    pub fn pending_fetch(&self) -> Option<(PeerId, Hash)> {
+        let r = self.active.as_ref().filter(|r| r.pending)?;
+        Some((r.peer, r.next_parent))
+    }
+
     /// Check if the chain connected to our store.
     /// Node calls this with the result of block_store.has_block(current_parent).
     /// Returns completed recovery if chain is connected.

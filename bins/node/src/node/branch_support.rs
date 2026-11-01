@@ -216,8 +216,20 @@ impl Node {
         skip: &PeerId,
         tip: Option<Hash>,
     ) -> Option<PeerId> {
+        self.branch_peer_except(sm, skip, tip, |_| false)
+    }
+
+    /// [`Self::branch_peer`] that also passes over every peer `excluded` names.
+    pub(super) fn branch_peer_except(
+        &self,
+        sm: &SyncManager,
+        skip: &PeerId,
+        tip: Option<Hash>,
+        excluded: impl Fn(&PeerId) -> bool,
+    ) -> Option<PeerId> {
         (sm.peer_tips().into_iter())
             .filter(|(p, h)| p != skip && tip.is_none_or(|t| t == *h) && !self.is_canonical(h))
+            .filter(|(p, _)| !excluded(p))
             .map(|(p, _)| p)
             .min()
     }

@@ -389,11 +389,19 @@ impl Node {
             .await
             .note_block_received_from_peer(peer_id);
 
+        // INC-I-293 U-2: a `None` from the walk's peer answers the walk's hash.
+        let none_answer = matches!(response, SyncResponse::Block(None));
+        let walk_hash = (self.sync_manager.read().await.fork_walk_pending_fetch())
+            .filter(|(p, _)| none_answer && *p == peer_id)
+            .map(|(_, h)| h);
         let blocks = self
             .sync_manager
             .write()
             .await
             .handle_response_to(peer_id, answered, response);
+        if none_answer {
+            self.retire_attest_fetch(peer_id, walk_hash).await;
+        }
         self.penalize_refused_sync_bodies().await;
         for block in blocks {
             self.handle_new_block(block, peer_id).await?;
