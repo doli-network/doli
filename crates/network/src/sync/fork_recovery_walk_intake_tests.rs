@@ -15,7 +15,9 @@
 // OUTPUT CONTRACT: fn SyncManager::handle_response(peer, SyncResponse::Block(Some(b)))
 //   during an active by-hash walk -> walk_intake -> ForkRecoveryTracker::handle_block
 //   O1: held set ForkRecoveryTracker.active.blocks (count; no padded aggregate held)
-//   O2: walk position fork_recovery_current_parent() (does not move past a refused body)
+//   O2: walk position (does not move past a refused body): fork_recovery_current_parent()
+//       after an accepted hop; after a refused hop the fetch stays pending until its
+//       timeout failover and current_parent() is None, so read active.next_parent
 //   O3: peer blame take_refused_body_suppliers() -> (walk peer, slot of the refused body)
 //   O4: handle_response return: a walk answer is consumed (empty), never sent to apply
 //   O5: completion check_fork_recovery_connection(true) -> bodies handed to fork choice
@@ -253,7 +255,11 @@ fn u1c_padded_aggregate_refused_at_intake() {
     );
     assert_eq!(held(&r.m).len(), 2, "O1: the refused body is not held");
     assert_eq!(
-        r.m.fork_recovery_current_parent(),
+        r.m.fork
+            .fork_recovery
+            .active
+            .as_ref()
+            .map(|a| a.next_parent),
         Some(honest.hash()),
         "O2: the walk did not advance past the refused body"
     );
