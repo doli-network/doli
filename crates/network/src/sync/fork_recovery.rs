@@ -287,6 +287,14 @@ impl ForkRecoveryTracker {
         matches!(&self.active, Some(r) if r.pending && r.peer == peer && blk.hash() == r.next_parent)
     }
 
+    /// INC-I-293 U-2: the hash this walk waits for from `peer`, if it waits on it.
+    pub fn awaited_from(&self, peer: PeerId) -> Option<Hash> {
+        self.active
+            .as_ref()
+            .filter(|r| r.pending && r.peer == peer)
+            .map(|r| r.next_parent)
+    }
+
     /// Check if the chain connected to our store.
     /// Node calls this with the result of block_store.has_block(current_parent).
     /// Returns completed recovery if chain is connected.

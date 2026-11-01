@@ -51,6 +51,7 @@ pub(super) async fn run_swarm(
 
     // Rate limiter: protects against excessive gossip from individual peers
     let mut rate_limiter = RateLimiter::new(RateLimitConfig::default());
+    let mut sync_requests = super::sync_requests::OutboundSyncRequests::default();
 
     // Cleanup stale rate-limit entries every 5 minutes
     let mut rate_limit_cleanup = tokio::time::interval(std::time::Duration::from_secs(300));
@@ -145,11 +146,11 @@ pub(super) async fn run_swarm(
         tokio::select! {
             // Handle swarm events
             event = swarm.select_next_some() => {
-                handle_swarm_event(event, &mut swarm, &event_sink, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff, &mut eviction_cooldown, &mut bootstrap_peers, &mut stale_peer_ids, &local_tip, &shed_metrics, &memory_shed_flag).await;
+                handle_swarm_event(event, &mut swarm, &event_sink, &peers, &config, &peer_cache_path, &mut rate_limiter, &mut sync_requests, &mut genesis_mismatch_cooldown, &mut mismatch_redial_cooldown, &mut dial_backoff, &mut eviction_cooldown, &mut bootstrap_peers, &mut stale_peer_ids, &local_tip, &shed_metrics, &memory_shed_flag).await;
             }
 
             Some(command) = command_rx.recv() => {
-                handle_command(command, &mut swarm, &config, &mut rate_limiter).await;
+                handle_command(command, &mut swarm, &config, &mut rate_limiter, &mut sync_requests).await;
             }
 
             // INC-I-237 M7.1: also refreshes the cache sizes read by node metrics.

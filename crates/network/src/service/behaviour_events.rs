@@ -21,6 +21,7 @@ use crate::rate_limit::RateLimiter;
 
 use super::event_sink::EventSink;
 use super::helpers::{all_addresses_routable, is_routable_address};
+use super::sync_requests::OutboundSyncRequests;
 use super::types::{NetworkEvent, GENESIS_MISMATCH_COOLDOWN_SECS};
 use crate::protocols::status::{CURRENT_PROTOCOL_VERSION, MIN_PEER_PROTOCOL_VERSION};
 
@@ -34,6 +35,7 @@ pub(super) async fn handle_behaviour_event(
     config: &NetworkConfig,
     peer_cache_path: &Option<PathBuf>,
     rate_limiter: &mut RateLimiter,
+    sync_requests: &mut OutboundSyncRequests,
     genesis_mismatch_cooldown: &mut HashMap<PeerId, Instant>,
     stale_peer_ids: &mut HashMap<PeerId, Instant>,
     local_tip: &Arc<super::gossip_intake::LocalTip>,
@@ -314,7 +316,10 @@ pub(super) async fn handle_behaviour_event(
                         channel,
                     });
                 }
-                request_response::Message::Response { response, .. } => {
+                request_response::Message::Response {
+                    request_id,
+                    response,
+                } => {
                     info!(
                         "[SYNC_DEBUG] Received sync response from peer={}, response_type={}",
                         peer,
@@ -322,10 +327,17 @@ pub(super) async fn handle_behaviour_event(
                     );
                     event_tx.emit(NetworkEvent::SyncResponse {
                         peer_id: peer,
+                        request: sync_requests.take(&request_id),
                         response,
                     });
                 }
             }
+        }
+
+        DoliBehaviourEvent::Sync(request_response::Event::OutboundFailure {
+            request_id, ..
+        }) => {
+            sync_requests.take(&request_id);
         }
 
         DoliBehaviourEvent::Txfetch(request_response::Event::Message { peer, message }) => {

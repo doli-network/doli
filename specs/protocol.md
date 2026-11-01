@@ -2222,11 +2222,15 @@ the ReorgCandidate fallback too (`try_trigger_fork_recovery_from`). Every non-an
 peer marks it for that walk (never asked again) and the same attempt asks the next evidence
 peer for the same hash before any alternate (`ForkRecoveryTracker::hand_over`): a `None`
 answer, silence past the 10 s request timeout, a body refused at intake (also blamed), and an
-answer over the byte bound of (10) (not blamed) (INC-I-293 S-2, U-1). Only with no evidence
-peer left does the old path run: `None` cancels the walk with the unchanged 30 s cooldown,
+answer over the byte bound of (10) (not blamed) (INC-I-293 S-2, U-1). The walk takes a `None`
+only as the answer to its own `GetBlockByHash` for the hash it waits on, matched by the local
+outbound request id (no wire change); an empty reply from the walk peer to any other request
+(for example the orphan chase `GetBlockByHeight`) is not the walk's answer and does not clear
+the walk's pending request; a reply whose request is unknown keeps the old rule (INC-I-293
+U-2). Only with no evidence peer left does the old path run: `None` cancels the walk with the unchanged 30 s cooldown,
 silence fails over to the height-ranked alternates, a refused body waits out the request
-timeout. A block from the walk peer that is not the asked hash still passes through (the
-replies are not yet keyed by request), so it is handled as silence when the timeout ends; (10) a by-hash walk holds at most
+timeout. A block from the walk peer that is not the asked hash still passes through (a
+reply with a block keeps the check by hash, not by request), so it is handled as silence when the timeout ends; (10) a by-hash walk holds at most
 64 × the era block size limit of body bytes (`WALK_FULL_BLOCKS` × `max_block_size(local height
 + 1)`, the limit block validation uses; 64 full blocks, the seed included); the peer whose
 answer would pass the bound is marked for that walk and not blamed, and the same walk moves to

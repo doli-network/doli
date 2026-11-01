@@ -33,6 +33,7 @@ fn busy() -> SyncResponse {
 async fn reply(node: &mut doli_node::node::Node, peer: PeerId, response: SyncResponse) {
     let event = NetworkEvent::SyncResponse {
         peer_id: peer,
+        request: None,
         response,
     };
     node.handle_network_event(event)

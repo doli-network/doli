@@ -139,6 +139,7 @@ fn control_events() -> Vec<(&'static str, NetworkEvent)> {
             "SyncResponse",
             NetworkEvent::SyncResponse {
                 peer_id: p,
+                request: None,
                 response: SyncResponse::Headers(vec![]),
             },
         ),

@@ -173,8 +173,7 @@ fn deliver(
     answers: &SyncRequest,
     resp: SyncResponse,
 ) -> Vec<Block> {
-    let _ = answers;
-    m.handle_response(from, resp)
+    m.handle_response_to(from, Some(answers), resp)
 }
 
 #[test]

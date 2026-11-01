@@ -371,9 +371,10 @@ chain); the walk-level R1 fence in fork_walk.rs is removed (one authority). Belo
 INC-I-293 S-2: no authority added or removed. At/above the height every walk caller (Orphan,
 Wedged, ReorgCandidate fallback) asks an evidence peer (tip off our chain), every non-answer
 (None, silence past the request timeout, a refused body, a bound trip) marks the peer and moves
-the walk to the next one before any alternate (INC-I-293 U-1), the walk holds at most
-64 × `max_block_size` of bodies (a bound trip is not blamed) and refuses (and blames) a body
-that does not match its header at intake. Below the height: unchanged.
+the walk to the next one before any alternate (INC-I-293 U-1; a None counts only when it answers
+the walk's own by-hash request, matched by the local outbound request id; INC-I-293 U-2), the
+walk holds at most 64 × `max_block_size` of bodies (a bound trip is not blamed) and refuses (and
+blames) a body that does not match its header at intake. Below the height: unchanged.
 ```
 
 ### Proposed (after M6)
