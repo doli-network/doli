@@ -375,3 +375,10 @@ path = "tests/inc_i_293_r2_junk_bound.rs"
 [[test]]
 name = "inc_i_293_s2_walk_peer"
 path = "tests/inc_i_293_s2_walk_peer.rs"
+
+# INC-I-293 S-2 (run 649, AUDIT-P2-648-003 / REV-648-001) — own binary: an asked
+# and unanswered attestation fetch does not keep its queue place; real loopback
+# libp2p services and a below-AH child re-exec.
+[[test]]
+name = "inc_i_293_s2_fetch_rotation"
+path = "tests/inc_i_293_s2_fetch_rotation.rs"
