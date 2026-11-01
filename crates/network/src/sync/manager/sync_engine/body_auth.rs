@@ -36,14 +36,19 @@ impl SyncManager {
                     }
                     bad
                 });
-        let queue = &mut self.pipeline.refused_body_suppliers;
         for slot in refused.into_inner() {
-            queue.push_back((peer, slot));
-            if queue.len() > REFUSED_SUPPLIERS_CAP {
-                queue.pop_front();
-            }
+            self.blame_body_supplier(peer, slot);
         }
         accepted
+    }
+
+    /// Queue `peer` for an invalid-block strike at `slot` (drained by the node).
+    pub(in crate::sync::manager) fn blame_body_supplier(&mut self, peer: PeerId, slot: u32) {
+        let queue = &mut self.pipeline.refused_body_suppliers;
+        queue.push_back((peer, slot));
+        if queue.len() > REFUSED_SUPPLIERS_CAP {
+            queue.pop_front();
+        }
     }
 
     /// (supplier, slot) of every sync body refused since the last call.

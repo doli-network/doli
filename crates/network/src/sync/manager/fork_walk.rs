@@ -6,6 +6,7 @@ use libp2p::PeerId;
 use tracing::warn;
 
 use super::SyncManager;
+use crate::sync::fork_recovery::WALK_HELD_BYTES_MAX;
 
 /// Alternate peers handed to a walk for REQUEST_TIMEOUT failover.
 const MAX_WALK_ALTERNATES: usize = 4;
@@ -39,7 +40,9 @@ impl SyncManager {
 
     /// Feed a block response to the walk. At `local_height + 1 >= AH` a pending
     /// answer whose signature fails is consumed without advancing the walk; the
-    /// fetch fails over on its request timeout.
+    /// fetch fails over on its request timeout. At/above the INC-I-288 gate the
+    /// same holds for a body that does not match its header (INV-FORK-005), and
+    /// an answer that would pass `WALK_HELD_BYTES_MAX` cancels the walk.
     pub(super) fn walk_intake(&mut self, peer: PeerId, block: Option<doli_core::Block>) -> bool {
         let ah = self.config.inc_i_236_block_signature_activation_height;
         let height = self.local_height.saturating_add(1);
@@ -53,6 +56,35 @@ impl SyncManager {
                 peer
             );
             return true;
+        }
+        let gated = height >= self.config.inc_i_288_fork_choice_activation_height;
+        let pending = block
+            .as_ref()
+            .filter(|b| gated && self.fork.fork_recovery.is_pending_answer(peer, b));
+        if let Some(b) = pending {
+            // The walked height is unknown here: either presence arm is accepted.
+            let ah = self.config.inc_i_178_attestation_bls_activation_height;
+            if !b.body_matches_header(ah, None) {
+                warn!(
+                    "Fork recovery: refusing walk block {:.16} from {}: body does not match its header",
+                    b.hash(),
+                    peer
+                );
+                self.blame_body_supplier(peer, b.header.slot);
+                return true;
+            }
+            if !self.fork.fork_recovery.admit_bytes(b, WALK_HELD_BYTES_MAX) {
+                let slot = b.header.slot;
+                warn!(
+                    "Fork recovery: walk from {} would hold more than {} body bytes — header-first sync takes over",
+                    peer, WALK_HELD_BYTES_MAX
+                );
+                self.fork
+                    .fork_recovery
+                    .cancel("held body bytes over the walk bound");
+                self.blame_body_supplier(peer, slot);
+                return true;
+            }
         }
         self.fork.fork_recovery.handle_block(peer, block)
     }

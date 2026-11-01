@@ -30,6 +30,11 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bound on remembered (branch tip, local tip) verdicts that did not win fork choice.
 const MAX_REJECTED_BRANCHES: usize = 32;
 
+/// INC-I-293 S-2: body bytes one walk may hold at/above the INC-I-288 gate. It
+/// holds 16 full Era-0 blocks (2 MB each); a longer heavy branch is reached by
+/// header-first sync, which streams bodies instead of holding a whole branch.
+pub(crate) const WALK_HELD_BYTES_MAX: usize = 32 * 1024 * 1024;
+
 /// Active recovery session state
 struct ActiveRecovery {
     /// Blocks collected so far, newest first (tip → ancestor direction)
@@ -51,6 +56,8 @@ struct ActiveRecovery {
     /// INC-I-293 S-2: evidence peers a `None` answer hands the walk to, in order.
     /// Set by the node at/above the INC-I-288 gate only; empty: `None` cancels.
     handover: VecDeque<PeerId>,
+    /// Sum of `Block::size()` over `blocks`; counted from the first bounded hop.
+    held_bytes: Option<usize>,
 }
 
 /// Result of a completed fork recovery
@@ -135,6 +142,7 @@ impl ForkRecoveryTracker {
             request_sent_at: None,
             alternate_peers: Vec::new(),
             handover: VecDeque::new(),
+            held_bytes: None,
         });
         true
     }
@@ -238,6 +246,23 @@ impl ForkRecoveryTracker {
                 true
             }
         }
+    }
+
+    /// INC-I-293 S-2: false (nothing counted) when holding `blk` would pass `max`
+    /// body bytes; else `blk` is counted, as the pending answer it is pushed next.
+    pub fn admit_bytes(&mut self, blk: &Block, max: usize) -> bool {
+        let Some(recovery) = self.active.as_mut() else {
+            return true;
+        };
+        let held = *recovery
+            .held_bytes
+            .get_or_insert_with(|| recovery.blocks.iter().map(Block::size).sum());
+        let after = held.saturating_add(blk.size());
+        if after > max {
+            return false;
+        }
+        recovery.held_bytes = Some(after);
+        true
     }
 
     /// Does `blk` answer the walk's pending fetch from `peer`?
