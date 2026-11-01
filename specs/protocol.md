@@ -2208,11 +2208,13 @@ no one; each tick grants the entries round-robin over their target peers, at mos
 behind the unasked (never asked first, then least recently asked, oldest first within each; so
 a root behind n older entries of its relayer is asked within ceil(n/2) + 1 ticks while other
 peers leave the relayer its 2 of the 8, INC-I-293 S-2); a relayer that answered `None` for the
-hash is not asked for it again for 30 s: the fetch goes to a connected peer that reports the
-relayer's off-chain tip and did not answer `None` for it, else to no one
-(`attest_refetch_peer` in `attest_refetch.rs`); today the refusal is recorded when the `None`
-answers the by-hash walk's pending fetch for that hash, and a `None` to a refetch, which names
-no request, is not attributed yet (INC-I-293 U-2); below the height the
+hash is not asked for it again for 30 s: the entry moves to a connected peer that reports the
+relayer's off-chain tip and did not answer `None` for it, else the entry is removed
+(`attest_refetch_peer` in `attest_refetch.rs`); the relayer is retired for the hash that its
+`None` answered, matched by the local outbound request id (a walk fetch or a refetch alike), a
+`None` to any other request retires nothing, and a `None` whose request is not known retires
+the peer only for the walk's pending fetch from it (`none_answer_hash`, INC-I-293 U-2); below
+the height the
 fetch fires once to the recorded relayer and the entry is removed (INC-I-293 F1, `periodic.rs`).
 
 At and above the same height: (8) a candidate whose blocks are all already on our chain never

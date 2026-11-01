@@ -2,13 +2,31 @@
 //! again by the attestation refetch (at/above the INC-I-288 gate).
 
 use super::*;
+use network::protocols::SyncRequest;
 
 /// A (hash, peer) `None` is remembered as long as a tracker entry lives.
 const RETIRED_TTL_SECS: u64 = 30;
 
 impl Node {
-    /// `peer` answered `None` for `hash`. `hash` is `None` when the answer cannot
-    /// be attributed to a request (a refetch reply carries no request today).
+    /// The hash a `Block(None)` from `peer` refuses: the hash of the request it
+    /// answers (matched by the local outbound request id); none for any other
+    /// request; for an unknown request, the walk's pending fetch from `peer`.
+    /// Call before the walk consumes the answer.
+    pub(super) async fn none_answer_hash(
+        &self,
+        peer: PeerId,
+        answered: Option<&SyncRequest>,
+    ) -> Option<Hash> {
+        match answered {
+            Some(SyncRequest::GetBlockByHash { hash }) => Some(*hash),
+            Some(_) => None,
+            None => (self.sync_manager.read().await.fork_walk_pending_fetch())
+                .filter(|(p, _)| *p == peer)
+                .map(|(_, h)| h),
+        }
+    }
+
+    /// `peer` answered `None` for `hash`; `None` when no hash can be named.
     pub(super) async fn retire_attest_fetch(&mut self, peer: PeerId, hash: Option<Hash>) {
         let Some(hash) = hash else { return };
         if !self.weighs_by_support().await {
@@ -22,15 +40,30 @@ impl Node {
 
     /// The refetch target for `hash`: the recorded relayer, unless it answered
     /// `None` for `hash`; then a connected peer reporting the relayer's off-chain
-    /// tip that did not answer `None` for it (the 103 inheritance rule), else none.
-    pub(super) async fn attest_refetch_peer(&self, hash: Hash, recorded: PeerId) -> Option<PeerId> {
+    /// tip that did not answer `None` for it (the 103 inheritance rule). The
+    /// tracker entry moves to that heir; with no heir it is removed.
+    pub(super) async fn attest_refetch_peer(
+        &mut self,
+        hash: Hash,
+        recorded: PeerId,
+    ) -> Option<PeerId> {
         let retired = |p: &PeerId| self.attest_fetch_retired.contains_key(&(hash, *p));
         if !retired(&recorded) {
             return self.attest_fetch_peer(recorded).await;
         }
-        let sm = self.sync_manager.read().await;
-        let (_, tip) = sm.peer_tips().into_iter().find(|(p, _)| *p == recorded)?;
-        self.branch_peer_except(&sm, &recorded, Some(tip), retired)
+        let heir = {
+            let sm = self.sync_manager.read().await;
+            let tip = sm.peer_tips().into_iter().find(|(p, _)| *p == recorded);
+            tip.and_then(|(_, t)| self.branch_peer_except(&sm, &recorded, Some(t), retired))
+        };
+        if let Some(h) = heir {
+            if let Some(entry) = self.attest_fetch_tracker.get_mut(&hash) {
+                entry.2 = h;
+            }
+        } else {
+            self.attest_fetch_tracker.remove(&hash);
+        }
+        heir
     }
 }
 
@@ -41,10 +74,13 @@ mod tests {
     // OUTPUT CONTRACT: fn Node::retire_attest_fetch(peer, Option<hash>) then
     //   Node::attest_refetch_peer(hash, relayer) -> Option<PeerId>
     //   O1: refetch target for (hash, relayer)  O2: attest_fetch_retired entries
+    //   O3: attest_fetch_tracker entry for hash: kept / moved to the heir / removed
     // PATHS: hash None -> no-op | below gate -> no-op | retired + heir (same
     //   off-chain tip) -> heir | retired, no heir left -> None | other hash -> relayer
     // MATRIX: above gate x {None, Some(h) heir, Some(h) no heir, other hash} x O1 O2
     //   -> u2_walk_none_retires_the_relayer_for_that_hash · below gate x O1 O2 -> u2_below_gate
+    //   (O1 O2 O3) · fn Node::none_answer_hash(peer, answered) -> Option<Hash> (O4:
+    //   refused hash): answered {by-hash, by-height, unknown + no walk} -> u2_none_answer_*
     async fn node_with_peers(gate: u64) -> (Node, tempfile::TempDir, PeerId, PeerId) {
         let tmp = tempfile::TempDir::new().unwrap();
         let mut node = Node::new_for_test(tmp.path().to_path_buf(), vec![KeyPair::generate()])
@@ -78,7 +114,12 @@ mod tests {
             "unattributed"
         );
         node.retire_attest_fetch(p, Some(h)).await;
+        node.attest_fetch_tracker.insert(h, (Instant::now(), 0, p));
         assert_eq!(node.attest_refetch_peer(h, p).await, Some(p2), "heir");
+        assert_eq!(
+            node.attest_fetch_tracker[&h].2, p2,
+            "O3: entry moved to the heir"
+        );
         assert_eq!(
             node.attest_refetch_peer(other, p).await,
             Some(p),
@@ -86,7 +127,24 @@ mod tests {
         );
         node.retire_attest_fetch(p2, Some(h)).await;
         assert_eq!(node.attest_refetch_peer(h, p).await, None, "no heir left");
+        assert!(
+            !node.attest_fetch_tracker.contains_key(&h),
+            "O3: entry removed"
+        );
         assert_eq!(node.attest_fetch_retired.len(), 2, "O2: two refusals held");
+    }
+
+    // U2-ATTRIB INC-I-293 (Must) — Decision: a failure means a `None` is charged to
+    // a hash other than the one its request asked for.
+    #[tokio::test]
+    async fn u2_none_answer_names_the_requested_hash_only() {
+        let (node, _tmp, p, _) = node_with_peers(0).await;
+        let h = crypto::hash::hash(b"h");
+        let by_hash = SyncRequest::GetBlockByHash { hash: h };
+        let by_height = SyncRequest::GetBlockByHeight { height: 7 };
+        assert_eq!(node.none_answer_hash(p, Some(&by_hash)).await, Some(h));
+        assert_eq!(node.none_answer_hash(p, Some(&by_height)).await, None);
+        assert_eq!(node.none_answer_hash(p, None).await, None, "no walk");
     }
 
     // U2-PIN INC-I-293 (Must, pin) — Decision: a failure means a below-gate node
