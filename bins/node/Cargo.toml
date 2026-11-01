@@ -388,3 +388,10 @@ path = "tests/inc_i_293_s2_fetch_rotation.rs"
 [[test]]
 name = "inc_i_293_u1_nonanswer"
 path = "tests/inc_i_293_u1_nonanswer.rs"
+
+# INC-I-293 U-2 (run 651, SEC-FIXVERIFY-647-104) — own binary: the attestation
+# refetch rotates away from a relayer that answered None for the hash; real
+# loopback libp2p services and a below-AH child re-exec.
+[[test]]
+name = "inc_i_293_u2_fetch_none_rotation"
+path = "tests/inc_i_293_u2_fetch_none_rotation.rs"
