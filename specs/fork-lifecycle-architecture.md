@@ -374,7 +374,9 @@ Wedged, ReorgCandidate fallback) asks an evidence peer (tip off our chain), ever
 the walk to the next one before any alternate (INC-I-293 U-1; a None counts only when it answers
 the walk's own by-hash request, matched by the local outbound request id; INC-I-293 U-2), the
 walk holds at most 64 × `max_block_size` of bodies (a bound trip is not blamed) and refuses (and
-blames) a body that does not match its header at intake. Below the height: unchanged.
+blames) a body that does not match its header at intake (INC-I-293 U-1: including an aggregate
+on a body with no bit set, by `aggregate_fits_bitfield`, shared with block validation). Below the
+height: unchanged.
 ```
 
 ### Proposed (after M6)

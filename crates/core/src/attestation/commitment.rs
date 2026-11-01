@@ -43,6 +43,12 @@ pub fn presence_root_matches(
     }
 }
 
+/// No bit set means the only legal aggregate is the empty one (INC-I-178 D7).
+/// Height-free: block validation and walk intake share it (INC-I-293 U-1).
+pub fn aggregate_fits_bitfield(bitfield: &[u8], aggregate: &[u8]) -> bool {
+    aggregate.is_empty() || bitfield.iter().any(|b| *b != 0)
+}
+
 impl crate::Block {
     /// The body matches every header commitment: merkle root and presence root at `height`.
     pub fn body_matches_header(&self, ah: u64, height: Option<u64>) -> bool {

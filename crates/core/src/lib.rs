@@ -137,10 +137,10 @@ pub mod types;
 pub mod validation;
 
 pub use attestation::{
-    attestation_minute, attestation_minutes_per_epoch, attestation_qualification_threshold,
-    attestation_universe, decode_attestation_bitfield, decode_attestation_bitfield_vec,
-    encode_attestation_bitfield, encode_attestation_bitfield_vec, presence_commitment,
-    presence_root_at, presence_root_matches, validate_attestation_bitfield,
+    aggregate_fits_bitfield, attestation_minute, attestation_minutes_per_epoch,
+    attestation_qualification_threshold, attestation_universe, decode_attestation_bitfield,
+    decode_attestation_bitfield_vec, encode_attestation_bitfield, encode_attestation_bitfield_vec,
+    presence_commitment, presence_root_at, presence_root_matches, validate_attestation_bitfield,
     validate_attestation_bitfield_vec, Attestation, AttestationError, MinuteAttestationTracker,
     ParentSignaturePool, ATTESTATION_MINUTES_PER_EPOCH, ATTESTATION_QUALIFICATION_THRESHOLD,
 };

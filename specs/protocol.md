@@ -2237,8 +2237,10 @@ answer would pass the bound is marked for that walk and not blamed, and the same
 the next evidence peer; with no evidence peer left the walk is cancelled and the held set is
 dropped, without the genesis-resync escalation, and header-first sync reaches a longer branch
 (INC-I-293 U-1); a walked body that does not match
-its header (merkle root, presence root at either arm) is refused at intake, not held, and its
-peer is blamed (INV-FORK-005; `walk_intake` in `sync/manager/fork_walk.rs`) (INC-I-293 S-2).
+its header (merkle root, presence root at either arm, and the attestation aggregate: a body with
+no bit set carries an empty aggregate, `aggregate_fits_bitfield`, the rule block validation
+applies above INC-I-178, so a padded body is refused) is refused at intake, not held, and its
+peer is blamed (INV-FORK-005; `walk_intake` in `sync/manager/fork_walk.rs`) (INC-I-293 S-2, U-1).
 Below the height the doors keep their depth rule, the Wedged and ReorgCandidate walks ask the
 tallest peer, a `None` answer cancels the walk, and the walk holds every body to completion.
 

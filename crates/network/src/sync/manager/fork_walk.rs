@@ -65,9 +65,15 @@ impl SyncManager {
             .as_ref()
             .filter(|b| gated && self.fork.fork_recovery.is_pending_answer(peer, b));
         if let Some(b) = pending {
-            // The walked height is unknown here: either presence arm is accepted.
+            // The walked height is unknown here: either presence arm is accepted, and
+            // the height-free aggregate rule refuses a padded unattested body (U-1).
             let ah = self.config.inc_i_178_attestation_bls_activation_height;
-            if !b.body_matches_header(ah, None) {
+            if !b.body_matches_header(ah, None)
+                || !doli_core::aggregate_fits_bitfield(
+                    &b.attestation_bitfield,
+                    &b.aggregate_bls_signature,
+                )
+            {
                 warn!(
                     "Fork recovery: refusing walk block {:.16} from {}: body does not match its header",
                     b.hash(),
