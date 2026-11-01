@@ -392,3 +392,7 @@ mod tests;
 #[cfg(test)]
 #[path = "fork_recovery_walk_bytes_tests.rs"]
 mod walk_bytes_tests;
+
+#[cfg(test)]
+#[path = "fork_recovery_walk_bound_tests.rs"]
+mod walk_bound_tests;
