@@ -426,6 +426,9 @@ mod tests_inc_i_147;
 mod tests_inc_i_288;
 
 #[cfg(test)]
+mod tests_inc_i_293_prefix;
+
+#[cfg(test)]
 mod tests_m5_common;
 
 #[cfg(test)]
