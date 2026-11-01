@@ -382,3 +382,9 @@ path = "tests/inc_i_293_s2_walk_peer.rs"
 [[test]]
 name = "inc_i_293_s2_fetch_rotation"
 path = "tests/inc_i_293_s2_fetch_rotation.rs"
+
+# INC-I-293 U-1 (run 651, AUDIT-P2-649-001) — own binary: every non-answer of a
+# walk peer hands the same walk to the next evidence peer; a below-AH child re-exec.
+[[test]]
+name = "inc_i_293_u1_nonanswer"
+path = "tests/inc_i_293_u1_nonanswer.rs"
