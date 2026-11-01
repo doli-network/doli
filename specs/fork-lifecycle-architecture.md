@@ -375,8 +375,16 @@ the walk to the next one before any alternate (INC-I-293 U-1; a None counts only
 the walk's own by-hash request, matched by the local outbound request id; INC-I-293 U-2), the
 walk holds at most 64 × `max_block_size` of bodies (a bound trip is not blamed) and refuses (and
 blames) a body that does not match its header at intake (INC-I-293 U-1: including an aggregate
-on a body with no bit set, by `aggregate_fits_bitfield`, shared with block validation). Below the
-height: unchanged.
+on a body with no bit set, by `aggregate_fits_bitfield`, shared with block validation). The
+attestation refetch retires a relayer for the exact hash its None answered (matched by the local
+outbound request id); the entry moves to a peer reporting the same off-chain tip or is removed
+(INC-I-293 U-2). Below the height: unchanged.
+INC-I-293 U-1..U-3: 12 above the height, none added or removed. Gate reads in non-test code that
+select behaviour: 15 -> 16 by the field name, plus one by the node predicate. Added:
+manager/fork_walk.rs reply_skips_walk (`local_height + 1 >=` the height; pending_is_walk_fetch
+runs only behind it) and attest_refetch.rs retire_attest_fetch (weighs_by_support). The intake
+bound and the aggregate check sit inside walk_intake's existing read; hand_over runs below the
+height with an empty evidence list and returns false (the old path). Below the height: unchanged.
 ```
 
 ### Proposed (after M6)
