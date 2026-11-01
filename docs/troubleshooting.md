@@ -1290,6 +1290,12 @@ cp -r data_dir/checkpoints/h{HEIGHT}-{TS}/blocks data_dir/blocks
 | `[WEDGE_ESCAPE] Sibling … retained (plan_reorg refused: finality guard, unknown ancestor, reorg depth, or a block on our side has no weight) — signaling fork recovery (INC-I-143)` | info | The plan door refused the branch; look for a `FINALITY:` or `FORK_TABLE:` line next to it. |
 | `[WEDGE_ESCAPE] Sibling … cannot out-weight tip (fork_w=… <= our_w=…) — retained, signaling recovery (INC-I-143)` | info | The sibling cannot win on weight; it is kept for re-evaluation. No action. |
 | `[WEDGE_ESCAPE] Heavier sibling … did not land (missing body) — signaling fork recovery (INC-I-143)` | warn | The reorg target is not on the chain after the attempt. Fork recovery fetches the missing body. Report it if it repeats for one hash. |
+| `Ignoring fork: candidate … is already canonical` | debug | The gossip door got a block that is already on our chain and kept the tip (INC-I-293 S-1). No action. |
+| `[FORK] RECOVERY_DONE fork tip …: no reorg (not heavier or refused by finality)` | warn | A walk ended without a reorg. Above the height this includes a stale walk whose tip another path already made canonical: the doors refuse a candidate that is already ours, so nothing is rolled back. No action unless the same tip repeats with the node on the lighter branch. |
+| `Fork recovery: … does not have block … — asking evidence peer …` | warn | The walk peer answered `None`. The node marks it for this walk and asks the next peer whose tip is off our chain, in the same attempt (INC-I-293 S-2). No action. |
+| `Fork recovery: refusing walk block … from …: body does not match its header` | warn | A walk answer had a body that does not match its header. The body is not held and the peer gets an invalid-block strike; the request fails over on its 10 s timeout. Report the peer if it repeats. |
+| `Fork recovery: walk from … would hold more than … body bytes — header-first sync takes over` | warn | The walk reached its 32 MiB body bound. It is cancelled (`Fork recovery cancelled: held body bytes over the walk bound`), the held bodies are dropped and the peer gets a strike; header-first sync reaches the branch. No genesis resync follows. No action unless it repeats with small blocks. |
+| `[ATTEST_FETCH] fetching block … from peer … after …ms grace (attempt …)` | info | An attestation named a block the node does not hold; each periodic tick asks a peer for it until it is held or the 30 s expiry. Expected during a fork; no action. |
 
 **Metrics:**
 

@@ -2192,7 +2192,7 @@ also starts the by-hash fork walk (`try_trigger_fork_recovery_from`, Orphan arm 
 in `block_handling.rs`) after the unchanged by-height ORPHAN_CHASE request; the walk asks the
 orphan's sender while it is connected, else a connected peer whose reported tip is off our
 chain, never the tallest peer (`fork_walk.rs`); a completed walk whose tip is already canonical
-rolls back nothing (INC-I-293 R1, `fork_walk.rs`); a catch-up orphan
+rolls back nothing (INC-I-293 R1, by rule (8)); a catch-up orphan
 beyond that depth and any orphan below the height get only the chase (INC-I-293 F2); (6) a sibling that the wedge-escape door keeps retained and
 off the chain hands each of its cached children, depth-first, to the same door
 (`retain_sibling_and_try_escape` in `wedge_escape.rs`), at most `WEDGE_RETAINED_CAP` (64) door
@@ -2206,6 +2206,26 @@ disconnects its entries pass to a connected peer that reports the same tip, off 
 no one; each tick grants the entries round-robin over their target peers, at most
 `ATTEST_FETCH_PER_PEER_PER_TICK` (2) per peer and the unchanged 8 in all; below the height the
 fetch fires once to the recorded relayer and the entry is removed (INC-I-293 F1, `periodic.rs`).
+
+At and above the same height: (8) a candidate whose blocks are all already on our chain never
+wins at the reorg doors: the gossip door (`check_reorg_supported`) keeps our tip when the
+candidate block is canonical, and the plan door (`plan_reorg_inner`) returns no plan when the
+new chain is empty (the new tip is canonical); so no caller rolls back a canonical tip on a tie,
+and the lower-hash tie rule never sees a prefix of our chain (INC-I-293 S-1, `reorg/doors.rs`);
+(9) every by-hash walk asks an evidence peer: the orphan's sender for the orphan caller, else a
+connected peer whose reported tip is off our chain (those reporting the cached branch tip
+first, then the lowest peer id), never the tallest peer; this holds for the Wedged terminal and
+the ReorgCandidate fallback too (`try_trigger_fork_recovery_from`). A walk peer that answers
+`None` is marked for that walk and the same attempt moves to the next evidence peer; the walk
+is cancelled, with the unchanged 30 s cooldown, only when no evidence peer is left
+(`ForkRecoveryTracker::handle_block`) (INC-I-293 S-2); (10) a by-hash walk holds at most
+`WALK_HELD_BYTES_MAX` (32 MiB, 16 full Era-0 blocks) of body bytes; the answer that would pass
+the bound cancels the walk, drops the held set and blames the peer, without the genesis-resync
+escalation, and header-first sync reaches a longer branch; a walked body that does not match
+its header (merkle root, presence root at either arm) is refused at intake, not held, and its
+peer is blamed (INV-FORK-005; `walk_intake` in `sync/manager/fork_walk.rs`) (INC-I-293 S-2).
+Below the height the doors keep their depth rule, the Wedged and ReorgCandidate walks ask the
+tallest peer, a `None` answer cancels the walk, and the walk holds every body to completion.
 
 **Bond unit (INC-I-289 K-1, N-3).** A branch weighs the bond (`selection_weight_at`, the
 finality unit) of its DISTINCT supporters from the common ancestor; each producer counts once:

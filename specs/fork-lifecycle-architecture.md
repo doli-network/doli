@@ -365,6 +365,13 @@ is weighed with its branch by A3. Below the height: unchanged.
 INC-I-293 F1: no authority added or removed. At/above the height the attestation fetch keeps its
 entry until the block is held (or the 30 s expiry) and re-asks the relayer, or the peer that
 inherited it at disconnect by reporting the same off-chain tip; at most 2 per peer per tick (R-2 101-103).
+INC-I-293 S-1: no authority added or removed. At/above the height both doors (A3) refuse a
+candidate already on our chain (gossip door: candidate block canonical; plan door: empty new
+chain); the walk-level R1 fence in fork_walk.rs is removed (one authority). Below: unchanged.
+INC-I-293 S-2: no authority added or removed. At/above the height every walk caller (Orphan,
+Wedged, ReorgCandidate fallback) asks an evidence peer (tip off our chain), a None answer moves
+the walk to the next one, the walk holds at most 32 MiB of bodies and refuses a body that does
+not match its header at intake. Below the height: unchanged.
 ```
 
 ### Proposed (after M6)
