@@ -369,3 +369,9 @@ path = "tests/inc_i_293_r2_root_priority.rs"
 [[test]]
 name = "inc_i_293_r2_junk_bound"
 path = "tests/inc_i_293_r2_junk_bound.rs"
+
+# INC-I-293 S-2 (run 649) — own binary: every walk caller asks an evidence peer and
+# a None answer moves the walk on; below-AH child re-execs.
+[[test]]
+name = "inc_i_293_s2_walk_peer"
+path = "tests/inc_i_293_s2_walk_peer.rs"
