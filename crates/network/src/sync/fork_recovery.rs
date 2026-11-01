@@ -421,3 +421,7 @@ mod walk_bytes_tests;
 #[cfg(test)]
 #[path = "fork_recovery_walk_bound_tests.rs"]
 mod walk_bound_tests;
+
+#[cfg(test)]
+#[path = "fork_recovery_walk_intake_tests.rs"]
+mod walk_intake_tests;
