@@ -2204,7 +2204,10 @@ retained, or the unchanged 30 s expiry ends it, and each periodic tick sends one
 disconnects its entries pass to a connected peer that reports the same tip, off our chain
 (`hand_off_attest_fetch` in `branch_support.rs`), and with no such peer the entry is asked of
 no one; each tick grants the entries round-robin over their target peers, at most
-`ATTEST_FETCH_PER_PEER_PER_TICK` (2) per peer and the unchanged 8 in all; below the height the
+`ATTEST_FETCH_PER_PEER_PER_TICK` (2) per peer and the unchanged 8 in all, and asked entries move
+behind the unasked (never asked first, then least recently asked, oldest first within each; so
+a root behind n older entries of its relayer is asked within ceil(n/2) + 1 ticks while other
+peers leave the relayer its 2 of the 8, INC-I-293 S-2); below the height the
 fetch fires once to the recorded relayer and the entry is removed (INC-I-293 F1, `periodic.rs`).
 
 At and above the same height: (8) a candidate whose blocks are all already on our chain never

@@ -422,9 +422,10 @@ pub struct Node {
     /// but DON'T send the request immediately. run_periodic_tasks() checks
     /// entries >500ms old: if block_store still missing → send GetBlockByHash
     /// (genuine recovery); if block arrived via gossip → silently clear.
-    /// Max 3 peers per hash, 30s TTL. Eliminates ~94% false-positive fetches
-    /// where gossip delivers the block 1-2ms after the attestation.
+    /// Max 3 peers per hash, 30s TTL.
     pub attest_fetch_tracker: HashMap<Hash, (Instant, u8, PeerId)>,
+    /// INC-I-293 S-2: last ask per tracked hash, at/above the INC-I-288 gate.
+    pub attest_fetch_asked: HashMap<Hash, Instant>,
 
     /// INC-I-111: Counter for how many times the defi_health_inputs() scan
     /// has actually run (cache miss). Used by integration tests to verify

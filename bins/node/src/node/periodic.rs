@@ -397,6 +397,9 @@ impl Node {
                     .await;
                 self.attest_fetch_tracker.remove(&block_hash);
             }
+            // INC-I-293 S-2: never-asked entries first, then least recently asked;
+            // the stable sort keeps oldest-first within each rank.
+            queue.sort_by_key(|((h, ..), _)| self.attest_fetch_asked.get(h).copied());
             // INC-I-293 101: one peer's unservable hashes cannot hold every slot.
             let picked = super::branch_support::round_robin(
                 &queue,
@@ -406,11 +409,15 @@ impl Node {
             for (block_hash, peer, attempt) in picked {
                 self.send_attest_fetch(block_hash, peer, attempt, GRACE_MS)
                     .await;
+                self.attest_fetch_asked.insert(block_hash, now);
             }
 
             // Clean stale entries (>30s old) to bound memory
             self.attest_fetch_tracker
                 .retain(|_, (t, _, _)| now.duration_since(*t).as_secs() < 30);
+            let tracked = &self.attest_fetch_tracker;
+            self.attest_fetch_asked
+                .retain(|h, _| tracked.contains_key(h));
         }
 
         // TTL sweep: evict cached blocks older than 30 slots (~5 min at 10s/slot).
