@@ -2214,7 +2214,7 @@ At and above the same height: (8) a candidate whose blocks are all already on ou
 wins at the reorg doors: the gossip door (`check_reorg_supported`) keeps our tip when the
 candidate block is canonical, and the plan door (`plan_reorg_inner`) returns no plan when the
 new chain is empty (the new tip is canonical); so no caller rolls back a canonical tip on a tie,
-and the lower-hash tie rule never sees a prefix of our chain (INC-I-293 S-1, `reorg/doors.rs`);
+and the lower-hash tie rule never sees a prefix of our chain (INC-I-293 S-1, `reorg/doors/{gossip,plan}.rs`);
 (9) every by-hash walk asks an evidence peer: the orphan's sender for the orphan caller, else a
 connected peer whose reported tip is off our chain (those reporting the cached branch tip
 first, then the lowest peer id), never the tallest peer; this holds for the Wedged terminal and
