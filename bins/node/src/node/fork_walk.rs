@@ -173,16 +173,6 @@ impl Node {
         let Some(fork_tip) = recovery.blocks.last().map(|b| b.hash()) else {
             return Ok(());
         };
-        // INC-I-293 R1: at/above the gate a walk whose tip is already canonical (another
-        // path adopted its branch first) is no fork. Weighed against our own chain it
-        // ties on support, and the lower-hash rule would roll back every block above it.
-        if self.is_canonical(&fork_tip) && self.weighs_by_support().await {
-            info!(
-                "[FORK] RECOVERY_DONE fork tip {:.16}: already canonical — no reorg",
-                fork_tip
-            );
-            return Ok(());
-        }
         let tip_before = self.chain_state.read().await.best_hash;
         let mut result = Ok(());
         let mut eligible = true;

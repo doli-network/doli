@@ -119,6 +119,15 @@ impl ReorgHandler {
                     }
                 }
 
+                // INC-I-293 S-1: a candidate already on our chain never wins a tie.
+                if from_ancestor && to_rollback.contains(&block_hash) {
+                    debug!(
+                        "Ignoring fork: candidate {} is already canonical",
+                        block_hash
+                    );
+                    return None;
+                }
+
                 // INC-I-289: an unsupported own block keeps our tip. The candidate
                 // counts when recorded or when its slot advances on its parent.
                 let (ours, cand) = if from_ancestor {
@@ -466,6 +475,10 @@ impl ReorgHandler {
         // (our side unknown: no plan, our tip is kept); below it, the base-relative
         // accumulated weights of a lossy cache.
         let (current_weight, new_weight) = if self.weighs_from_ancestor(finality.local_tip_height) {
+            // INC-I-293 S-1: a new tip already on our chain is no candidate.
+            if new_chain.is_empty() {
+                return None;
+            }
             (
                 union_weight(&rollback, &get_support)?,
                 candidate_union(&new_chain, &get_support),
