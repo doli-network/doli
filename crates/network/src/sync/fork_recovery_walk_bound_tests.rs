@@ -32,6 +32,8 @@
 //!   x height {Era 0 above GATE, Era 1}; evidence peer {P_e2 set, none}.
 //! MATRIX: sixty_four -> O1,O2,O5,O6 | overflow -> O1,O2,O3,O4,O6
 //!   | tracks (Era 0) -> O1,O2 | tracks (Era 1) -> O1,O2,O5.
+//! U1A-B (operator ruling 2): a body refused at intake -> O3 (P_e2, same hash,
+//!   no timeout), O4 (blamed once).
 //! GATE: every cell walks above the INC-I-288 gate; the below-gate pin is
 //!   `s2_pin_below_gate_walk_keeps_unbounded_hold` (walk_bytes_tests), unchanged.
 
@@ -366,5 +368,35 @@ fn u1b_bound_tracks_the_validation_limit_in_era_1() {
         done.map(|d| d.blocks.len()),
         Some(total),
         "O5: the 65-block Era-1 walk completes"
+    );
+}
+
+// U1A-B INC-I-293 AUDIT-P2-649-001 (Must, crate level; operator ruling 2) — Decision: a failure means a walk body refused at intake (it fails its header) leaves the walk waiting on the same peer until the 10 s request timeout instead of marking it and asking the next evidence peer for the same hash at once.
+#[test]
+fn u1a_refused_body_hands_over_at_once() {
+    let mut r = rig(ERA0_H, 4, 64 * 1024, true);
+    let asked = next_fetch(&mut r);
+    assert_eq!(
+        asked,
+        Some(("P_e1", r.hashes[0])),
+        "setup: hop 1 asked of P_e1"
+    );
+    let mut bad = r.parents[0].clone().expect("hop 1");
+    bad.transactions = vec![tx(0xBAD, 1024)];
+    assert!(
+        bad.hash() == r.hashes[0] && !bad.body_matches_header(GATE, None),
+        "setup: same hash, body fails its header"
+    );
+    let out = r.m.handle_response(r.e1, SyncResponse::Block(Some(bad)));
+    assert!(out.is_empty(), "a walk answer is never passed to apply");
+    let blamed = (r.m.take_refused_body_suppliers().into_iter())
+        .filter(|(p, _)| *p == r.e1)
+        .count();
+    let next = next_fetch(&mut r);
+    assert!(
+        blamed == 1 && next == Some(("P_e2", r.hashes[0])),
+        "after P_e1's refused body: P_e1 blamed {blamed} time(s), next walk fetch \
+         {next:?}; expected P_e1 blamed once and the same walk asking the next evidence \
+         peer P_e2 for the same hash at once (no request timeout)"
     );
 }

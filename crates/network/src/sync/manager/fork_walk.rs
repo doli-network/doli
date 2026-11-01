@@ -41,10 +41,10 @@ impl SyncManager {
 
     /// Feed a block response to the walk. At `local_height + 1 >= AH` a pending
     /// answer whose signature fails is consumed without advancing the walk; the
-    /// fetch fails over on its request timeout. At/above the INC-I-288 gate the
-    /// same holds for a body that does not match its header (INV-FORK-005), and
-    /// an answer that would pass `WALK_FULL_BLOCKS` x `max_block_size(local + 1)`
-    /// marks its peer (no blame) and hands the walk to the next evidence peer.
+    /// fetch fails over on its request timeout. At/above the INC-I-288 gate a body
+    /// that does not match its header (INV-FORK-005) is blamed, and it or an answer
+    /// that would pass `WALK_FULL_BLOCKS` x `max_block_size(local + 1)` (not blamed)
+    /// marks its peer and hands the walk to the next evidence peer (INC-I-293 U-1).
     pub(super) fn walk_intake(&mut self, peer: PeerId, block: Option<doli_core::Block>) -> bool {
         let ah = self.config.inc_i_236_block_signature_activation_height;
         let height = self.local_height.saturating_add(1);
@@ -73,6 +73,8 @@ impl SyncManager {
                     peer
                 );
                 self.blame_body_supplier(peer, b.header.slot);
+                // No evidence peer left: wait out REQUEST_TIMEOUT as before.
+                (self.fork.fork_recovery).hand_over(peer, "sent a refused body for");
                 return true;
             }
             let max = WALK_FULL_BLOCKS.saturating_mul(max_block_size(height));

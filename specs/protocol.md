@@ -2218,10 +2218,15 @@ and the lower-hash tie rule never sees a prefix of our chain (INC-I-293 S-1, `re
 (9) every by-hash walk asks an evidence peer: the orphan's sender for the orphan caller, else a
 connected peer whose reported tip is off our chain (those reporting the cached branch tip
 first, then the lowest peer id), never the tallest peer; this holds for the Wedged terminal and
-the ReorgCandidate fallback too (`try_trigger_fork_recovery_from`). A walk peer that answers
-`None` is marked for that walk and the same attempt moves to the next evidence peer; the walk
-is cancelled, with the unchanged 30 s cooldown, only when no evidence peer is left
-(`ForkRecoveryTracker::handle_block`) (INC-I-293 S-2); (10) a by-hash walk holds at most
+the ReorgCandidate fallback too (`try_trigger_fork_recovery_from`). Every non-answer of a walk
+peer marks it for that walk (never asked again) and the same attempt asks the next evidence
+peer for the same hash before any alternate (`ForkRecoveryTracker::hand_over`): a `None`
+answer, silence past the 10 s request timeout, a body refused at intake (also blamed), and an
+answer over the byte bound of (10) (not blamed) (INC-I-293 S-2, U-1). Only with no evidence
+peer left does the old path run: `None` cancels the walk with the unchanged 30 s cooldown,
+silence fails over to the height-ranked alternates, a refused body waits out the request
+timeout. A block from the walk peer that is not the asked hash still passes through (the
+replies are not yet keyed by request), so it is handled as silence when the timeout ends; (10) a by-hash walk holds at most
 64 × the era block size limit of body bytes (`WALK_FULL_BLOCKS` × `max_block_size(local height
 + 1)`, the limit block validation uses; 64 full blocks, the seed included); the peer whose
 answer would pass the bound is marked for that walk and not blamed, and the same walk moves to

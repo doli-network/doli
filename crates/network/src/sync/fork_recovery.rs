@@ -177,18 +177,24 @@ impl ForkRecoveryTracker {
             if sent_at.elapsed() <= REQUEST_TIMEOUT {
                 return None; // Still waiting, not timed out yet
             }
-            // No alternates left (`?` = None) — let the session timeout handle it
-            let next_peer = recovery.alternate_peers.pop()?;
-            warn!(
-                "Fork recovery: request to {} timed out after {}s — failing over to {}",
-                recovery.peer,
-                sent_at.elapsed().as_secs(),
-                next_peer
-            );
-            recovery.peer = next_peer;
-            recovery.pending = false;
+            let silent = recovery.peer;
+            // INC-I-293 U-1: the next evidence peer first; alternates only after them.
+            if !self.hand_over(silent, "did not answer in time for") {
+                let recovery = self.active.as_mut()?;
+                // No alternates left (`?` = None) — let the session timeout handle it
+                let next_peer = recovery.alternate_peers.pop()?;
+                warn!(
+                    "Fork recovery: request to {} timed out after {}s — failing over to {}",
+                    recovery.peer,
+                    sent_at.elapsed().as_secs(),
+                    next_peer
+                );
+                recovery.peer = next_peer;
+                recovery.pending = false;
+            }
             // Fall through to send new request below
         }
+        let recovery = self.active.as_mut()?;
         recovery.pending = true;
         recovery.request_sent_at = Some(Instant::now());
         Some((recovery.peer, recovery.next_parent))
