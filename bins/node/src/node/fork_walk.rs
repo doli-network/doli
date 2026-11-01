@@ -106,8 +106,10 @@ impl Node {
         self.try_trigger_fork_recovery_from(None).await
     }
 
-    /// INC-I-293 103: `sender` (the orphan's) is asked when connected, else a peer
-    /// whose reported tip is off our chain; no sender keeps the tallest peer.
+    /// INC-I-293 103/S-2: `sender` (the orphan's) is asked when connected, else an
+    /// evidence peer. At/above the INC-I-288 gate a walk without a sender asks the
+    /// first evidence peer and a `None` answer moves it to the next; below, the
+    /// tallest peer.
     pub(super) async fn try_trigger_fork_recovery_from(&mut self, sender: Option<PeerId>) -> bool {
         if !self.sync_manager.read().await.can_start_fork_recovery() {
             return false;
@@ -142,8 +144,14 @@ impl Node {
         let Some(seed) = self.fork_block_cache.read().await.get(&seed_hash).cloned() else {
             return false;
         };
+        let gated = self.weighs_by_support().await;
         let mut sm = self.sync_manager.write().await;
+        let evidence = match gated {
+            true => self.evidence_peers(&sm, branch_tip),
+            false => Vec::new(),
+        };
         let peer = match sender {
+            None if gated => evidence.first().copied(),
             None => sm.best_peer_for_recovery(),
             Some(s) if sm.has_peer(&s) => Some(s),
             Some(s) => self.branch_peer(&sm, &s, None),
@@ -154,6 +162,9 @@ impl Node {
         let seed_hash = seed.hash();
         let seed_slot = seed.header.slot;
         let started = sm.start_fork_recovery(seed, peer);
+        if started && gated {
+            sm.set_fork_walk_handover(evidence);
+        }
         if started {
             info!(
                 "[FORK] RECOVERY_START seed {:.16} slot {} (branch tip {:.16}) from {}",
@@ -161,6 +172,17 @@ impl Node {
             );
         }
         started
+    }
+
+    /// INC-I-293 S-2: connected peers whose reported tip is off our chain, those
+    /// reporting `branch_tip` first, each group by lowest id; never by height.
+    fn evidence_peers(&self, sm: &SyncManager, branch_tip: Hash) -> Vec<PeerId> {
+        let mut peers: Vec<(bool, PeerId)> = (sm.peer_tips().into_iter())
+            .filter(|(_, tip)| !self.is_canonical(tip))
+            .map(|(p, tip)| (tip != branch_tip, p))
+            .collect();
+        peers.sort();
+        peers.into_iter().map(|(_, p)| p).collect()
     }
 
     /// Handle a completed fork recovery: eligibility-gate every walked block

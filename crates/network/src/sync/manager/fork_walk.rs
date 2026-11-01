@@ -31,6 +31,12 @@ impl SyncManager {
         true
     }
 
+    /// INC-I-293 S-2: evidence peers the active walk moves to when its peer answers
+    /// `None` (the node sets them at/above the INC-I-288 gate only).
+    pub fn set_fork_walk_handover(&mut self, peers: Vec<PeerId>) {
+        self.fork.fork_recovery.set_handover_peers(peers);
+    }
+
     /// Feed a block response to the walk. At `local_height + 1 >= AH` a pending
     /// answer whose signature fails is consumed without advancing the walk; the
     /// fetch fails over on its request timeout.

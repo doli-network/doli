@@ -48,6 +48,9 @@ struct ActiveRecovery {
     request_sent_at: Option<Instant>,
     /// Alternate peers to try if primary fails or times out
     alternate_peers: Vec<PeerId>,
+    /// INC-I-293 S-2: evidence peers a `None` answer hands the walk to, in order.
+    /// Set by the node at/above the INC-I-288 gate only; empty: `None` cancels.
+    handover: VecDeque<PeerId>,
 }
 
 /// Result of a completed fork recovery
@@ -131,6 +134,7 @@ impl ForkRecoveryTracker {
             last_progress_at: Instant::now(),
             request_sent_at: None,
             alternate_peers: Vec::new(),
+            handover: VecDeque::new(),
         });
         true
     }
@@ -139,6 +143,13 @@ impl ForkRecoveryTracker {
     pub fn set_alternate_peers(&mut self, peers: Vec<PeerId>) {
         if let Some(recovery) = self.active.as_mut() {
             recovery.alternate_peers = peers.into_iter().filter(|p| *p != recovery.peer).collect();
+        }
+    }
+
+    /// INC-I-293 S-2: the evidence peers a `None` answer hands this walk to.
+    pub fn set_handover_peers(&mut self, peers: Vec<PeerId>) {
+        if let Some(recovery) = self.active.as_mut() {
+            recovery.handover = peers.into_iter().filter(|p| *p != recovery.peer).collect();
         }
     }
 
@@ -211,6 +222,18 @@ impl ForkRecoveryTracker {
                 true
             }
             None => {
+                // The peer is marked for this walk: never asked again by it.
+                recovery.handover.retain(|p| *p != peer);
+                recovery.alternate_peers.retain(|p| *p != peer);
+                if let Some(next) = recovery.handover.pop_front() {
+                    warn!(
+                        "Fork recovery: {} does not have block {:.16} — asking evidence peer {}",
+                        peer, recovery.next_parent, next
+                    );
+                    recovery.peer = next;
+                    recovery.request_sent_at = None;
+                    return true;
+                }
                 self.cancel("peer does not have block");
                 true
             }
