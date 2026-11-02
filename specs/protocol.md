@@ -2135,7 +2135,7 @@ This prevents Sybil attacks where an attacker creates many low-weight blocks.
 
 **Fork choice from the activation height (INC-I-288, INC-I-289).** Every rule in this paragraph
 and in the four that follow is node-local fork choice. Each is on at and above
-`inc_i_288_fork_choice_activation_height` (mainnet `u64::MAX`, not scheduled; testnet 366,891;
+`inc_i_288_fork_choice_activation_height` (mainnet 867,000; testnet 366,891;
 devnet 0) and unchanged below it. A site is on when the height it compares is `>=` the gate;
 that height is the local tip height, except: the FORK_GUARD arm compares the fork block's
 height, the own-block progress rule and the LRU re-record compare the block's height, the
@@ -2868,7 +2868,7 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | Equivocation slashing (`inc_i_255_slashing_activation_height`, §3.10.1) | 806,859 | 330,849 | 0 | Devnet only (`DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT`) |
 | Unbonding lock (`inc_i_257_unbonding_activation_height`, §3.13.1) | 806,859 | 330,849 | 0 | Devnet only (`DOLI_INC_I_257_UNBONDING_ACTIVATION_HEIGHT`) |
 | Producer authorization (`inc_i_182_producer_auth_activation_height`, §3.13.2) | 806,859 | 330,849 | 0 | Devnet only (`DOLI_INC_I_182_PRODUCER_AUTH_ACTIVATION_HEIGHT`) |
-| INC-I-288/INC-I-289 fork choice: rollback memory, bond weight from the common ancestor with its epoch table, persistent finality, snap descent proof, no blind rollback (`inc_i_288_fork_choice_activation_height`, §5.5) | `u64::MAX` (not scheduled) | 366,891 | 0 | Non-mainnet (`DOLI_INC_I_288_FORK_CHOICE_ACTIVATION_HEIGHT`) |
+| INC-I-288/INC-I-289 fork choice: rollback memory, bond weight from the common ancestor with its epoch table, persistent finality, snap descent proof, no blind rollback (`inc_i_288_fork_choice_activation_height`, §5.5) | 867,000 | 366,891 | 0 | Non-mainnet (`DOLI_INC_I_288_FORK_CHOICE_ACTIVATION_HEIGHT`) |
 | Data Directory | `~/.doli/mainnet/` | `~/.doli/testnet/` | `~/.doli/devnet/` | - |
 | Config File | `.env` in data dir | `.env` in data dir | `.env` in data dir | - |
 
