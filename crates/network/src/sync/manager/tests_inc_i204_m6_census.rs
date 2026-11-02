@@ -12,7 +12,7 @@
 //!   × apply health  {Applying (no failures), Failing (5 failures, 700s)}
 //!
 //!   4 gap × 3 finality × 2 rollback × 2 sibling × 2 snap × 2 corroboration
-//!   × 2 apply health = 384 cells.
+//!   × 2 apply health × 2 header proof (INC-I-294 M-2) = 768 cells.
 //!
 //! OUTPUT CONTRACT — `fn RecoveryCoordinator::classify(&self, &RecoveryContext)
 //!                       -> RecoveryAction`
@@ -20,7 +20,7 @@
 //!   O3 return value: `RecoveryAction` — the ONLY observable output.
 //!   O4 persistent store: none.  O5 statics: none.  O6 events: tracing only.
 //!   PATHS: the full ladder P1..P5, as enumerated in `tests_inc_i204_m3.rs`.
-//!   INPUT PARTITIONS: the 384-cell cross product above.
+//!   INPUT PARTITIONS: the 768-cell cross product above.
 //!   MATRIX: O3 × every cell — each cell's whole 20-tick trajectory is judged
 //!           against the lossy-admission predicate below.
 //!
@@ -34,7 +34,8 @@ use crate::sync::manager::recovery::{
     thresholds, RecoveryAction, RecoveryContext, RecoveryCoordinator, RecoveryEvidence,
 };
 use crate::sync::manager::tests_inc_i204_m3::{
-    all_cells, cell_ctx, is_lossy, rung_name, Budget, Cell, LOCAL_H, WEDGED_LAST_APPLIED,
+    all_cells, cell_ctx, is_lossy, report_header_proof, rung_name, Budget, Cell, Proof, LOCAL_H,
+    WEDGED_LAST_APPLIED,
 };
 
 /// Ticks driven per cell — same budget M3 uses, so every bounded budget is spent.
@@ -94,15 +95,17 @@ struct M6Cell {
     base: Cell,
     corr: Corroboration,
     health: ApplyHealth,
+    proof: Proof,
 }
 
 impl M6Cell {
     fn name(&self) -> String {
         format!(
-            "{} | {} | {}",
+            "{} | {} | {} | {}",
             self.base.name(),
             self.corr.name(),
-            self.health.name()
+            self.health.name(),
+            self.proof.name()
         )
     }
 
@@ -118,7 +121,14 @@ fn all_m6_cells() -> Vec<M6Cell> {
     for base in all_cells() {
         for corr in Corroboration::ALL {
             for health in ApplyHealth::ALL {
-                out.push(M6Cell { base, corr, health });
+                for proof in Proof::ALL {
+                    out.push(M6Cell {
+                        base,
+                        corr,
+                        health,
+                        proof,
+                    });
+                }
             }
         }
     }
@@ -153,6 +163,9 @@ fn m6_coordinator(cell: M6Cell) -> RecoveryCoordinator {
                 height: LOCAL_H + i,
             });
         }
+    }
+    if cell.proof == Proof::Present {
+        report_header_proof(&mut coord, LOCAL_H);
     }
     if cell.base.sibling == Budget::Spent {
         for _ in 0..thresholds::SIBLING_FETCH_MAX {
@@ -236,6 +249,7 @@ fn m6_no_fork_shaped_cell_reaches_a_lossy_action() {
 fn m6_census_enumeration_is_not_vacuous() {
     let mut snap_above_floor = 0usize;
     let mut rollbacks = 0usize;
+    let mut blind_rollbacks = 0usize;
     let mut siblings = 0usize;
     let mut wedges = 0usize;
 
@@ -243,6 +257,9 @@ fn m6_census_enumeration_is_not_vacuous() {
         for action in drive_m6(cell) {
             match action {
                 RecoveryAction::SnapSync if !cell.below_snap_floor() => snap_above_floor += 1,
+                RecoveryAction::ShallowRollback { .. } if cell.proof == Proof::Absent => {
+                    blind_rollbacks += 1
+                }
                 RecoveryAction::ShallowRollback { .. } => rollbacks += 1,
                 RecoveryAction::SiblingFetch { .. } => siblings += 1,
                 RecoveryAction::Wedged { .. } => wedges += 1,
@@ -260,8 +277,12 @@ fn m6_census_enumeration_is_not_vacuous() {
     );
     assert!(
         rollbacks > 0,
-        "anti-vacuity: no cell reaches ShallowRollback — the enumeration no longer \
-         exercises Rule 1/1b"
+        "anti-vacuity: no cell with a header proof reaches ShallowRollback — the \
+         enumeration no longer exercises Rule 1/1b"
+    );
+    assert_eq!(
+        blind_rollbacks, 0,
+        "INC-I-294 M-2: a cell without a header proof reached ShallowRollback"
     );
     assert!(
         siblings > 0,

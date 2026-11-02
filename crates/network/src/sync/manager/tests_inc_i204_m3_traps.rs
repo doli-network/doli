@@ -73,8 +73,8 @@ use crate::sync::manager::recovery::{
     thresholds, RecoveryAction, RecoveryContext, RecoveryCoordinator, WedgeReason,
 };
 use crate::sync::manager::tests_inc_i204_m3::{
-    all_cells, cell_coordinator, cell_ctx, is_lossy, report_wedge_evidence, rung_name, Budget,
-    Cell, FinalityPos, GapBand, COHORT_PEERS, LOCAL_H, WEDGED_LAST_APPLIED,
+    all_cells, cell_coordinator, cell_ctx, is_lossy, report_header_proof, report_wedge_evidence,
+    rung_name, Budget, Cell, FinalityPos, GapBand, COHORT_PEERS, LOCAL_H, WEDGED_LAST_APPLIED,
 };
 use crate::sync::manager::{SyncConfig, SyncManager};
 
@@ -111,7 +111,8 @@ fn coord_with_wedge_evidence(gap: u64) -> RecoveryCoordinator {
 /// of resolving them.
 #[test]
 fn t1_finality_guard_stays_strict_a_rollback_landing_exactly_on_finality_is_legal() {
-    let coord = coord_with_wedge_evidence(10);
+    let mut coord = coord_with_wedge_evidence(10);
+    report_header_proof(&mut coord, LOCAL_H + 1);
     let ctx = ctx_at(LOCAL_H + 1, 10, Some(LOCAL_H));
 
     assert_eq!(
@@ -128,7 +129,8 @@ fn t1_finality_guard_stays_strict_a_rollback_landing_exactly_on_finality_is_lega
 /// INV-SYNC-001's exact violation and deadlocks `plan_reorg`.
 #[test]
 fn t1_finality_guard_refuses_a_rollback_that_would_unwind_a_finalized_block() {
-    let coord = coord_with_wedge_evidence(10);
+    let mut coord = coord_with_wedge_evidence(10);
+    report_header_proof(&mut coord, LOCAL_H);
     let ctx = ctx_at(LOCAL_H, 10, Some(LOCAL_H));
 
     let action = coord.classify(&ctx);
@@ -151,7 +153,8 @@ fn t1_finality_guard_refuses_a_rollback_that_would_unwind_a_finalized_block() {
 #[test]
 fn t5_minor_fork_band_still_reaches_the_last_gap_below_fifty() {
     let last_in_band = thresholds::MINOR_FORK_GAP_MAX - 1;
-    let coord = coord_with_wedge_evidence(last_in_band);
+    let mut coord = coord_with_wedge_evidence(last_in_band);
+    report_header_proof(&mut coord, LOCAL_H);
     let ctx = ctx_at(LOCAL_H, last_in_band, Some(LOCAL_H - 10));
 
     assert_eq!(
@@ -168,7 +171,8 @@ fn t5_minor_fork_band_still_reaches_the_last_gap_below_fifty() {
          slots). Lowering it is a threshold move dressed as a fix."
     );
 
-    let just_out = coord_with_wedge_evidence(thresholds::MINOR_FORK_GAP_MAX);
+    let mut just_out = coord_with_wedge_evidence(thresholds::MINOR_FORK_GAP_MAX);
+    report_header_proof(&mut just_out, LOCAL_H);
     let out_ctx = ctx_at(LOCAL_H, thresholds::MINOR_FORK_GAP_MAX, Some(LOCAL_H - 10));
     assert!(
         !matches!(

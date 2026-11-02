@@ -738,6 +738,12 @@ impl SyncManager {
             .report(super::recovery::RecoveryEvidence::StuckFork { gap });
     }
 
+    /// Report that `peer` served a block proving its chain leaves our tip at `tip_height`.
+    pub fn report_header_divergence(&mut self, peer: libp2p::PeerId, tip_height: u64) {
+        self.recovery
+            .report(super::recovery::RecoveryEvidence::HeaderDivergence { peer, tip_height });
+    }
+
     pub fn reset_sync_for_rollback(&mut self) {
         if self.local_height > 0 && self.local_height <= self.confirmed_height_floor {
             let new_floor = self.local_height.saturating_sub(1);

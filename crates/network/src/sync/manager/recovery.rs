@@ -99,6 +99,9 @@ pub enum RecoveryEvidence {
     /// satisfy Rule 1's `recently_synced()` precondition and loops
     /// `HeaderFirstSync` forever against peers that don't recognize its tip.
     StuckFork { gap: u64 },
+
+    /// A fetched header/block from `peer` proves its chain does not extend our tip at `tip_height`.
+    HeaderDivergence { peer: PeerId, tip_height: u64 },
 }
 
 /// What the coordinator tells the caller to do.
@@ -393,6 +396,10 @@ impl RecoveryCoordinator {
         let rollback_budget = ctx.shallow_rollback_count < thresholds::SHALLOW_ROLLBACK_MAX;
         // INC-I-289: the depth-1 rollback of Rules 1/1b weighs nothing.
         let blind_rollback = ctx.local_height < self.fork_choice_gate;
+        // INC-I-294 M-2: a live header proof that a peer's chain leaves our current tip.
+        let header_proof = self.live(now).any(|e| {
+            matches!(e, RecoveryEvidence::HeaderDivergence { tip_height, .. } if *tip_height == ctx.local_height)
+        });
 
         // INC-I-204 M3 (REQ-FORK-010): the wedge shape. G3 corroborated that our tip
         // is off the peer-majority chain AND nothing has applied since. A fork is not
@@ -418,7 +425,10 @@ impl RecoveryCoordinator {
             if rollback_refused {
                 return self.on_rollback_refused(ctx, wedged_shape);
             }
-            return RecoveryAction::ShallowRollback { depth: 1 };
+            // Without a header proof the ladder continues below.
+            if header_proof {
+                return RecoveryAction::ShallowRollback { depth: 1 };
+            }
         }
 
         // --- Rule 1b (INC-I-120 / RC-2): stuck fork, no recent apply ---
@@ -430,7 +440,9 @@ impl RecoveryCoordinator {
             if rollback_refused {
                 return self.on_rollback_refused(ctx, wedged_shape);
             }
-            return RecoveryAction::ShallowRollback { depth: 1 };
+            if header_proof {
+                return RecoveryAction::ShallowRollback { depth: 1 };
+            }
         }
 
         // --- Rule 2: snap sync — for BEHIND-ness, never for a fork (LB-5) ---
@@ -566,6 +578,12 @@ impl RecoveryCoordinator {
         self.live(now).filter(|e| pred(e)).count() as u32
     }
 
+    /// Test-only: record `evidence` at `at` without pruning.
+    #[cfg(test)]
+    pub(crate) fn report_at(&mut self, at: Instant, evidence: RecoveryEvidence) {
+        self.evidence.push_back((at, evidence));
+    }
+
     /// Test-only: count current evidence entries.
     #[cfg(test)]
     pub(crate) fn evidence_len(&self) -> usize {
@@ -613,6 +631,14 @@ mod tests {
         PeerId::random()
     }
 
+    /// A fresh header proof for `tip_height`; Rules 1/1b roll back only with one.
+    fn header_proof(tip_height: u64) -> RecoveryEvidence {
+        RecoveryEvidence::HeaderDivergence {
+            peer: fake_peer(),
+            tip_height,
+        }
+    }
+
     // --- INC-I-120 StuckFork rollback tests (Layer 2 / RC-2) ------------------
     //
     // OUTPUT CONTRACT: RecoveryCoordinator::classify(&ctx) -> RecoveryAction
@@ -651,6 +677,7 @@ mod tests {
     fn stuck_fork_triggers_shallow_rollback_when_tip_is_stale() {
         let mut c = RecoveryCoordinator::new();
         c.report(RecoveryEvidence::StuckFork { gap: 5 });
+        c.report(header_proof(1000));
         let mut ctx = base_ctx();
         ctx.network_tip_height = 1005; // gap = 5
         ctx.last_applied_secs = 350; // > 300 → NOT recently synced
@@ -688,6 +715,7 @@ mod tests {
     fn stuck_fork_respects_rollback_budget() {
         let mut c = RecoveryCoordinator::new();
         c.report(RecoveryEvidence::StuckFork { gap: 5 });
+        c.report(header_proof(1000));
         let mut ctx = base_ctx();
         ctx.network_tip_height = 1005;
         ctx.last_applied_secs = 350;
@@ -818,6 +846,7 @@ mod tests {
         for _ in 0..3 {
             c.report(RecoveryEvidence::OrphanGossip { slot: 1, gap: 3 });
         }
+        c.report(header_proof(1000));
         let mut ctx = base_ctx();
         ctx.network_tip_height = 1003;
         // Most recent rollback was to 999; we're now at 1000 → applied since.
@@ -832,6 +861,7 @@ mod tests {
         for _ in 0..3 {
             c.report(RecoveryEvidence::OrphanGossip { slot: 1, gap: 3 });
         }
+        c.report(header_proof(1000));
         let mut ctx = base_ctx();
         ctx.network_tip_height = 1003;
         // Most recent rollback was to 1000 and we are still at 1000.
@@ -850,6 +880,7 @@ mod tests {
         for _ in 0..3 {
             c.report(RecoveryEvidence::OrphanGossip { slot: 1, gap: 3 });
         }
+        c.report(header_proof(1000));
         let mut ctx = base_ctx();
         ctx.network_tip_height = 1003;
         assert_eq!(
@@ -870,6 +901,7 @@ mod tests {
                 gap: 2,
             });
         }
+        c.report(header_proof(1000));
         let mut ctx = base_ctx();
         ctx.network_tip_height = 1002;
         assert_eq!(
@@ -893,6 +925,7 @@ mod tests {
                 gap: 2,
             });
         }
+        c.report(header_proof(1000));
         let mut ctx = base_ctx();
         ctx.network_tip_height = 1002; // gap=2 (<MINOR_FORK_GAP_MAX=50); last_applied_secs=5 → recently_synced()
         assert_eq!(
@@ -911,6 +944,7 @@ mod tests {
             peer: fake_peer(),
             gap: 2,
         });
+        c.report(header_proof(1000));
         let mut ctx = base_ctx();
         ctx.network_tip_height = 1002; // gap=2; 1 event < threshold=2
         assert_ne!(
@@ -1134,6 +1168,7 @@ mod tests {
         for slot in [100, 101, 102] {
             c.report(RecoveryEvidence::OrphanGossip { slot, gap: 3 });
         }
+        c.report(header_proof(1005));
         // Stale rollback (6min ago) should NOT suppress — Gate 1 inactive
         let ctx = RecoveryContext {
             local_height: 1005,
@@ -1230,6 +1265,7 @@ mod tests {
         for slot in 100..103 {
             coord.report(RecoveryEvidence::OrphanGossip { slot, gap: 1 });
         }
+        coord.report(header_proof(1001));
 
         // local_height=1001, depth=1 -> target=1000, finality=1000
         // target == finality: rolling back TO the finalized block is LEGAL.
@@ -1299,6 +1335,7 @@ mod tests {
         for slot in 100..103 {
             coord.report(RecoveryEvidence::OrphanGossip { slot, gap: 1 });
         }
+        coord.report(header_proof(1010));
 
         let ctx = RecoveryContext {
             local_height: 1010,
@@ -1328,6 +1365,7 @@ mod tests {
         for slot in 100..103 {
             coord.report(RecoveryEvidence::OrphanGossip { slot, gap: 1 });
         }
+        coord.report(header_proof(100));
 
         let ctx = RecoveryContext {
             local_height: 100,

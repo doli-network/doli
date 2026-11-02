@@ -342,6 +342,10 @@ impl SyncManager {
                          gossip timing, not a fork. Waiting for gossip delivery.",
                         peer, gap, self.fork.consecutive_empty_headers
                     );
+                    // INC-I-294: ask by height next, so a sibling at tip+1 can prove divergence.
+                    if self.fork.consecutive_empty_headers < super::PARK_EMPTY_HEADERS {
+                        self.fork.use_height_based_headers = true;
+                    }
                     self.set_state(SyncState::Idle, "small_gap_wait_gossip");
                     return;
                 }
@@ -453,6 +457,14 @@ impl SyncManager {
         // D2 (INC-I-090): record chain break info for diagnostic emission
         if let Some(cb) = self.pipeline.header_downloader.take_chain_break() {
             use crate::sync::manager::types::ChainBreakInfo;
+            // INC-I-294: the peer's first header does not extend our tip.
+            if cb.valid_so_far == 0 && cb.expected == self.local_hash {
+                self.recovery
+                    .report(super::super::recovery::RecoveryEvidence::HeaderDivergence {
+                        peer,
+                        tip_height: self.local_height,
+                    });
+            }
             if self.fork.chain_breaks.len() >= 32 {
                 self.fork.chain_breaks.pop_front();
             }

@@ -185,7 +185,9 @@ impl Node {
                          signaling fork recovery",
                         block_slot, canonical_slot, fork_height
                     );
-                    self.sync_manager.write().await.signal_stuck_fork();
+                    let mut sync = self.sync_manager.write().await;
+                    sync.signal_stuck_fork();
+                    sync.report_header_divergence(source_peer, best_height);
                 } else {
                     // INC-I-143 F2 (wedge-escape): do NOT drop the sibling
                     // permanently. It builds on a parent we already have — retain it

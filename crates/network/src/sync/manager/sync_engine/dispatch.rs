@@ -16,7 +16,7 @@ use crate::sync::manager::{
 const PARKED_HEADER_RETRY_SECS: u64 = 30;
 
 /// Consecutive empty header replies that park the Headers arm.
-const PARK_EMPTY_HEADERS: u32 = 10;
+pub(in crate::sync::manager) const PARK_EMPTY_HEADERS: u32 = 10;
 
 impl SyncManager {
     /// Get the next sync request to send
