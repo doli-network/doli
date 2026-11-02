@@ -1,6 +1,6 @@
 use super::*;
 use crate::metrics::record_wedge_escape_outcome;
-use crate::node::wedge_outcome::{classify_wedge_plan, WedgeOutcome};
+use crate::node::wedge_outcome::{classify_plan, classify_wedge_plan, WedgeOutcome};
 
 // =============================================================================
 // INC-I-143 F2 — FORK_GUARD wedge-escape
@@ -83,7 +83,52 @@ impl Node {
     /// Every block is eligibility-gated (FIX A) BEFORE it can enter the reorg
     /// graph, and only eligibility-validated retained blocks (self.wedge_retained_tips,
     /// FIX B) may seed a descendant reroute — see the module header.
+    ///
+    /// INC-I-293 F3: at/above the INC-I-288 gate, a sibling that stays retained
+    /// off the chain hands its cached children to this same door, depth-first,
+    /// so a root that arrives last is weighed with its branch.
     pub(crate) async fn retain_sibling_and_try_escape(&mut self, block: Block) -> Result<()> {
+        let root = block.hash();
+        let walk = self.weighs_by_support().await;
+        self.retain_sibling_once(block).await?;
+        if walk && self.wedge_retained_tips.contains(&root) && !self.is_canonical_hash(&root) {
+            self.weigh_cached_children(root).await?;
+        }
+        Ok(())
+    }
+
+    /// At most `WEDGE_RETAINED_CAP` door calls; stops once the tip moves (a landed
+    /// reorg drains the rest, INC-I-292).
+    async fn weigh_cached_children(&mut self, root: Hash) -> Result<()> {
+        let tip = self.chain_state.read().await.best_hash;
+        let mut stack = self.cached_children(root).await;
+        let mut calls = 0;
+        while let Some(child) = stack.pop() {
+            if calls == WEDGE_RETAINED_CAP || self.chain_state.read().await.best_hash != tip {
+                break;
+            }
+            calls += 1;
+            let hash = child.hash();
+            self.retain_sibling_once(child).await?;
+            if self.wedge_retained_tips.contains(&hash) && !self.is_canonical_hash(&hash) {
+                stack.extend(self.cached_children(hash).await);
+            }
+        }
+        Ok(())
+    }
+
+    /// Cached children of `parent`, ordered so `pop` yields the lowest slot first.
+    async fn cached_children(&self, parent: Hash) -> Vec<Block> {
+        let mut kids: Vec<Block> = (self.fork_block_cache.read().await)
+            .values()
+            .filter(|b| b.header.prev_hash == parent)
+            .cloned()
+            .collect();
+        kids.sort_by_key(|b| std::cmp::Reverse((b.header.slot, b.hash())));
+        kids
+    }
+
+    async fn retain_sibling_once(&mut self, block: Block) -> Result<()> {
         let fork_tip_hash = block.hash();
         let local_tip = self.chain_state.read().await.best_hash;
         if (self.sync_manager.read().await).is_fork_branch_rejected(fork_tip_hash, local_tip) {
@@ -144,11 +189,19 @@ impl Node {
             debug!("[WEDGE_ESCAPE] Dropping fork block: {}", e);
             return Ok(());
         }
-        self.sync_manager.write().await.record_fork_block_weight(
+        let from_ancestor = {
+            let sync = self.sync_manager.read().await;
+            let tip_h = sync.fork_choice_finality().local_tip_height;
+            sync.reorg_handler().weighs_from_ancestor(tip_h)
+        };
+        let parent_slot = self.parent_slot(&block).await;
+        self.sync_manager.write().await.record_fork_block_at_slot(
             fork_tip_hash,
             block.header.prev_hash,
             weight,
             sibling_height,
+            block.header.slot,
+            parent_slot,
         );
 
         // c. Cache the body (execute_reorg fetches new-block bodies from here).
@@ -176,43 +229,52 @@ impl Node {
         // INC-I-204 M5: the verdict now comes from the ONE authority
         // (`ReorgHandler::weigh_branches`). Below the fork-choice activation height it
         // reproduces this door's pre-M5 rule exactly — `fork_w <= our_w` gives up.
+        // INC-I-288: at/above its gate weigh_branches is not called (no short-circuit);
+        // the plan decides.
         let current_tip = self.chain_state.read().await.best_hash;
-        let (fork_weight, our_weight, verdict) = {
+        let below_gate = if from_ancestor {
+            None
+        } else {
             let sync = self.sync_manager.read().await;
             let finality = sync.fork_choice_finality();
             let rh = sync.reorg_handler();
-            (
+            Some((
                 rh.chain_weight(&fork_tip_hash),
                 rh.chain_weight(&current_tip),
                 rh.weigh_branches(&current_tip, &fork_tip_hash, finality),
-            )
+            ))
         };
-        if matches!(
-            verdict,
-            network::WeightVerdict::Lighter | network::WeightVerdict::TieKeep
-        ) {
-            record_wedge_escape_outcome(WedgeOutcome::CannotOutweigh.reason());
-            info!(
-                "[WEDGE_ESCAPE] Sibling {:.8} cannot out-weight tip (fork_w={} <= our_w={}) — retained, signaling recovery (INC-I-143)",
-                fork_tip_hash, fork_weight, our_weight
-            );
-            self.sync_manager.write().await.signal_stuck_fork();
-            return Ok(());
+        if let Some((fork_weight, our_weight, verdict)) = below_gate {
+            if matches!(
+                verdict,
+                network::WeightVerdict::Lighter | network::WeightVerdict::TieKeep
+            ) {
+                record_wedge_escape_outcome(WedgeOutcome::CannotOutweigh.reason());
+                info!(
+                    "[WEDGE_ESCAPE] Sibling {:.8} cannot out-weight tip (fork_w={} <= our_w={}) — retained, signaling recovery (INC-I-143)",
+                    fork_tip_hash, fork_weight, our_weight
+                );
+                self.sync_manager.write().await.signal_stuck_fork();
+                return Ok(());
+            }
         }
 
         // d. Attempt a synchronous reorg using the SAME flow as
         //    handle_completed_fork_recovery (fork_recovery.rs). plan_reorg applies
         //    the finality guard internally — a finalized tip yields None / not-heavier
         //    and no reorg happens (correct; do not bypass).
+        let view = self.gated_support_view(fork_tip_hash).await;
         let reorg_result = {
             let sync = self.sync_manager.read().await;
             let store = &self.block_store;
-            sync.reorg_handler().plan_reorg(
+            sync.reorg_handler().plan_reorg_with_support(
                 current_tip,
                 fork_tip_hash,
                 |h| store.get_header(h).ok().flatten().map(|hd| hd.prev_hash),
                 |h| store.get_height_by_hash(h).ok().flatten(),
-                sync.fork_choice_finality(),
+                |h| view.as_ref()?.support(store, h),
+                sync.fork_choice_finality()
+                    .with_canonical(|h| store.get_hash_by_height(h).ok().flatten()),
             )
         };
 
@@ -222,9 +284,13 @@ impl Node {
         // can hash-grind an equal-weight competitor to displace the committed tip.
         // INC-I-204 M0: name the branch before taking it. The match below is the
         // live selection, unchanged; the classifier only labels it.
-        record_wedge_escape_outcome(
-            classify_wedge_plan(fork_weight, our_weight, reorg_result.as_ref()).reason(),
-        );
+        let outcome = match below_gate {
+            None => classify_plan(reorg_result.as_ref()),
+            Some((fork_weight, our_weight, _)) => {
+                classify_wedge_plan(fork_weight, our_weight, reorg_result.as_ref())
+            }
+        };
+        record_wedge_escape_outcome(outcome.reason());
 
         match reorg_result {
             Some(result) if result.weight_delta > 0 => {
@@ -238,8 +304,9 @@ impl Node {
                 // intermediate body was evicted from the fork cache. A would-be-
                 // winning branch must NOT be silently dropped — if the tip did not
                 // actually move to the sibling, signal the periodic peer-download
-                // recovery so it can complete the escape.
-                if self.chain_state.read().await.best_hash != fork_tip_hash {
+                // recovery so it can complete the escape. Landed = on the chain:
+                // the reorg may drain cached children past it (INC-I-292).
+                if !self.is_canonical_hash(&fork_tip_hash) {
                     record_wedge_escape_outcome(WedgeOutcome::ReorgDidNotLand.reason());
                     warn!(
                         "[WEDGE_ESCAPE] Heavier sibling {:.8} did not land (missing body) — signaling fork recovery (INC-I-143)",
@@ -262,7 +329,7 @@ impl Node {
                 // A guard STOPPED the reorg — a different diagnosis from the arm
                 // above, and the one INC-I-204 needed (INC-I-204 M0 D3).
                 info!(
-                    "[WEDGE_ESCAPE] Sibling {:.8} retained (plan_reorg refused: finality guard, unknown ancestor, or reorg depth) — signaling fork recovery (INC-I-143)",
+                    "[WEDGE_ESCAPE] Sibling {:.8} retained (plan_reorg refused: finality guard, unknown ancestor, reorg depth, or a block on our side has no weight) — signaling fork recovery (INC-I-143)",
                     fork_tip_hash
                 );
                 self.sync_manager.write().await.signal_stuck_fork();
@@ -270,6 +337,25 @@ impl Node {
         }
 
         Ok(())
+    }
+
+    /// The slot of `block`'s parent as the node holds it: fork cache body first,
+    /// then the store; `None` when it is in neither.
+    async fn parent_slot(&self, block: &Block) -> Option<u32> {
+        let prev = block.header.prev_hash;
+        let cached = self
+            .fork_block_cache
+            .read()
+            .await
+            .get(&prev)
+            .map(|b| b.header.slot);
+        cached.or_else(|| {
+            self.block_store
+                .get_header(&prev)
+                .ok()
+                .flatten()
+                .map(|h| h.slot)
+        })
     }
 }
 

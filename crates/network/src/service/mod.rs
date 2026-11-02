@@ -24,6 +24,7 @@ mod helpers;
 mod retention;
 mod swarm_events;
 mod swarm_loop;
+mod sync_requests;
 mod types;
 mod verdict;
 

@@ -1,6 +1,6 @@
 use super::*;
 
-use network::protocols::{StatusRequest, StatusResponse, TxFetchResponse};
+use network::protocols::{StatusRequest, StatusResponse, SyncRequest, TxFetchResponse};
 use network::ResponseChannel;
 
 impl Node {
@@ -60,6 +60,7 @@ impl Node {
         }
 
         info!("Peer disconnected: {}", peer_id);
+        self.hand_off_attest_fetch(peer_id).await;
         self.sync_manager.write().await.remove_peer(&peer_id);
 
         // Rate-limited reconnect: only do an immediate dial if we haven't tried
@@ -359,10 +360,22 @@ impl Node {
             .await;
     }
 
-    /// Handle a sync response: process returned blocks and check for snap snapshots.
+    /// `on_sync_answer` with the answered request unknown (the old rule).
+    #[allow(dead_code)] // Used by integration tests in bins/node/tests/
     pub async fn on_sync_response(
         &mut self,
         peer_id: PeerId,
+        response: SyncResponse,
+    ) -> Result<()> {
+        self.on_sync_answer(peer_id, None, response).await
+    }
+
+    /// Handle a sync response: process returned blocks and check for snap snapshots.
+    /// `answered` is the request it answers (INC-I-293 U-2), `None` when unknown.
+    pub async fn on_sync_answer(
+        &mut self,
+        peer_id: PeerId,
+        answered: Option<&SyncRequest>,
         response: SyncResponse,
     ) -> Result<()> {
         debug!("Sync response from {}", peer_id);
@@ -376,11 +389,17 @@ impl Node {
             .await
             .note_block_received_from_peer(peer_id);
 
+        // INC-I-293 U-2: a `None` retires `peer_id` for the hash it answered.
+        let refused = match response {
+            SyncResponse::Block(None) => self.none_answer_hash(peer_id, answered).await,
+            _ => None,
+        };
         let blocks = self
             .sync_manager
             .write()
             .await
-            .handle_response(peer_id, response);
+            .handle_response_to(peer_id, answered, response);
+        self.retire_attest_fetch(peer_id, refused).await;
         self.penalize_refused_sync_bodies().await;
         for block in blocks {
             self.handle_new_block(block, peer_id).await?;

@@ -54,6 +54,7 @@ async fn inc_i_248_m1_probe_snap_join_root() {
         if let Ok(response) = bincode::deserialize::<network::protocols::SyncResponse>(&wire) {
             let event = network::NetworkEvent::SyncResponse {
                 peer_id: network::PeerId::random(),
+                request: None,
                 response,
             };
             let _ = node_b.handle_network_event(event).await;

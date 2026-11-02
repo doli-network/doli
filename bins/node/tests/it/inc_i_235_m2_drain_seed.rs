@@ -329,6 +329,19 @@ async fn m2_repro_canon_aware_walk_reorgs_past_noncanonical_fork_body() {
         }
     }
     cache(&node, &[&a1]).await;
+    // INC-I-289 sweep: (a) — [A, A1] beat [B1] by block count (2 > 1), but A and A1 share a leader (slots 100, 103): a support tie on random keys → the non-own producers attest the cached A1.
+    for k in &p[1..] {
+        let att = doli_core::Attestation::new(
+            a1.hash(),
+            a1.header.slot,
+            FORK_H + 1,
+            1,
+            k.private_key(),
+            *k.public_key(),
+        );
+        node.on_new_attestation(att.to_bytes(), PeerId::random())
+            .await;
+    }
 
     node.try_trigger_fork_recovery().await;
     let mut serve = vec![a.clone(), a1.clone()];

@@ -486,6 +486,7 @@ pub async fn deliver(node: &mut Node, response: &SyncResponse, peers: usize) {
     for _ in 0..peers {
         let event = network::NetworkEvent::SyncResponse {
             peer_id: network::PeerId::random(),
+            request: None,
             response: response.clone(),
         };
         let _ = node.handle_network_event(event).await;

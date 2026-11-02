@@ -13,6 +13,11 @@ use crypto::Hash;
 
 use super::{bump, ReorgHandler, MAX_REORG_DEPTH};
 
+/// Apply's slot rule (`SlotNotAdvancing`): a block's slot must exceed its parent's.
+pub(crate) fn slot_advances(slot: u32, parent_slot: u32) -> bool {
+    slot > parent_slot
+}
+
 /// The finality view a caller hands to the fork-choice authority. Built by
 /// `SyncManager::fork_choice_finality` from `FinalityTracker.last_finalized` plus
 /// the local tip; replaces `ReorgHandler.last_finality_height` as the AUTHORITY
@@ -25,6 +30,9 @@ pub struct ForkChoiceFinality {
     pub finalized_hash: Option<Hash>,
     /// The node's own applied tip height. Also the weight rule's gate input.
     pub local_tip_height: u64,
+    /// INC-I-289 M-2: the caller's canonical index holds `finalized_hash` at
+    /// `finalized_height` (see [`Self::with_canonical`]).
+    pub finalized_on_canonical: bool,
 }
 
 impl ForkChoiceFinality {
@@ -34,6 +42,15 @@ impl ForkChoiceFinality {
     /// mirror's erasure, so it never returns to `None` once something finalized.
     pub fn effective_finality(&self) -> Option<u64> {
         self.finalized_height.map(|f| f.min(self.local_tip_height))
+    }
+
+    /// Set `finalized_on_canonical` from the caller's height-to-hash index.
+    pub fn with_canonical(mut self, canonical_at: impl Fn(u64) -> Option<Hash>) -> Self {
+        self.finalized_on_canonical = match (self.finalized_height, self.finalized_hash) {
+            (Some(h), Some(f)) => canonical_at(h) == Some(f),
+            _ => false,
+        };
+        self
     }
 }
 
@@ -51,8 +68,57 @@ pub enum WeightVerdict {
 }
 
 impl ReorgHandler {
-    /// THE branch-weight rule. Every door — gossip, wedge escape, fork recovery —
-    /// reaches its verdict through this function.
+    /// INC-I-288: the weight `blocks` add above their common ancestor. Per block the
+    /// handler's producer weight, else `node_weight`; `None` (unknown) when a block
+    /// has neither. An unknown weight on our side keeps our tip.
+    pub fn branch_weight(
+        &self,
+        blocks: &[Hash],
+        node_weight: impl Fn(&Hash) -> Option<u64>,
+    ) -> Option<u64> {
+        blocks.iter().try_fold(0u64, |sum, h| {
+            let w = self.block_weights.get(h).map(|b| b.producer_weight);
+            Some(sum.saturating_add(w.or_else(|| node_weight(h))?))
+        })
+    }
+
+    /// [`Self::branch_weight`] of a candidate branch: a block nobody can weigh adds
+    /// nothing.
+    pub fn candidate_weight(
+        &self,
+        blocks: &[Hash],
+        node_weight: impl Fn(&Hash) -> Option<u64>,
+    ) -> u64 {
+        self.branch_weight(blocks, |h| Some(node_weight(h).unwrap_or(0)))
+            .unwrap_or(0)
+    }
+
+    /// INC-I-288: apply's slot-advance rule (`SlotNotAdvancing`) as a weight input.
+    /// A block at `slot` on `prev` adds `weight` only when `slot` is above the
+    /// parent's slot (recorded here, else `parent_slot`); an unknown parent slot
+    /// adds nothing.
+    pub(crate) fn slot_weight(
+        &self,
+        slot: u32,
+        prev: &Hash,
+        parent_slot: Option<u32>,
+        weight: u64,
+    ) -> u64 {
+        match self.block_slots.get(prev).copied().or(parent_slot) {
+            Some(p) if slot_advances(slot, p) => weight,
+            _ => 0,
+        }
+    }
+
+    /// Notes the slot of a tracked block (the apply path).
+    pub(crate) fn note_block_slot(&mut self, hash: Hash, slot: u32) {
+        if self.recent_blocks.contains(&hash) {
+            self.block_slots.insert(hash, slot);
+        }
+    }
+
+    /// The branch-weight rule below the INC-I-288 gate, on base-relative accumulated
+    /// weights. At/above it the doors weigh from the common ancestor instead.
     pub fn weigh_branches(
         &self,
         our_tip: &Hash,
@@ -72,7 +138,8 @@ impl ReorgHandler {
     }
 
     /// [`Self::weigh_branches`] when our side is a block the handler does not
-    /// track (a rollback cleared it): the caller supplies its accumulated weight.
+    /// track (below the INC-I-288 gate a rollback cleared it): the caller supplies
+    /// its accumulated weight.
     pub fn weigh_untracked(
         &self,
         our_tip: &Hash,
@@ -130,6 +197,16 @@ impl ReorgHandler {
             return false;
         }
         if finality.finalized_hash.is_none() {
+            return true;
+        }
+        // INC-I-289 M-2: the ancestor is on our chain; at or above a finalized
+        // block that chain holds, the branch descends from it at any depth.
+        if finality.finalized_on_canonical
+            && self.weighs_from_ancestor(finality.local_tip_height)
+            && finality
+                .finalized_height
+                .is_some_and(|fh| ancestor_real_height >= fh)
+        {
             return true;
         }
         branch_contains_finalized()

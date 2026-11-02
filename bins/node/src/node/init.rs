@@ -48,6 +48,43 @@ pub fn cleanup_orphan_utxo_store(data_dir: &std::path::Path) {
     }
 }
 
+/// INC-I-289 K-2: persist every new finality checkpoint to `state_db`.
+/// Holds a `Weak` so the sink never keeps the database open.
+fn wire_finality_persistence(sm: &mut SyncManager, state_db: &Arc<StateDb>) {
+    let db = Arc::downgrade(state_db);
+    sm.set_finality_sink(Box::new(move |cp| {
+        if let Some(db) = db.upgrade() {
+            db.put_finality_checkpoint(cp);
+        }
+    }));
+}
+
+/// INC-I-289 K-2: re-arm the persisted checkpoint only while the stored chain
+/// still holds that hash at that height, at or below the tip.
+fn restore_finality_checkpoint(
+    sm: &mut SyncManager,
+    state_db: &StateDb,
+    block_store: &BlockStore,
+    best_height: u64,
+) {
+    let Some(cp) = state_db.get_finality_checkpoint() else {
+        return;
+    };
+    let stored = block_store.get_hash_by_height(cp.height).ok().flatten();
+    if cp.height <= best_height && stored == Some(cp.block_hash) {
+        info!(
+            "[FINALITY] Restored finalized height {} ({})",
+            cp.height, cp.block_hash
+        );
+        sm.restore_finality(cp);
+    } else {
+        warn!(
+            "[FINALITY] Persisted checkpoint h={} is not on the stored chain; not restored",
+            cp.height
+        );
+    }
+}
+
 /// Detect and recover from block body gaps in the recent chain.
 ///
 /// Called during `Node::new` when the tip block exists in the block store.
@@ -763,6 +800,10 @@ impl Node {
                 .network
                 .params()
                 .inc_i_204_fork_choice_activation_height,
+            inc_i_288_fork_choice_activation_height: config
+                .network
+                .params()
+                .inc_i_288_fork_choice_activation_height,
             // INC-I-152: sync-side bootstrap window, so orphan chase walking a freshly
             // wiped node off h==0 does not foreclose bootstrap snap admission.
             genesis_blocks: config.network.params().genesis_blocks,
@@ -784,6 +825,7 @@ impl Node {
         {
             let mut sm = sync_manager.write().await;
             sm.set_bootstrap_grace_period_secs(params.bootstrap_grace_period_secs);
+            wire_finality_persistence(&mut sm, &state_db);
 
             // Disable snap sync if --no-snap-sync was passed
             if config.no_snap_sync {
@@ -824,6 +866,19 @@ impl Node {
                     // Skipped when starting from fresh genesis (height=0) because no race exists
                     // — the node has no prior tip to build on incorrectly.
                     sm.engage_post_restart_lockout();
+                    if state.best_height
+                        >= config
+                            .network
+                            .params()
+                            .inc_i_288_fork_choice_activation_height
+                    {
+                        restore_finality_checkpoint(
+                            &mut sm,
+                            &state_db,
+                            &block_store,
+                            state.best_height,
+                        );
+                    }
                     info!(
                         "Sync manager initialized at height {} (hash {})",
                         state.best_height,
@@ -1154,6 +1209,8 @@ impl Node {
             wedge_alarm: super::wedge_alarm::WedgeAlarm::new(Default::default()),
             reorg_scrape_state: crate::metrics::ReorgScrapeState::new(),
             attest_fetch_tracker: HashMap::new(),
+            attest_fetch_asked: HashMap::new(),
+            attest_fetch_retired: HashMap::new(),
             defi_health_refresh_counter: AtomicU64::new(0),
             defi_health_cache: std::sync::Mutex::new(None),
             origin_tx_bucket: super::rpc_broadcast::new_origin_tx_bucket(),
@@ -1177,6 +1234,7 @@ impl Node {
             .set_utxo_chunk_sink(Arc::new(super::StateDbChunkSink::new(
                 node.state_db.clone(),
             )));
+        node.seed_tip_epoch_table().await;
 
         Ok(node)
     }
@@ -1266,13 +1324,19 @@ impl Node {
             mp.share_producer_set(producer_set.clone());
         }
 
-        // Real sync manager
-        let sync_config = SyncConfig::default();
+        // Real sync manager; the INC-I-288 gate follows the network, as in `new`.
+        let sync_config = SyncConfig {
+            inc_i_288_fork_choice_activation_height: network
+                .params()
+                .inc_i_288_fork_choice_activation_height,
+            ..SyncConfig::default()
+        };
         let sync_manager = Arc::new(RwLock::new(SyncManager::new(sync_config, genesis_hash)));
         {
             let mut sm = sync_manager.write().await;
             sm.set_bootstrap_grace_period_secs(0); // No grace period in tests
             sm.set_min_peers_for_production(0); // No peers needed in tests
+            wire_finality_persistence(&mut sm, &state_db);
         }
 
         // Real VDF calibrator (minimal iterations for speed)
@@ -1415,6 +1479,8 @@ impl Node {
             wedge_alarm: super::wedge_alarm::WedgeAlarm::new(Default::default()),
             reorg_scrape_state: crate::metrics::ReorgScrapeState::new(),
             attest_fetch_tracker: HashMap::new(),
+            attest_fetch_asked: HashMap::new(),
+            attest_fetch_retired: HashMap::new(),
             defi_health_refresh_counter: AtomicU64::new(0),
             defi_health_cache: std::sync::Mutex::new(None),
             origin_tx_bucket: super::rpc_broadcast::new_origin_tx_bucket(),
@@ -1508,6 +1574,7 @@ impl Node {
             let mut sm = sync_manager.write().await;
             sm.set_bootstrap_grace_period_secs(0);
             sm.set_min_peers_for_production(0);
+            wire_finality_persistence(&mut sm, &state_db);
         }
 
         let vdf_calibrator = Arc::new(RwLock::new(VdfCalibrator::new(100, 55)));
@@ -1634,6 +1701,8 @@ impl Node {
             wedge_alarm: super::wedge_alarm::WedgeAlarm::new(Default::default()),
             reorg_scrape_state: crate::metrics::ReorgScrapeState::new(),
             attest_fetch_tracker: HashMap::new(),
+            attest_fetch_asked: HashMap::new(),
+            attest_fetch_retired: HashMap::new(),
             defi_health_refresh_counter: AtomicU64::new(0),
             defi_health_cache: std::sync::Mutex::new(None),
             origin_tx_bucket: super::rpc_broadcast::new_origin_tx_bucket(),

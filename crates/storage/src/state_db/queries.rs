@@ -15,9 +15,9 @@ use super::types::{
     CF_UTXO_BY_PUBKEY, META_ACTIVE_PRODUCTION_LIST, META_CHAIN_COMMITMENT,
     META_CHAIN_COMMITMENT_TIP, META_CHAIN_STATE, META_EPOCH_ATTESTATION_ACCUM,
     META_EPOCH_ATTESTED_SET, META_EPOCH_BLOCKS_PRODUCED, META_EPOCH_BOND_SNAPSHOT,
-    META_EPOCH_PRODUCER_LIST, META_EPOCH_STATE, META_EPOCH_STATE_VERSION, META_LAST_APPLIED,
-    META_ORACLE_LAST_UPDATE_HEIGHT, META_ORACLE_SUNSET_STATE, META_PENDING_UPDATES,
-    META_REBUILD_IN_PROGRESS,
+    META_EPOCH_PRODUCER_LIST, META_EPOCH_STATE, META_EPOCH_STATE_VERSION, META_FINALITY_CHECKPOINT,
+    META_LAST_APPLIED, META_ORACLE_LAST_UPDATE_HEIGHT, META_ORACLE_SUNSET_STATE,
+    META_PENDING_UPDATES, META_REBUILD_IN_PROGRESS,
 };
 
 impl StateDb {
@@ -714,6 +714,23 @@ impl StateDb {
         let cf = self.db.cf_handle(CF_META).unwrap();
         if let Ok(bytes) = bincode::serialize(state) {
             let _ = self.db.put_cf(cf, META_ORACLE_SUNSET_STATE, bytes);
+        }
+    }
+
+    /// INC-I-289 K-2: the persisted finality checkpoint, if any.
+    pub fn get_finality_checkpoint(&self) -> Option<doli_core::FinalityCheckpoint> {
+        let cf = self.db.cf_handle(CF_META).unwrap();
+        match self.db.get_cf(cf, META_FINALITY_CHECKPOINT) {
+            Ok(Some(bytes)) => bincode::deserialize(&bytes).ok(),
+            _ => None,
+        }
+    }
+
+    /// INC-I-289 K-2: persist the finality checkpoint (best effort).
+    pub fn put_finality_checkpoint(&self, checkpoint: &doli_core::FinalityCheckpoint) {
+        let cf = self.db.cf_handle(CF_META).unwrap();
+        if let Ok(bytes) = bincode::serialize(checkpoint) {
+            let _ = self.db.put_cf(cf, META_FINALITY_CHECKPOINT, bytes);
         }
     }
 

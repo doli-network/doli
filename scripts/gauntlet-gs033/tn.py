@@ -289,10 +289,11 @@ def restore_cache(i):
     for f in os.listdir(d):
         if f.startswith("peers.cache.scratch-gs033-%s-" % tag):
             os.remove(os.path.join(d, f))
-    if bak is None:
-        return
     if os.path.exists(p):
         os.remove(p)  # scratch cache written during this run
+    if bak is None:
+        say("%s peers.cache removed (none before the run)" % name(i))
+        return
     os.rename(bak, p)
     say("%s peers.cache restored" % name(i))
 

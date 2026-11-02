@@ -474,6 +474,15 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.inc_i_204_fork_choice_activation_height,
             )
         },
+        // INC-I-288 rollback fork-choice memory. Mainnet LOCKED, as #23.
+        inc_i_288_fork_choice_activation_height: if is_mainnet {
+            defaults.inc_i_288_fork_choice_activation_height
+        } else {
+            env_parse(
+                "DOLI_INC_I_288_FORK_CHOICE_ACTIVATION_HEIGHT",
+                defaults.inc_i_288_fork_choice_activation_height,
+            )
+        },
         // INC-I-178 M4 attestation-BLS semantics. Mainnet LOCKED — an .env
         // override would arm new block CONTENT on one node while the rest of
         // the fleet is still on the old rules.

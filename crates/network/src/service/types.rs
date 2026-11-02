@@ -42,6 +42,8 @@ pub enum NetworkEvent {
     /// Sync response received
     SyncResponse {
         peer_id: PeerId,
+        /// INC-I-293 U-2: the request this answers (local state); `None` = unknown.
+        request: Option<SyncRequest>,
         response: SyncResponse,
     },
     /// Peer status received

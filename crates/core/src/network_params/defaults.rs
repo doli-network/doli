@@ -263,6 +263,7 @@ impl NetworkParams {
                 // on mainnet (decision 2026-09-05, v6.28.0); IMMUTABLE once
                 // crossed (INV-PARAMS-001). Own field, never bundled onto #16.
                 inc_i_204_fork_choice_activation_height: 409_000,
+                inc_i_288_fork_choice_activation_height: u64::MAX, // INC-I-288: not scheduled
                 // INC-I-178 M4 attestation-BLS semantics. PINNED 409_000 on
                 // mainnet (decision 2026-09-05, v6.28.0); block CONTENT changes
                 // at this height => SYNCHRONIZED deploy. IMMUTABLE once crossed.
@@ -547,6 +548,8 @@ impl NetworkParams {
                 // IMMUTABLE once crossed (INC-I-054).
                 // Override via `DOLI_INC_I_204_FORK_CHOICE_ACTIVATION_HEIGHT`.
                 inc_i_204_fork_choice_activation_height: 88_014,
+                // INC-I-288 node-local fork choice. PINNED 366_891: tip 366_801 plus 90 blocks of lead.
+                inc_i_288_fork_choice_activation_height: 366_891,
                 // INC-I-178 attestation-BLS semantics. PINNED 112_619 on testnet
                 // (2026-09-05, v6.27.0); IMMUTABLE once crossed (INV-PARAMS-001).
                 // Override via `DOLI_INC_I_178_ATTESTATION_BLS_ACTIVATION_HEIGHT`.
@@ -831,6 +834,7 @@ impl NetworkParams {
                 // mirroring the gate it supersedes. Fork choice is not block
                 // content, so 0 is not a genesis reset.
                 inc_i_204_fork_choice_activation_height: 0,
+                inc_i_288_fork_choice_activation_height: 0, // INC-I-288: fork choice, not content
                 // INC-I-178 M4 attestation-BLS semantics. FROZEN at u64::MAX
                 // even here: it changes block CONTENT, so 0 would fork every
                 // live local devnet chain on the next rebuild.

@@ -267,6 +267,8 @@ async fn honest_first(fx: &mut Fx, br: &[Block], v: &Block) -> Vec<String> {
     if cached(&fx.node, &br[1].hash()).await.as_ref() != Some(&br[1]) {
         wrong.push("the variant replaced the honest cached body of C_B+1".to_string());
     }
+    // INC-I-289 sweep: (a) — C (all by the node's key) beat D by block count at C_B+2 → non-own producers attest C_B+1 after the cache check, so C still wins only at C_B+2 (backing C_B made C_B alone win and C_B+1 never cached).
+    fx.attest(&br[1], fx.b() + 1).await;
     gossip(fx, &br[2]).await;
     drop(g);
     wrong.extend(not_landed(fx, br).await);
@@ -313,6 +315,8 @@ async fn bitflip_variant_first() {
     let (logs, g) = logged();
     gossip(&mut fx, &br[0]).await;
     gossip(&mut fx, &br[1]).await;
+    // INC-I-289 sweep: (a) — the variant tip out-weighed D by block count → non-own producers attest the cached C_B+1, so the variant tip still triggers the reorg.
+    fx.attest(&br[1], fx.b() + 1).await;
     gossip(&mut fx, &v).await;
     gossip(&mut fx, &br[2]).await;
     drop(g);
@@ -332,6 +336,8 @@ async fn variant_in_plan() {
     let mut fx = setup().await;
     let br = branch(&mut fx, Body::Bitfield).await;
     let v = flip(&br[1], Body::Bitfield);
+    // INC-I-289 sweep: (a) — the walk tried the branch by block count → non-own producers attest C_B, so the walk still reaches the body check.
+    fx.back_c_b().await;
     let walked = vec![br[0].clone(), v.clone(), br[2].clone()];
     let (before, undo_before) = (fx.state().await, undo(&fx));
     let (logs, g) = logged();
@@ -393,6 +399,8 @@ async fn restore_source() {
     let own = variant(&fx.d[1], |b| b.attestation_bitfield = vec![0b01]);
     seed_cache(&fx.node, std::slice::from_ref(&own)).await;
     let br = failing_branch(&fx);
+    // INC-I-289 sweep: (a) — the walk tried [C_B*, Y] by block count → non-own producers attest Y_B+1, so the walk still rolls back and fails apply.
+    fx.back(&br[1], fx.b() + 1).await;
     let before = fx.state().await;
     let (logs, g) = logged();
     let f = fx.f_hash;
@@ -445,6 +453,8 @@ async fn sig_variant() {
     gossip(&mut fx, &br[0]).await;
     gossip(&mut fx, &v).await;
     gossip(&mut fx, &br[1]).await;
+    // INC-I-289 sweep: (a) — the tip C_B+2 out-weighed D by block count → non-own producers attest the hash of C_B+1, so the tip still triggers the reorg.
+    fx.attest(&br[1], fx.b() + 1).await;
     let before = fx.state().await;
     gossip(&mut fx, &br[2]).await;
     let apply_failed = logs.mentioning("Reorg apply_block failed");
@@ -480,9 +490,11 @@ async fn honest_control() {
         let mut fx = setup().await;
         let br = branch(&mut fx, body).await;
         let (logs, g) = logged();
-        for b in &br {
-            gossip(&mut fx, b).await;
-        }
+        // INC-I-289 sweep: (a) — C beat D by block count at C_B+2 → non-own producers attest the cached C_B+1 before the tip (the same flow as honest_first).
+        gossip(&mut fx, &br[0]).await;
+        gossip(&mut fx, &br[1]).await;
+        fx.attest(&br[1], fx.b() + 1).await;
+        gossip(&mut fx, &br[2]).await;
         drop(g);
         let tag = |w: String| format!("{body:?}: {w}");
         wrong.extend(not_landed(&fx, &br).await.map(tag));

@@ -15,6 +15,7 @@ mod peers;
 mod production_gate;
 pub mod recovery;
 mod rollback_memory;
+mod snap_descent;
 mod snap_sync;
 mod state_session;
 mod sync_engine;
@@ -57,6 +58,8 @@ mod tests_inc_i235;
 #[cfg(test)]
 mod tests_inc_i237_tip_race;
 #[cfg(test)]
+mod tests_inc_i289_m1_snap_descent;
+#[cfg(test)]
 mod tests_m3_state_session;
 #[cfg(test)]
 mod tests_m5_quorum_anchor;
@@ -74,6 +77,7 @@ pub use force_reorg::{ForceReorgPoll, FORCE_REORG_MAX_HEIGHT_SPAN, FORCE_REORG_T
 // Deliberately distinct from Network::is_in_genesis(), which answers the
 // CONSENSUS question and must remain a pure function of height.
 pub use peers::NetworkEvidence;
+pub use snap_descent::SNAP_DESCENT_PROOF_MAX_HEADERS;
 // Re-export D6 stuck-fork consumer type used by Node layer
 pub use production_gate::StuckForkAlert;
 // Re-export pub(crate) types used by sibling modules
@@ -177,6 +181,8 @@ pub struct SyncManager {
     // === SNAP SYNC STATE (sub-struct) ===
     /// Snap sync configuration and runtime state
     pub(crate) snap: SnapSyncState,
+    /// INC-I-289: the snap anchor's peer-served descent proof.
+    snap_descent: Option<snap_descent::SnapDescentProof>,
 
     /// M3 [F3]: the chunked state transfer in progress, if any. Kept beside the
     /// pipeline rather than inside `SnapDownloading` so a refusal can drop the
@@ -240,18 +246,28 @@ pub struct SyncManager {
 
     /// INC-I-281: hashes removed by recent fork-remedy rollbacks.
     rollback_memory: rollback_memory::RollbackMemory,
+
+    /// INC-I-289 K-2: receives each new finality checkpoint so the node can
+    /// persist it (set by the node; `None` in unit tests).
+    finality_sink: Option<FinalitySink>,
 }
+
+/// Callback that persists a newly finalized checkpoint.
+pub type FinalitySink = Box<dyn Fn(&doli_core::FinalityCheckpoint) + Send + Sync>;
 
 impl SyncManager {
     /// Create a new sync manager
     pub fn new(config: SyncConfig, genesis_hash: Hash) -> Self {
+        let mut recovery = recovery::RecoveryCoordinator::new();
+        recovery.set_fork_choice_gate(config.inc_i_288_fork_choice_activation_height);
         Self {
             pipeline: SyncPipeline::new(&config),
             pipeline_data: SyncPipelineData::None,
             reorg_handler: ReorgHandler::with_activation_heights(
                 config.inc_i_147_activation_height,
                 config.inc_i_204_fork_choice_activation_height,
-            ),
+            )
+            .with_inc_i_288_gate(config.inc_i_288_fork_choice_activation_height),
             config,
             state: SyncState::Idle,
             local_height: 0,
@@ -286,6 +302,7 @@ impl SyncManager {
             peer_loss_timeout_secs: 30,
             // Snap sync state (sub-struct)
             snap: SnapSyncState::new(),
+            snap_descent: None,
             state_session: None,
             utxo_chunk_sink: None,
             // PGD fix defaults
@@ -297,9 +314,10 @@ impl SyncManager {
             recent_canonical_hashes: VecDeque::with_capacity(200),
             consecutive_orphan_gossip_blocks: 0,
             needs_mass_status_refresh: false,
-            recovery: recovery::RecoveryCoordinator::new(),
+            recovery,
             force_reorg: None,
             rollback_memory: rollback_memory::RollbackMemory::default(),
+            finality_sink: None,
         }
     }
 

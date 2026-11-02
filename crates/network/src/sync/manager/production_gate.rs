@@ -55,10 +55,12 @@ impl SyncManager {
             };
         }
 
-        // Check 1: Block during active sync or recovery
-        if self.state.is_syncing()
-            || matches!(self.recovery_phase, super::RecoveryPhase::ResyncInProgress)
-        {
+        // Check 1: Block during active sync or recovery. At/above the
+        // fork-choice gate a Syncing state (started by a peer's height claim)
+        // does not block; the height-based defer in production does.
+        let sync_blocks = self.state.is_syncing()
+            && self.local_height < self.config.inc_i_288_fork_choice_activation_height;
+        if sync_blocks || matches!(self.recovery_phase, super::RecoveryPhase::ResyncInProgress) {
             return ProductionAuthorization::BlockedSyncing;
         }
 
@@ -539,6 +541,26 @@ impl SyncManager {
             );
             self.reorg_handler
                 .set_last_finality_height(checkpoint.height);
+            if applied_tip_height >= self.config.inc_i_288_fork_choice_activation_height {
+                if let Some(sink) = &self.finality_sink {
+                    sink(&checkpoint);
+                }
+            }
+        }
+    }
+
+    /// INC-I-289 K-2: the node persists each new finality checkpoint through `sink`.
+    pub fn set_finality_sink(&mut self, sink: super::FinalitySink) {
+        self.finality_sink = Some(sink);
+    }
+
+    /// INC-I-289 K-2: re-arm a persisted checkpoint at start. The caller has
+    /// verified that the stored chain still holds it; a live value wins.
+    pub fn restore_finality(&mut self, checkpoint: doli_core::FinalityCheckpoint) {
+        if self.finality_tracker.last_finalized.is_none() {
+            self.reorg_handler
+                .set_last_finality_height(checkpoint.height);
+            self.finality_tracker.last_finalized = Some(checkpoint);
         }
     }
 

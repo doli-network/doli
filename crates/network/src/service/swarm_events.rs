@@ -24,6 +24,7 @@ use crate::rate_limit::RateLimiter;
 use super::behaviour_events::handle_behaviour_event;
 use super::event_sink::EventSink;
 use super::helpers::{is_routable_address, strip_p2p_suffix};
+use super::sync_requests::OutboundSyncRequests;
 use super::types::NetworkEvent;
 
 /// Handle swarm events
@@ -36,6 +37,7 @@ pub(super) async fn handle_swarm_event(
     config: &NetworkConfig,
     peer_cache_path: &Option<PathBuf>,
     rate_limiter: &mut RateLimiter,
+    sync_requests: &mut OutboundSyncRequests,
     genesis_mismatch_cooldown: &mut HashMap<PeerId, Instant>,
     mismatch_redial_cooldown: &mut HashMap<String, Instant>,
     dial_backoff: &mut HashMap<PeerId, (u32, Instant)>,
@@ -257,6 +259,7 @@ pub(super) async fn handle_swarm_event(
                 config,
                 peer_cache_path,
                 rate_limiter,
+                sync_requests,
                 genesis_mismatch_cooldown,
                 stale_peer_ids,
                 local_tip,

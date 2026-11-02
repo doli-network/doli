@@ -246,13 +246,18 @@ impl Node {
                 .unwrap_or(1) // Default weight 1 for unknown producers (bootstrap)
         };
 
-        // Update sync manager with weight for fork choice rule
-        self.sync_manager.write().await.block_applied_with_weight(
+        // Update sync manager with weight for fork choice rule; `own` feeds Gate 1.
+        let own = self
+            .producer_key
+            .as_ref()
+            .is_some_and(|k| *k.public_key() == block.header.producer);
+        self.sync_manager.write().await.block_applied_with_origin(
             block_hash,
             height,
             block.header.slot,
             producer_weight,
             block.header.prev_hash,
+            own,
         );
 
         // Reset both rollback budgets — a successful block application means the
@@ -343,6 +348,7 @@ impl Node {
         batch
             .commit()
             .map_err(|e| anyhow::anyhow!("StateDb batch commit failed: {}", e))?;
+        self.capture_epoch_table(height, block_hash).await;
 
         // AUDIT-P1-001: refresh the mempool's active-producer snapshot after
         // every block commit. Mempool admission reads this snapshot to build

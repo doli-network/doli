@@ -52,6 +52,10 @@ use network::PeerId;
 // R-3b (Must) — Decision: a failure means a gossip or orphan-chase copy of a block the fork-remedy rollback removed is re-applied at once, outside fork choice, so the canonical sibling a few ms later finds its height occupied.
 #[tokio::test]
 async fn inc_i_281_rollback_not_undone_by_gossip_of_removed_block() {
+    // INC-I-289: below-gate pin — the recorded per-block weight only decides below the fork-choice gate; the above-gate twin is inc_i_281_rollback_not_undone_by_gossip_of_removed_block_above_gate_bond.
+    if !in_below_ah_child("inc_i_281_rollback_not_undone_by_gossip_of_removed_block") {
+        return;
+    }
     let mut r = rig().await;
     roll_back_to_f(&mut r).await;
     let c1 = r.canon[0].clone();
@@ -82,6 +86,10 @@ async fn inc_i_281_rollback_not_undone_by_gossip_of_removed_block() {
 // R-3b (Must) — Decision: a failure means the cached dead child is drained back onto the tip behind its re-applied removed parent, re-adopting the whole dead branch in one intake.
 #[tokio::test]
 async fn inc_i_281_rollback_not_undone_by_cached_child_drain() {
+    // INC-I-289: below-gate pin — the recorded per-block weight only decides below the fork-choice gate; the above-gate twin is inc_i_281_rollback_not_undone_by_cached_child_drain_above_gate_bond.
+    if !in_below_ah_child("inc_i_281_rollback_not_undone_by_cached_child_drain") {
+        return;
+    }
     let mut r = rig().await;
     roll_back_to_f(&mut r).await;
     seed_cache(&r.node, &r.dead[1..2]).await;
@@ -109,6 +117,10 @@ async fn inc_i_281_rollback_not_undone_by_cached_child_drain() {
 // R-3b (Must) — Decision: a failure means header-first sync from a dead-branch peer re-applies the removed bodies outside fork choice, through the node intake or the periodic pending-sync loop.
 #[tokio::test]
 async fn inc_i_281_rollback_not_undone_by_synced_bodies() {
+    // INC-I-289: below-gate pin — the recorded per-block weight only decides below the fork-choice gate; the above-gate twin is inc_i_281_rollback_not_undone_by_synced_bodies_above_gate_bond.
+    if !in_below_ah_child("inc_i_281_rollback_not_undone_by_synced_bodies") {
+        return;
+    }
     let mut r = rig().await;
     roll_back_to_f(&mut r).await;
     let c1 = r.canon[0].clone();
@@ -163,6 +175,10 @@ async fn inc_i_281_false_rollback_readopts_removed_block_at_once() {
 // R-3b (Must) — Decision: a failure means a removed block is re-adopted outside fork choice after the window although a competing sibling is known, or the hold leaks into fork choice and blocks a walked branch.
 #[tokio::test]
 async fn inc_i_281_removed_block_held_while_sibling_known_after_window() {
+    // INC-I-289: below-gate pin — the recorded per-block weight only decides below the fork-choice gate; the above-gate twin is inc_i_281_removed_block_held_while_sibling_known_after_window_above_gate_bond.
+    if !in_below_ah_child("inc_i_281_removed_block_held_while_sibling_known_after_window") {
+        return;
+    }
     let mut r = rig().await;
     roll_back_to_f(&mut r).await;
     // INC-I-281 M2.3: the cached sibling holds D1 only because it would win fork choice.
@@ -198,6 +214,10 @@ async fn inc_i_281_removed_block_held_while_sibling_known_after_window() {
 // R-3b (Must) — Decision: a failure means the fork-cache drain applies a removed child whose sibling is known, or drops it instead of putting it back.
 #[tokio::test]
 async fn inc_i_281_cached_drain_holds_removed_child() {
+    // INC-I-289: below-gate pin — the recorded per-block weight only decides below the fork-choice gate; the above-gate twin is inc_i_281_cached_drain_holds_removed_child_above_gate_bond.
+    if !in_below_ah_child("inc_i_281_cached_drain_holds_removed_child") {
+        return;
+    }
     let mut r = rig().await;
     roll_back_to_f(&mut r).await;
     let (d1, d2) = (r.dead[0].clone(), r.dead[1].clone());
@@ -229,6 +249,166 @@ async fn inc_i_281_cached_drain_holds_removed_child() {
         "D1 has no known sibling: applied"
     );
     assert!(hold_reported, "the drain never offered D2 to the hold");
+    assert_ne!(
+        after.at_f2,
+        Some(d2.hash()),
+        "the drain applied the removed D2: {after:?}"
+    );
+    assert!(cached, "the held D2 was dropped from the fork cache");
+    assert_on(&r, &d2b, F + 2, "the drain moves on to the next sibling").await;
+}
+
+// INC-I-289 above-gate twins (INC-I-281 R-3b): the sibling out-weighs the removed
+// branch by real bond support (its producer plus every non-own producer's gossip
+// attestation), never by a longer branch.
+
+// R-3b (Must) — Decision: a failure means above the fork-choice gate a gossip or orphan-chase copy of a removed block is re-adopted while a sibling with more bond support is cached.
+#[tokio::test]
+async fn inc_i_281_rollback_not_undone_by_gossip_of_removed_block_above_gate_bond() {
+    let mut r = bond_rig().await;
+    roll_back_to_f(&mut r).await;
+    let (c1, d1) = (r.canon[0].clone(), r.dead[0].clone());
+    back_sibling(&mut r, &c1, F + 1).await;
+    assert_bond_heavier(&r, "gossip", &[&d1], &[&c1]).await;
+    gossip(&mut r, &d1).await;
+    let after_gossip = obs(&r).await;
+    r.node
+        .on_sync_response(PeerId::random(), SyncResponse::Block(Some(d1)))
+        .await
+        .expect("chase reply: Ok");
+    let after_chase = obs(&r).await;
+    assert!(
+        at_fork_point(&r, &after_gossip),
+        "gossip of the removed D1 re-adopted it outside fork choice: {after_gossip:?}"
+    );
+    assert!(
+        at_fork_point(&r, &after_chase),
+        "the orphan-chase reply of the removed D1 re-adopted it: {after_chase:?}"
+    );
+    gossip(&mut r, &c1).await;
+    assert_on(&r, &c1, F + 1, "canonical C1 after the held D1").await;
+}
+
+// R-3b (Must) — Decision: a failure means above the fork-choice gate the removed D1 and its cached child D2 come back through the drain while a sibling with more bond support than D1+D2 is cached.
+#[tokio::test]
+async fn inc_i_281_rollback_not_undone_by_cached_child_drain_above_gate_bond() {
+    let mut r = bond_rig().await;
+    roll_back_to_f(&mut r).await;
+    seed_cache(&r.node, &r.dead[1..2]).await;
+    let (c1, d1, d2) = (r.canon[0].clone(), r.dead[0].clone(), r.dead[1].clone());
+    back_sibling(&mut r, &c1, F + 1).await;
+    assert_bond_heavier(&r, "cached_drain", &[&d1, &d2], &[&c1]).await;
+    gossip(&mut r, &d1).await;
+    let after = obs(&r).await;
+    let drained = after.at_f2 == Some(d2.hash()) || after.best_hash == d2.hash();
+    assert!(
+        !drained,
+        "the fork-cache drain re-applied the cached removed D2: {after:?}"
+    );
+    assert!(
+        at_fork_point(&r, &after),
+        "the removed branch came back through the drain intake: {after:?}"
+    );
+    gossip(&mut r, &c1).await;
+    assert_on(&r, &c1, F + 1, "canonical C1 with the dead D2 still cached").await;
+}
+
+// R-3b (Must) — Decision: a failure means above the fork-choice gate header-first bodies of the removed branch are re-applied while a sibling with more bond support than D1..D3 is cached.
+#[tokio::test]
+async fn inc_i_281_rollback_not_undone_by_synced_bodies_above_gate_bond() {
+    let mut r = bond_rig().await;
+    roll_back_to_f(&mut r).await;
+    let c1 = r.canon[0].clone();
+    back_sibling(&mut r, &c1, F + 1).await;
+    let dead = r.dead.clone();
+    let removed: Vec<&doli_core::Block> = dead.iter().collect();
+    assert_bond_heavier(&r, "synced_bodies", &removed, &[&c1]).await;
+    let d3 = r.dead[2].clone();
+    let peer = PeerId::random();
+    r.node
+        .sync_manager
+        .write()
+        .await
+        .add_peer(peer, F + 3, d3.hash(), d3.header.slot);
+    let served = serve_sync(&mut r.node, peer, &dead).await;
+    let after_intake = obs(&r).await;
+    let tick = r.node.run_periodic_tasks().await;
+    let after_tick = obs(&r).await;
+    assert!(
+        served.contains(&"headers") && served.contains(&"bodies"),
+        "precondition: header-first sync fetched the dead headers and bodies; served {served:?}"
+    );
+    assert!(tick.is_ok(), "run_periodic_tasks: {:?}", tick.err());
+    assert!(
+        at_fork_point(&r, &after_intake),
+        "header-first bodies re-adopted the removed branch: {after_intake:?}"
+    );
+    assert!(
+        at_fork_point(&r, &after_tick),
+        "the periodic pending-sync loop re-adopted the removed branch: {after_tick:?}"
+    );
+    gossip(&mut r, &c1).await;
+    assert_on(&r, &c1, F + 1, "canonical C1 after the held sync bodies").await;
+}
+
+// R-3b (Must) — Decision: a failure means above the fork-choice gate a removed block is re-adopted after the window while a sibling with more bond support is cached, or the hold blocks a walked branch.
+#[tokio::test]
+async fn inc_i_281_removed_block_held_while_sibling_known_after_window_above_gate_bond() {
+    let mut r = bond_rig().await;
+    roll_back_to_f(&mut r).await;
+    let (c1, d1) = (r.canon[0].clone(), r.dead[0].clone());
+    back_sibling(&mut r, &c1, F + 1).await;
+    assert_bond_heavier(&r, "sibling_known", &[&d1], &[&c1]).await;
+    tokio::time::sleep(past_window(&r)).await;
+    gossip(&mut r, &d1).await;
+    let after = obs(&r).await;
+    assert!(
+        at_fork_point(&r, &after),
+        "removed D1 re-adopted after the window while its sibling C1 is cached: {after:?}"
+    );
+    let walk = CompletedRecovery {
+        blocks: r.dead[..2].to_vec(),
+        connection_point: r.f_hash,
+        suppliers: Vec::new(),
+    };
+    r.node
+        .handle_completed_fork_recovery(walk)
+        .await
+        .expect("walk result: Ok");
+    assert_on(
+        &r,
+        &r.dead[1],
+        F + 2,
+        "fork choice adopts the removed branch",
+    )
+    .await;
+}
+
+// R-3b (Must) — Decision: a failure means above the fork-choice gate the drain re-adopts a removed child whose cached sibling has more bond support, or drops it from the cache.
+#[tokio::test]
+async fn inc_i_281_cached_drain_holds_removed_child_above_gate_bond() {
+    let mut r = bond_rig().await;
+    roll_back_to_f(&mut r).await;
+    let (d1, d2) = (r.dead[0].clone(), r.dead[1].clone());
+    let d2b = child_of(&r, &d1, F + 2, 208);
+    seed_cache(&r.node, std::slice::from_ref(&d2)).await;
+    back_sibling(&mut r, &d2b, F + 2).await;
+    assert_bond_heavier(&r, "drain_sibling_known", &[&d2], &[&d2b]).await;
+    tokio::time::sleep(past_window(&r)).await;
+    gossip(&mut r, &d1).await;
+    let after = obs(&r).await;
+    let cached = r
+        .node
+        .fork_block_cache
+        .read()
+        .await
+        .contains_key(&d2.hash());
+    // Mechanism assertion dropped: the bond-ranked drain applies the heavier D2b first, so D2 never reaches the hold.
+    assert_eq!(
+        after.at_f1,
+        Some(d1.hash()),
+        "D1 has no known sibling: applied"
+    );
     assert_ne!(
         after.at_f2,
         Some(d2.hash()),

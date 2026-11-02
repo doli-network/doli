@@ -30,6 +30,15 @@ impl Node {
             .flatten()
             .unwrap_or(current_height);
         self.verify_fork_signed(&recovery.blocks, fork_base_height.saturating_add(1))?;
+        // INC-I-288: the slot-advance rule needs the parent's slot. A walked parent is
+        // recorded just before its child; the connection point is stored.
+        let cp = recovery.connection_point;
+        let cp_slot = self
+            .block_store
+            .get_header(&cp)
+            .ok()
+            .flatten()
+            .map(|h| h.slot);
         let mut last_block_weight = 1u64;
         {
             let producers = self.producer_set.read().await;
@@ -39,11 +48,13 @@ impl Node {
                     .get_by_pubkey(&block.header.producer)
                     .map(|p| p.effective_weight(current_height + 1))
                     .unwrap_or(1);
-                sync.record_fork_block_weight(
+                sync.record_fork_block_at_slot(
                     block.hash(),
                     block.header.prev_hash,
                     weight,
                     fork_base_height.saturating_add(offset as u64 + 1),
+                    block.header.slot,
+                    cp_slot.filter(|_| block.header.prev_hash == cp),
                 );
                 last_block_weight = weight;
             }
@@ -54,15 +65,17 @@ impl Node {
 
         // 3. Try simple reorg first (works for single-block forks within recent_blocks)
         let fork_tip = recovery.blocks.last().unwrap();
+        let view = self.gated_support_view(fork_tip.hash()).await;
         let simple_reorg = {
             let sync = self.sync_manager.read().await;
             let store = &self.block_store;
             let finality = sync.fork_choice_finality();
-            sync.reorg_handler().check_reorg_weighted(
+            sync.reorg_handler().check_reorg_supported(
                 fork_tip,
                 current_tip,
                 last_block_weight,
                 |h| store.get_height_by_hash(h).ok().flatten(),
+                |h| view.as_ref()?.support(store, h),
                 finality,
             )
         };
@@ -111,12 +124,14 @@ impl Node {
         let reorg_result = {
             let sync = self.sync_manager.read().await;
             let store = &self.block_store;
-            sync.reorg_handler().plan_reorg(
+            sync.reorg_handler().plan_reorg_with_support(
                 current_tip,
                 fork_tip_hash,
                 |hash| store.get_header(hash).ok().flatten().map(|h| h.prev_hash),
                 |hash| store.get_height_by_hash(hash).ok().flatten(),
-                sync.fork_choice_finality(),
+                |hash| view.as_ref()?.support(store, hash),
+                sync.fork_choice_finality()
+                    .with_canonical(|h| store.get_hash_by_height(h).ok().flatten()),
             )
         };
 
@@ -154,7 +169,7 @@ impl Node {
                 }
             }
             None => {
-                warn!("Could not plan reorg from recovered fork — common ancestor not found; checking direct-successor fallback");
+                warn!("Could not plan reorg from recovered fork — common ancestor not found or a block on our side has no weight; checking direct-successor fallback");
                 if self
                     .try_apply_direct_successor(recovery.blocks.last().unwrap())
                     .await?
@@ -718,6 +733,7 @@ impl Node {
             snapshot.block_height, snapshot.block_hash
         );
 
+        (self.seed_epoch_table_after_snap(snapshot.block_height, snapshot.block_hash)).await;
         self.reset_maintainer_root_to_snapshot(snapshot.block_height)
             .await;
         self.arm_maintainer_quorum(super::maintainer_quorum::ProbeReason::PostSnapInstall)

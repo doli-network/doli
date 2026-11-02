@@ -55,13 +55,12 @@ pub(crate) fn decide_attestation(
         return Ok(Outcome::SkippedLight);
     }
     // "No bit set" means BITS, not length: an honest-width all-zero bitfield
-    // carries no claim either.
+    // carries no claim either. Walk intake shares this rule (INC-I-293 U-1).
+    if !doli_core::aggregate_fits_bitfield(bitfield, aggregate) {
+        return Err(REASON_AGGREGATE_NONEMPTY_FOR_EMPTY_BITFIELD);
+    }
     if !bitfield.iter().any(|b| *b != 0) {
-        return if aggregate.is_empty() {
-            Ok(Outcome::Accepted)
-        } else {
-            Err(REASON_AGGREGATE_NONEMPTY_FOR_EMPTY_BITFIELD)
-        };
+        return Ok(Outcome::Accepted);
     }
     let keys = set_bit_keys.map_err(|_| REASON_MISSING_BLS_KEY)?;
     let Ok(sig) = BlsSignature::try_from_slice(aggregate) else {

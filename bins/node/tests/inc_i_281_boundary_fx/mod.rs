@@ -226,6 +226,39 @@ impl Fx {
         block(height, slot, prev, by, Sig::Valid, &self.params)
     }
 
+    /// INC-I-289 sweep (a): C_B cached, then attested over gossip by every non-own
+    /// producer (keys[1..]). The honest C blocks are all by the node's own key, so
+    /// without this C weighs 1 against D's 2 distinct producers under INC-I-289 K-1.
+    pub async fn back_c_b(&mut self) {
+        let c_b = self.c_b.clone();
+        self.back(&c_b, self.b()).await;
+    }
+
+    /// `b` (at `height`) cached, then attested over gossip by every non-own producer.
+    pub async fn back(&mut self, b: &Block, height: u64) {
+        seed_cache(&self.node, std::slice::from_ref(b)).await;
+        self.attest(b, height).await;
+    }
+
+    /// Gossip attestations of `b`'s hash by every non-own producer, without touching
+    /// the cache: they count only once the node already holds the hash.
+    pub async fn attest(&mut self, b: &Block, height: u64) {
+        let (hash, slot) = (b.hash(), b.header.slot);
+        for k in &self.keys[1..] {
+            let a = doli_core::Attestation::new(
+                hash,
+                slot,
+                height,
+                1,
+                k.private_key(),
+                *k.public_key(),
+            );
+            self.node
+                .on_new_attestation(a.to_bytes(), PeerId::random())
+                .await;
+        }
+    }
+
     /// [C_B, b1, b2]: b1 at s1 by `by1`, b2 at s2 by its leader under both lists.
     pub fn after_c_b(&self, by1: &KeyPair) -> Vec<Block> {
         let b1 = self.mk(self.c_b.hash(), self.b() + 1, self.s1, by1);

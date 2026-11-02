@@ -1266,6 +1266,49 @@ cp -r data_dir/checkpoints/h{HEIGHT}-{TS}/blocks data_dir/blocks
 
 **Resolution:** Fixed by INC-I-143 (D4). The coordinator now emits a non-destructive `RecoveryAction::SiblingFetch { height: local_tip }` instead of `None` — a `GetBlockByHeight` request to up to 3 top peers, logged as `[FINALITY_GUARD] … INC-I-143 non-destructive SiblingFetch attempt N/3`. The fetched sibling flows through normal block handling where the wedge-escape re-evaluates it via `plan_reorg`. It is bounded to 3 consecutive attempts (~90s at the 30s cooldown), then falls through to standard escalation. If you see a handful of SiblingFetch lines followed by recovery, that is the fix working; the finality guard's strict `<` is UNCHANGED (it never rolls back below finality). Upgrade to a build carrying INC-I-143.
 
+### 4.6b. Finality Lock After a Restart (INC-I-289 K-2, M-1, M-2)
+
+**Background:** at and above `inc_i_288_fork_choice_activation_height` (mainnet not scheduled) a finalized block is kept across a restart, a reorg and a snap install, and fork choice weighs each branch by the bond of its verified supporters with the epoch table of the common ancestor. Below that height the `[FINALITY]`, `FORK_TABLE`, `Refusing snapshot` and `Descent proof` lines do not appear; the `FINALITY:` and `[WEDGE_ESCAPE]` lines can, because they predate INC-I-289. Rules: `specs/protocol.md` §5.5.
+
+**Log lines** (`…` = a value; the text is otherwise verbatim):
+
+| Line | Level | Meaning and action |
+|------|-------|--------------------|
+| `[FINALITY] Restored finalized height … (…)` | info | At start the persisted checkpoint was re-armed because the stored chain still holds that hash at that height. No action. |
+| `[FINALITY] Persisted checkpoint h=… is not on the stored chain; not restored` | warn | The stored chain no longer holds the checkpoint (for example after a manual rollback or a data copy from another node). The node starts with no finality and gets it again from new checkpoints. No action unless it repeats at every start; then compare the tip with other nodes (§4.2). |
+| `FINALITY: plan_reorg rejecting reorg past effective finality … (ancestor at …)` | warn | The plan door refused a branch that forks below the finalized height. Expected for a branch off the finalized block. See "What to do". |
+| `FINALITY: Rejecting reorg past effective finality … (ancestor at …)` | warn | The same refusal at the gossip door. It now runs before the door weighs either side, so it costs no support reads. |
+| `FORK_TABLE: no epoch table for common ancestor … (h=…, epoch start …); reorg refused` | warn | The common ancestor is in an epoch whose table the node does not keep (older than the reorg window, or a node that snap-synced after it). The reorg is refused. Logged once per ancestor hash; `doli_fork_choice_table_missing_total` counts every refusal. If the node is on the wrong side, use the exit in "What to do". |
+| `EPOCH_TABLE: seeded the live table of tip epoch … (h=…)` | info | The node had no stored table for the epoch of its tip (first start of a build that keeps tables, or a boundary write lost to a crash) and wrote the live one. Expected once after such a start, at any height. No action. |
+| `[SNAP_SYNC] Refusing snapshot h=… hash=…: anchor not proven to descend from finalized h=… …` | warn | Snap install refused an anchor that is not proven to descend from the finalized block. The node falls back to normal sync. |
+| `[SNAP_SYNC] Descent proof complete: anchor h=… links to finalized block via …` | info | The snap peer served a linked header chain from the finalized block to the anchor. The snapshot can install. No action. |
+| `[SNAP_SYNC] Descent proof refused: anchor h=… is … headers above finalized h=… (max …) — falling back to block sync` | warn | That peer's anchor is above 2,000 headers (about 5.5 h of lag): the proof fetches one 500-header batch per second and must end before the snap peer's next block. The node leaves the peer for the next quorum peer whose anchor is within the bound (`Peer … failed, retrying with alternate peer`). When none is, the attempt ends (`Attempt …/3 failed`) and the node syncs by blocks. No action; it is slower, not stuck. |
+| `[SNAP_SYNC] Descent proof refused from …: … — trying alternate peer` | warn | That peer served a broken or foreign header chain. The node asks another peer. Report it if every peer is refused. |
+| `[SNAP_SYNC] Descent proof refused: chain stops before the anchor` / `[SNAP_SYNC] Descent proof refused: …` | warn | The served chain ended early or failed a check. The proof is dropped. |
+| `[WEDGE_ESCAPE] Sibling branch heavier (delta=…, fork=…, ours=…) — reorging (INC-I-143)` | info | The wedge-escape door found a strictly heavier sibling branch and reorgs onto it. No action. |
+| `[WEDGE_ESCAPE] Sibling … retained (not strictly heavier) — signaling fork recovery (INC-I-143)` | info | Equal or lighter support: the node keeps its tip and keeps producing. No action. |
+| `[WEDGE_ESCAPE] Sibling … retained (plan_reorg refused: finality guard, unknown ancestor, reorg depth, or a block on our side has no weight) — signaling fork recovery (INC-I-143)` | info | The plan door refused the branch; look for a `FINALITY:` or `FORK_TABLE:` line next to it. |
+| `[WEDGE_ESCAPE] Sibling … cannot out-weight tip (fork_w=… <= our_w=…) — retained, signaling recovery (INC-I-143)` | info | The sibling cannot win on weight; it is kept for re-evaluation. No action. |
+| `[WEDGE_ESCAPE] Heavier sibling … did not land (missing body) — signaling fork recovery (INC-I-143)` | warn | The reorg target is not on the chain after the attempt. Fork recovery fetches the missing body. Report it if it repeats for one hash. |
+| `Ignoring fork: candidate … is already canonical` | debug | The gossip door got a block that is already on our chain and kept the tip (INC-I-293 S-1). No action. |
+| `[FORK] RECOVERY_DONE fork tip …: no reorg (not heavier or refused by finality)` | warn | A walk ended without a reorg. Above the height this includes a stale walk whose tip another path already made canonical: the doors refuse a candidate that is already ours, so nothing is rolled back. No action unless the same tip repeats with the node on the lighter branch. |
+| `Fork recovery: … does not have block … — asking evidence peer …` | warn | The walk peer answered `None`. The node marks it for this walk and asks the next peer whose tip is off our chain, in the same attempt (INC-I-293 S-2). No action. |
+| `Fork recovery: … did not answer in time for block … — asking evidence peer …` | warn | The walk peer stayed silent past the 10 s request timeout. The node marks it for this walk and asks the next evidence peer for the same block before any taller peer (INC-I-293 U-1). With no evidence peer left the old line `Fork recovery: request to … timed out after …s — failing over to …` follows instead. No action. |
+| `Fork recovery: reply from … answers …, not the walk's fetch of … — not the walk's answer` | debug | The walk peer answered another request (for example the orphan chase by height) while the walk waits on it. The walk ignores that reply and keeps waiting for its own by-hash answer (INC-I-293 U-2). No action. |
+| `Fork recovery: refusing walk block … from …: body does not match its header` | warn | A walk answer had a body that does not match its header. The body is not held and the peer gets an invalid-block strike; the node marks it for this walk and asks the next evidence peer (`Fork recovery: … sent a refused body for block … — asking evidence peer …`). With no evidence peer left the request fails over on its 10 s timeout (INC-I-293 U-1). Report the peer if it repeats. |
+| `Fork recovery: walk from … would hold more than … body bytes (64 full era blocks) — the peer is marked, not blamed` | warn | The walk reached its body bound: 64 × the era block size limit (`max_block_size`). The peer is marked for this walk and gets no strike; the same walk asks the next evidence peer (`Fork recovery: … overflowed the walk bound at block … — asking evidence peer …`). With no evidence peer left the walk is cancelled (`Fork recovery cancelled: held body bytes over the walk bound`), the held bodies are dropped, and header-first sync reaches the branch. No genesis resync follows (INC-I-293 U-1). No action unless it repeats with small blocks. |
+| `[ATTEST_FETCH] fetching block … from peer … after …ms grace (attempt …)` | info | An attestation named a block the node does not hold; each periodic tick asks a peer for it until it is held or the 30 s expiry. Expected during a fork; no action. |
+
+**Metrics:**
+
+| Metric | Meaning |
+|--------|---------|
+| `doli_fork_choice_table_missing_total` | Reorgs refused because the common ancestor's epoch table is not kept. |
+| `doli_support_views_built_total` | Support views built for the reorg doors. Stays 0 below the activation height. |
+| `doli_fork_credits_total` | Fork-only gossip attestations credited for the reorg doors. Stays 0 below the activation height. |
+
+**What to do:** above the INC-I-288 height, nothing for a branch that descends from the finalized block. The plan door admits a branch whose common ancestor with our chain is at or above the finalized height when our canonical chain holds the finalized block, at any depth (M-2). A lagging node proves snapshot descent with headers served by the snap peer (M-1). A restart does NOT clear finality above the height: the checkpoint is restored. Use `forceReorgTo` (`docs/rpc_reference.md`) or a wipe + snap from a canonical donor ONLY when the finalized block itself is off the canonical chain (the `plan_reorg` line repeats with an ancestor below the finalized height on every attempt). Before any wipe, move `wallet.json` and `producer.seed.txt` out of the data directory.
+
 ---
 
 ### 4.7. Gossip Relay Verdicts (INC-I-237)

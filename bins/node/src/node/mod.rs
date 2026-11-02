@@ -10,6 +10,7 @@ pub mod attestation;
 mod attestation_authority_tests;
 #[allow(unused_imports)]
 pub use apply_block::state_fp_sr_field;
+mod attest_refetch;
 mod block_handling;
 mod block_serve;
 mod body_commitments;
@@ -17,7 +18,10 @@ mod body_retry;
 pub mod bootstrap_redial;
 #[cfg(test)]
 mod bootstrap_redial_tests;
+mod branch_rank;
+mod branch_support;
 pub mod checkpoint_health;
+mod epoch_tables;
 mod event_loop;
 mod floor_window;
 mod force_reorg;
@@ -419,9 +423,12 @@ pub struct Node {
     /// but DON'T send the request immediately. run_periodic_tasks() checks
     /// entries >500ms old: if block_store still missing → send GetBlockByHash
     /// (genuine recovery); if block arrived via gossip → silently clear.
-    /// Max 3 peers per hash, 30s TTL. Eliminates ~94% false-positive fetches
-    /// where gossip delivers the block 1-2ms after the attestation.
+    /// Max 3 peers per hash, 30s TTL.
     pub attest_fetch_tracker: HashMap<Hash, (Instant, u8, PeerId)>,
+    /// INC-I-293 S-2: last ask per tracked hash, at/above the INC-I-288 gate.
+    pub attest_fetch_asked: HashMap<Hash, Instant>,
+    /// INC-I-293 U-2: (hash, peer) that answered `None` for the hash, 30 s TTL.
+    pub attest_fetch_retired: HashMap<(Hash, PeerId), Instant>,
 
     /// INC-I-111: Counter for how many times the defi_health_inputs() scan
     /// has actually run (cache miss). Used by integration tests to verify

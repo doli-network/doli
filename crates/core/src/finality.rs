@@ -132,6 +132,14 @@ impl FinalityTracker {
         }
     }
 
+    /// INC-I-289: the attesters held for each pending block (read-only).
+    pub fn pending_attesters(&self) -> Vec<(Hash, Vec<PublicKey>)> {
+        self.pending
+            .iter()
+            .map(|p| (p.block_hash, p.attesters.keys().copied().collect()))
+            .collect()
+    }
+
     /// Check if any pending blocks have reached finality.
     ///
     /// A block finalizes only when it has BOTH >= `FINALITY_THRESHOLD_PCT` weight

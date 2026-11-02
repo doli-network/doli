@@ -503,7 +503,7 @@ Key metrics available at `http://127.0.0.1:9000/metrics`:
 | `doli_sync_progress` | Sync progress (0-1) |
 | `doli_fork_guard_refusals_total{site}` | State rebuilds/reorgs refused for a non-dense block store. Sites: `producer_rebuild`, `rollback_rebuild`, `reorg_execute` |
 | `doli_unique_chain_tips` | Distinct chain tips across our tip plus peers. 1 = fleet agrees, 0 = no peers |
-| `doli_wedge_escape_outcomes_total{reason}` | Wedge-escape decisions: `cannot_outweigh`, `plan_refused`, `not_heavier`, `reorg`, `reorg_did_not_land` |
+| `doli_wedge_escape_outcomes_total{reason}` | Wedge-escape decisions: `cannot_outweigh`, `plan_refused`, `not_heavier`, `reorg`, `reorg_did_not_land`. At/above `inc_i_288_fork_choice_activation_height` a lighter sibling counts as `not_heavier` and `cannot_outweigh` stays 0; a plan refused because a block of our own chain has no weight counts as `plan_refused` |
 | `doli_pre_activation_branch_total{gate}` | Executions of a pre-activation branch of an activation-height gate |
 | `doli_reorg_finality_probe_total{site,outcome}` | Finality-guard comparisons reached (`entry`) and refused (`reject`) |
 | `doli_force_reorg_outcomes_total{outcome}` | `forceReorgTo` operator-escape decisions: `executed`, `expired`, `uncorroborated`, `unknown_target`, `plan_refused`, `same_branch`, `ineligible`, `reorg_did_not_land` |

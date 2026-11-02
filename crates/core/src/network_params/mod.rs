@@ -41,6 +41,8 @@ mod tests_inc_i_181;
 mod tests_inc_i_233;
 #[cfg(test)]
 mod tests_inc_i_234;
+#[cfg(test)]
+mod tests_inc_i_288;
 
 /// Pins of the four defense gates (236/255/257/182): testnet 330_849, mainnet 806_859.
 #[cfg(test)]
@@ -820,13 +822,16 @@ pub struct NetworkParams {
     /// ordering or `presence_root`, so INV-8 synchronized deploy is NOT triggered
     /// and the binary rolls.
     ///
-    /// Defaults — mainnet `u64::MAX` and testnet `u64::MAX`: both FROZEN. Pinning
-    /// a real height on either is a separate user decision-session; the spec names
-    /// no height and no convergence margin, so no value is derivable. Devnet `0`,
-    /// mirroring the devnet arm of the gate it supersedes
-    /// (`inc_i_147_activation_height`). Never bundled onto any existing gate.
+    /// Values live in `defaults.rs`. Never bundled onto any existing gate.
     /// Mainnet IMMUTABILITY (INC-I-054): once crossed, never move forward.
     pub inc_i_204_fork_choice_activation_height: u64,
+
+    /// INC-I-288 gate. At and above it a rollback (`reset_sync_for_rollback`) keeps
+    /// the ReorgHandler memory, a better-slot sibling goes to the weight door, both
+    /// branches are weighed from their common ancestor, and the orphan/own-block and
+    /// same-slot inputs are narrowed. Fork choice only, no block content.
+    /// IMMUTABLE once crossed.
+    pub inc_i_288_fork_choice_activation_height: u64,
 
     /// INC-I-178 M4 attestation-BLS activation height.
     ///

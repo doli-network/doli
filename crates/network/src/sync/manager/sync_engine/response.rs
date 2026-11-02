@@ -8,12 +8,22 @@ use tracing::{debug, info, warn};
 
 use doli_core::{Block, BlockHeader};
 
-use crate::protocols::SyncResponse;
+use crate::protocols::{SyncRequest, SyncResponse};
 use crate::sync::manager::{SyncManager, SyncPhase, SyncPipelineData, SyncState};
 
 impl SyncManager {
-    /// Handle a sync response
+    /// Handle a sync response whose answered request is unknown (the old rule).
     pub fn handle_response(&mut self, peer: PeerId, response: SyncResponse) -> Vec<Block> {
+        self.handle_response_to(peer, None, response)
+    }
+
+    /// Handle a sync response; `answered` is the request it answers (INC-I-293 U-2).
+    pub fn handle_response_to(
+        &mut self,
+        peer: PeerId,
+        answered: Option<&SyncRequest>,
+        response: SyncResponse,
+    ) -> Vec<Block> {
         info!(
             "[SYNC_DEBUG] Processing response from peer={}, type={:?}, state={:?}",
             peer,
@@ -25,8 +35,10 @@ impl SyncManager {
         // Clear pending request for this peer and extract the epoch.
         // Only discard when the epoch is EXPLICITLY from a different (older) epoch.
         // None (no tracking info, e.g. after soft retry cleared requests) is NOT stale.
+        let skips_walk = self.reply_skips_walk(peer, answered);
+        let keep_walk_pending = skips_walk && self.pending_is_walk_fetch(peer);
         let request_epoch = if let Some(status) = self.peers.get_mut(&peer) {
-            if let Some(req_id) = status.pending_request.take() {
+            if let Some(req_id) = status.pending_request.take_if(|_| !keep_walk_pending) {
                 self.pipeline
                     .pending_requests
                     .remove(&req_id)
@@ -60,6 +72,10 @@ impl SyncManager {
                     );
                     return vec![];
                 }
+                if self.snap_descent_owns(peer) {
+                    self.handle_snap_descent_headers(peer, headers);
+                    return vec![];
+                }
                 self.handle_headers_response(peer, headers);
                 vec![]
             }
@@ -87,6 +103,7 @@ impl SyncManager {
                 );
                 // Fork recovery intercept: consume blocks during active recovery
                 if self.fork.fork_recovery.is_active()
+                    && !(skips_walk && maybe_block.is_none())
                     && self.walk_intake(peer, maybe_block.clone())
                 {
                     return vec![]; // Consumed by fork recovery

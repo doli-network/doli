@@ -41,6 +41,7 @@ use tempfile::TempDir;
 use super::inc_i_204_m41_common::{
     apply_chain, build_block, build_chain, leader, make_node, unscheduled,
 };
+use super::inc_i_289_common::in_below_ah_child;
 
 const FORK_H: u64 = 6;
 const B_SLOT: u32 = 108;
@@ -162,6 +163,27 @@ fn seed2(a_cached: bool) -> Shape {
 }
 
 impl Fx {
+    /// The non-own producers attest A and A1 over gossip. A and A1 share a leader
+    /// (slots 100, 103), so without this [A, A1] ties B at one supporter each. The
+    /// node credits only a hash it already holds as a fork block (A when cached).
+    async fn back_canon(&mut self) {
+        for (i, blk) in self.canon[..2].iter().enumerate() {
+            for p in &self.producers[1..] {
+                let h = FORK_H + i as u64;
+                let a = doli_core::Attestation::new(
+                    blk.hash(),
+                    blk.header.slot,
+                    h,
+                    1,
+                    p.private_key(),
+                    *p.public_key(),
+                );
+                self.node
+                    .on_new_attestation(a.to_bytes(), self.peers[0])
+                    .await;
+            }
+        }
+    }
     fn canon_at(&self, h: u64) -> Option<Block> {
         h.checked_sub(FORK_H)
             .and_then(|i| self.canon.get(i as usize))
@@ -274,7 +296,13 @@ async fn assert_converged(fx: &Fx, fetched: &[Hash], case: &str) {
 // D2 / C1 / C2 / C3 / SEC-001 still blocks the reorg. Cell: O1/O2/O3 × I1.
 #[tokio::test]
 async fn repro_wedged_losing_sibling_converges_by_reorg_case_b_sibling_evicted() {
+    // INC-I-293: pins the below-gate path; `repro_wedged_losing_sibling_converges_by_reorg_case_b_sibling_evicted_above_gate` is its twin.
+    if !in_below_ah_child("inc_i_235_wedged_fork_walk::repro_wedged_losing_sibling_converges_by_reorg_case_b_sibling_evicted") {
+        return;
+    }
     let mut fx = fixture(seed2(false)).await;
+    // INC-I-289 sweep: (a) — the walked [A, A1] beat B by block count (2 > 1) → non-own producers attest the cached A1, so it out-supports B (1 leader each before).
+    fx.back_canon().await;
     fx.header_in_flight().await;
     fx.node.try_trigger_fork_recovery().await;
     let fetched = fx.drive(12, true).await;
@@ -285,11 +313,44 @@ async fn repro_wedged_losing_sibling_converges_by_reorg_case_b_sibling_evicted()
 // stored — seeds or blocks the walk instead of A1. Cell: O1/O2/O3 × I2.
 #[tokio::test]
 async fn repro_wedged_losing_sibling_converges_by_reorg_case_a_sibling_cached() {
+    // INC-I-293: pins the below-gate path; `repro_wedged_losing_sibling_converges_by_reorg_case_a_sibling_cached_above_gate` is its twin.
+    if !in_below_ah_child("inc_i_235_wedged_fork_walk::repro_wedged_losing_sibling_converges_by_reorg_case_a_sibling_cached") {
+        return;
+    }
     let mut fx = fixture(seed2(true)).await;
+    // INC-I-289 sweep: (a) — the walked [A, A1] beat B by block count (2 > 1) → non-own producers attest the cached A and A1, so they out-support B.
+    fx.back_canon().await;
     fx.header_in_flight().await;
     fx.node.try_trigger_fork_recovery().await;
     let fetched = fx.drive(12, true).await;
     assert_converged(&fx, &fetched, "case a").await;
+}
+
+/// Above the gate the gossiped orphan A1 (within the reorg depth) has already
+/// started the by-hash walk, so no header request is in flight; the node must
+/// still converge on the canonical branch.
+async fn repro_above_gate(a_cached: bool, case: &str) {
+    let mut fx = fixture(seed2(a_cached)).await;
+    assert!(
+        fx.node.sync_manager.read().await.is_fork_recovery_active(),
+        "INC-I-293 F2 ({case}): the gossiped orphan A1 did not start the by-hash walk"
+    );
+    fx.back_canon().await;
+    fx.node.try_trigger_fork_recovery().await;
+    let fetched = fx.drive(12, true).await;
+    assert_converged(&fx, &fetched, case).await;
+}
+
+// INC-I-293 F2 above-gate twin — Decision: a failure means the walk the orphan arrival starts above the gate does not bring the losing sibling onto the canonical branch (case b, A evicted).
+#[tokio::test]
+async fn repro_wedged_losing_sibling_converges_by_reorg_case_b_sibling_evicted_above_gate() {
+    repro_above_gate(false, "case b above gate").await;
+}
+
+// INC-I-293 F2 above-gate twin — Decision: a failure means a cached A blocks the orphan-started walk or fork choice above the gate (case a).
+#[tokio::test]
+async fn repro_wedged_losing_sibling_converges_by_reorg_case_a_sibling_cached_above_gate() {
+    repro_above_gate(true, "case a above gate").await;
 }
 
 // REQ-I235-004 lock — Decision: a FAIL means the fixture itself cannot converge
@@ -298,6 +359,8 @@ async fn repro_wedged_losing_sibling_converges_by_reorg_case_a_sibling_cached() 
 #[tokio::test]
 async fn lock_fixture_converges_once_walk_result_reaches_fork_choice() {
     let mut fx = fixture(seed2(false)).await;
+    // INC-I-289 sweep: (a) — the walk result [A, A1] beat B by block count (2 > 1) → non-own producers attest the cached A1, so it out-supports B.
+    fx.back_canon().await;
     let done = network::sync::CompletedRecovery {
         blocks: vec![fx.canon[0].clone(), fx.canon[1].clone()],
         connection_point: fx.base[4].hash(),
@@ -426,6 +489,8 @@ fn sec_shape(a_eligible: bool) -> Shape {
 #[tokio::test]
 async fn sec001_walked_block_by_unscheduled_producer_is_not_reorged_onto() {
     let mut fx = fixture(sec_shape(false)).await;
+    // INC-I-289 sweep: (a) — kept symmetric with the control: the same A1 backing, so only eligibility can refuse.
+    fx.back_canon().await;
     walk_once(&mut fx).await;
     assert_eq!(
         fx.tip().await,
@@ -440,6 +505,8 @@ async fn sec001_walked_block_by_unscheduled_producer_is_not_reorged_onto() {
 #[tokio::test]
 async fn sec001_control_eligible_walked_branch_is_reorged_onto() {
     let mut fx = fixture(sec_shape(true)).await;
+    // INC-I-289 sweep: (a) — [A, A1] beat B by block count (2 > 1), a support tie under K-1 → non-own producers attest the cached A1.
+    fx.back_canon().await;
     walk_once(&mut fx).await;
     assert_eq!(
         fx.tip().await,
@@ -490,6 +557,12 @@ async fn lb9_lighter_branch_is_not_rewalked_after_cooldown() {
 // traffic. Cell: O1 × I7.
 #[tokio::test]
 async fn lock_non_wedged_orphan_gossip_starts_no_walk() {
+    // INC-I-293: pins the below-gate path; `lock_non_wedged_orphan_within_reorg_depth_starts_the_walk_above_gate` is its twin.
+    if !in_below_ah_child(
+        "inc_i_235_wedged_fork_walk::lock_non_wedged_orphan_gossip_starts_no_walk",
+    ) {
+        return;
+    }
     let (mut node, producers, _tmp) = make_node(3).await;
     let params = node.params.clone();
     let base = build_chain(1, 1, Hash::ZERO, &producers[0], 5, &params);
@@ -509,4 +582,44 @@ async fn lock_non_wedged_orphan_gossip_starts_no_walk() {
     node.handle_new_block(orphan, peer).await.unwrap();
     let _ = node.run_periodic_tasks().await;
     assert!(!node.sync_manager.read().await.is_fork_recovery_active());
+}
+
+// INC-I-293 F2 above-gate twin — Decision: a failure means an orphan within the reorg depth of a non-wedged node above the gate starts no by-hash walk for its unknown parent, so F2 cannot reach a missing fork root.
+#[tokio::test]
+async fn lock_non_wedged_orphan_within_reorg_depth_starts_the_walk_above_gate() {
+    let (mut node, producers, _tmp) = make_node(3).await;
+    let params = node.params.clone();
+    let base = build_chain(1, 1, Hash::ZERO, &producers[0], 5, &params);
+    apply_chain(&mut node, &base).await;
+    let tip = node.chain_state.read().await.best_hash;
+    let peer = PeerId::random();
+    node.sync_manager
+        .write()
+        .await
+        .add_peer(peer, 7, crypto::hash::hash(b"t"), 7);
+    let parent = crypto::hash::hash(b"unknown_h6");
+    let orphan = build_block(7, 7, parent, leader(&producers, 7), &params);
+    node.handle_new_block(orphan, peer).await.unwrap();
+    let active = node.sync_manager.read().await.is_fork_recovery_active();
+    let first = node
+        .sync_manager
+        .write()
+        .await
+        .next_request()
+        .map(|(_, q)| q);
+    assert!(
+        active && matches!(&first, Some(SyncRequest::GetBlockByHash { hash }) if *hash == parent),
+        "F2: the orphan 2 slots above the tip must start the by-hash walk for its parent: \
+         active {active}, first request {first:?}"
+    );
+    let _ = node.run_periodic_tasks().await;
+    assert!(
+        node.sync_manager.read().await.is_fork_recovery_active(),
+        "F2: the walk is still active after one tick"
+    );
+    assert_eq!(
+        node.chain_state.read().await.best_hash,
+        tip,
+        "F2: an unserved walk moves no tip"
+    );
 }

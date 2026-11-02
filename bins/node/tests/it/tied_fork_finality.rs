@@ -201,6 +201,12 @@ async fn attest_all_producers_for(
 // ============================================================
 #[tokio::test]
 async fn test_inc_i190_f2_tied_fork_reorgs_instead_of_wedging() {
+    // INC-I-289 sweep: (b) — B won by block count (3 > A's 1), but under K-1 A {p0 + 2 attesters} ties B {3 leaders} → pinned as the old rule in a below-gate child.
+    if !crate::inc_i_289_common::in_below_ah_child(
+        "tied_fork_finality::test_inc_i190_f2_tied_fork_reorgs_instead_of_wedging",
+    ) {
+        return;
+    }
     let (mut node, producers, _tmp) = make_node(3).await;
     let params = node.params.clone();
     let peer = network::PeerId::random();

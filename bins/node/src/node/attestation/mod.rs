@@ -3,6 +3,7 @@
 use super::*;
 
 pub mod commit;
+pub(crate) mod fork_credit;
 pub(crate) mod ingress;
 pub(crate) mod keys;
 pub(crate) mod verify;

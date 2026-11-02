@@ -583,7 +583,11 @@ impl SyncManager {
     /// After 3+ consecutive orphans, force batch sync to close the gap.
     pub fn note_orphan_gossip_block(&mut self, block_height: u64, block_slot: u32) {
         self.consecutive_orphan_gossip_blocks += 1;
-        if block_height > self.network.network_tip_height {
+        // INC-I-288: the caller's height is a guess (the parent is unknown). At/above the
+        // gate the tip height comes only from peer status and applied blocks.
+        if block_height > self.network.network_tip_height
+            && self.local_height < self.config.inc_i_288_fork_choice_activation_height
+        {
             self.network.network_tip_height = block_height;
         }
         if block_slot > self.network.network_tip_slot {

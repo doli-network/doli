@@ -112,6 +112,27 @@ async fn inc_i_281_removed_block_reapply_is_not_peer_progress() {
 // R-2 (Must) — Decision: a failure means re-applying a removed dead block still opens coordinator Gate 1, which returns HeaderFirstSync ahead of the rollback rung for 300 s on a forked node.
 #[tokio::test]
 async fn inc_i_281_removed_block_reapply_does_not_open_gate1() {
+    // INC-I-289: the rollback rung this test tells apart from Gate 1 exists only
+    // below the INC-I-288 gate, so it runs in a child process below that gate.
+    if std::env::var_os("INC_I_281_GATE1_BELOW_AH_CHILD").is_none() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "inc_i_281_removed_block_reapply_does_not_open_gate1",
+                "--exact",
+                "--test-threads=1",
+            ])
+            .env("INC_I_281_GATE1_BELOW_AH_CHILD", "1")
+            .env("DOLI_INC_I_288_FORK_CHOICE_ACTIVATION_HEIGHT", "1000000000")
+            .output()
+            .expect("spawn child test process");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && stdout.contains("1 passed"),
+            "below-AH child failed or did not run:\n{stdout}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        return;
+    }
     let mut r = rolled_back_then_applied(true).await;
     let orphans = r.canon[1..3].to_vec();
     let (dead_action, dead_ctx) = coordinator_action(&mut r, &orphans).await;

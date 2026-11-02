@@ -326,8 +326,13 @@ impl Node {
             } => {
                 self.on_sync_request(peer_id, request, channel).await?;
             }
-            NetworkEvent::SyncResponse { peer_id, response } => {
-                self.on_sync_response(peer_id, response).await?;
+            NetworkEvent::SyncResponse {
+                peer_id,
+                request,
+                response,
+            } => {
+                self.on_sync_answer(peer_id, request.as_ref(), response)
+                    .await?;
             }
             NetworkEvent::NetworkMismatch {
                 peer_id,

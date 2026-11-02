@@ -211,10 +211,12 @@ impl SyncManager {
             SyncPipelineData::SnapCollecting { .. } => None,
 
             SyncPipelineData::SnapDownloading {
-                target_hash, peer, ..
+                target_hash,
+                target_height,
+                peer,
+                ..
             } => {
-                let target_hash = *target_hash;
-                let peer = *peer;
+                let (target_hash, target_height, peer) = (*target_hash, *target_height, *peer);
                 // Guard: don't send if peer already has a pending request
                 if let Some(status) = self.peers.get(&peer) {
                     if status.pending_request.is_some() {
@@ -227,7 +229,17 @@ impl SyncManager {
                     Some((session_id, start_key, max_bytes)) => {
                         SyncRequest::get_state_chunk(session_id, start_key, max_bytes)
                     }
-                    None => SyncRequest::get_state_manifest(target_hash),
+                    None => match self.snap_descent_next_request(target_height, target_hash) {
+                        Ok(proof) => {
+                            proof.unwrap_or_else(|| SyncRequest::get_state_manifest(target_hash))
+                        }
+                        Err(()) => {
+                            if !self.snap_descent_leave_over_span(peer) {
+                                self.snap_fallback_to_normal();
+                            }
+                            return None;
+                        }
+                    },
                 };
                 let id = self.register_request(peer, request.clone());
                 if let Some(status) = self.peers.get_mut(&peer) {

@@ -355,6 +355,7 @@ impl Node {
             self.block_store
                 .remove_canonical_entry(local_height, orphan)?;
         }
+        self.drop_epoch_table_on_rollback(local_height);
 
         // Update sync manager: local tip + reset fork signals
         {

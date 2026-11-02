@@ -57,6 +57,11 @@ pub fn classify_wedge_plan(
     if fork_weight <= our_weight {
         return WedgeOutcome::CannotOutweigh;
     }
+    classify_plan(plan)
+}
+
+/// The plan arms alone: at/above the INC-I-288 gate the door has no short-circuit.
+pub(crate) fn classify_plan(plan: Option<&ReorgResult>) -> WedgeOutcome {
     match plan {
         None => WedgeOutcome::PlanRefused,
         Some(p) if p.weight_delta > 0 => WedgeOutcome::Reorg,

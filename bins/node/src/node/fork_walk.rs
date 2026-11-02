@@ -1,14 +1,19 @@
+use super::branch_rank::{ranked_branches, BranchRank};
 use super::*;
 
 // INC-I-235: start, gate and bound the by-hash parent walk that lets a node on a
 // losing sibling reach the competing branch's fork point and leave by reorg.
 
-/// (depth of the cached chain rooted at a block, tip of that chain)
-type BranchInfo = (usize, Hash);
+/// (weight of the cached chain rooted at a block, tip of that chain)
+pub(super) type BranchInfo = (u64, Hash);
 
-/// Depth and tip of the cached descendant chain under every cached block.
-/// Deeper wins; ties go to the lower slot, then the lower hash.
-pub(super) fn cached_branches(cache: &HashMap<Hash, Block>) -> HashMap<Hash, BranchInfo> {
+/// Weight and tip of the heaviest cached descendant chain under every cached
+/// block, each block adding `weight(h)` (1 per block: depth). Heavier wins; ties
+/// go to the lower slot, then the lower hash.
+pub(super) fn cached_branches(
+    cache: &HashMap<Hash, Block>,
+    weight: impl Fn(&Hash) -> u64,
+) -> HashMap<Hash, BranchInfo> {
     let mut children: HashMap<Hash, Vec<Hash>> = HashMap::new();
     for (h, b) in cache {
         children.entry(b.header.prev_hash).or_default().push(*h);
@@ -36,32 +41,54 @@ pub(super) fn cached_branches(cache: &HashMap<Hash, Block>) -> HashMap<Hash, Bra
                 .iter()
                 .filter_map(|k| memo.get(k).map(|info| (k, *info)))
                 .max_by_key(|(k, info)| rank(k, info));
-            memo.insert(h, best.map_or((1, h), |(_, (d, tip))| (d + 1, tip)));
+            let w = weight(&h);
+            memo.insert(
+                h,
+                best.map_or((w, h), |(_, (d, tip))| (d.saturating_add(w), tip)),
+            );
         }
     }
     memo
 }
 
-/// Walk seed: the cached orphan whose parent is NOT canonical and which roots the
-/// longest cached chain (lowest slot on ties). Returns (seed, branch tip).
+/// Walk seeds in rank order: cached orphans whose parent is NOT canonical, by the
+/// [`ranked_branches`] weight they root (lowest slot, then hash, on ties).
+/// Returns (seed, branch tip) hashes.
+pub(super) fn walk_seeds(
+    cache: &HashMap<Hash, Block>,
+    is_stored: impl Fn(&Hash) -> bool,
+    rank: &BranchRank,
+) -> Vec<(Hash, Hash)> {
+    let branches = ranked_branches(cache, rank);
+    let mut seeds: Vec<_> = cache
+        .iter()
+        .filter(|(_, b)| !is_stored(&b.header.prev_hash))
+        .map(|(h, b)| {
+            let (w, tip) = branches[h];
+            ((std::cmp::Reverse(w), b.header.slot, *h), tip)
+        })
+        .collect();
+    seeds.sort();
+    seeds.into_iter().map(|((_, _, h), tip)| (h, tip)).collect()
+}
+
+/// The first of [`walk_seeds`], with its body.
 pub(super) fn select_walk_seed(
     cache: &HashMap<Hash, Block>,
     is_stored: impl Fn(&Hash) -> bool,
+    rank: &BranchRank,
 ) -> Option<(Block, Hash)> {
-    let branches = cached_branches(cache);
-    cache
-        .iter()
-        .filter(|(_, b)| !is_stored(&b.header.prev_hash))
-        .max_by_key(|(h, b)| {
-            let (depth, _) = branches[*h];
-            (depth, std::cmp::Reverse((b.header.slot, **h)))
-        })
-        .map(|(h, b)| (b.clone(), branches[h].1))
+    let (seed, tip) = walk_seeds(cache, is_stored, rank).into_iter().next()?;
+    Some((cache[&seed].clone(), tip))
 }
 
 /// Tip of the cached chain that descends from `from` (itself when it has none).
-pub(super) fn cached_branch_tip(cache: &HashMap<Hash, Block>, from: Hash) -> Hash {
-    cached_branches(cache)
+pub(super) fn cached_branch_tip(
+    cache: &HashMap<Hash, Block>,
+    from: Hash,
+    rank: &BranchRank,
+) -> Hash {
+    ranked_branches(cache, rank)
         .get(&from)
         .map_or(from, |(_, tip)| *tip)
 }
@@ -76,31 +103,68 @@ impl Node {
     /// Called from the ReorgCandidate gossip path and the Wedged terminal.
     /// Returns true when a walk was started.
     pub async fn try_trigger_fork_recovery(&mut self) -> bool {
+        self.try_trigger_fork_recovery_from(None).await
+    }
+
+    /// INC-I-293 103/S-2: `sender` (the orphan's) is asked when connected, else an
+    /// evidence peer. At/above the INC-I-288 gate a walk without a sender asks the
+    /// first evidence peer and a `None` answer moves it to the next; below, the
+    /// tallest peer.
+    pub(super) async fn try_trigger_fork_recovery_from(&mut self, sender: Option<PeerId>) -> bool {
         if !self.sync_manager.read().await.can_start_fork_recovery() {
             return false;
         }
         let local_tip = self.chain_state.read().await.best_hash;
-        let picked = {
+        let rank = self.branch_rank().await;
+        let seeds = {
             let cache = self.fork_block_cache.read().await;
-            select_walk_seed(&cache, |h| self.is_canonical(h))
+            walk_seeds(&cache, |h| self.is_canonical(h), &rank)
         };
-        let Some((seed, branch_tip)) = picked else {
+        // INC-I-288: at/above the gate a rejected branch passes the walk to the next seed.
+        let tries = match rank {
+            BranchRank::Bond(..) => seeds.len(),
+            BranchRank::Depth => 1,
+        };
+        let picked = {
+            let sm = self.sync_manager.read().await;
+            seeds.into_iter().take(tries).find(|(_, tip)| {
+                let rejected = sm.is_fork_branch_rejected(*tip, local_tip);
+                if rejected {
+                    debug!(
+                        "[FORK] RECOVERY_SKIP branch tip {:.16} already lost fork choice on {:.16}",
+                        tip, local_tip
+                    );
+                }
+                !rejected
+            })
+        };
+        let Some((seed_hash, branch_tip)) = picked else {
             return false;
         };
+        let Some(seed) = self.fork_block_cache.read().await.get(&seed_hash).cloned() else {
+            return false;
+        };
+        let gated = self.weighs_by_support().await;
         let mut sm = self.sync_manager.write().await;
-        if sm.is_fork_branch_rejected(branch_tip, local_tip) {
-            debug!(
-                "[FORK] RECOVERY_SKIP branch tip {:.16} already lost fork choice on {:.16}",
-                branch_tip, local_tip
-            );
-            return false;
-        }
-        let Some(peer) = sm.best_peer_for_recovery() else {
+        let evidence = match gated {
+            true => self.evidence_peers(&sm, branch_tip),
+            false => Vec::new(),
+        };
+        let peer = match sender {
+            None if gated => evidence.first().copied(),
+            None => sm.best_peer_for_recovery(),
+            Some(s) if sm.has_peer(&s) => Some(s),
+            Some(s) => self.branch_peer(&sm, &s, None),
+        };
+        let Some(peer) = peer else {
             return false;
         };
         let seed_hash = seed.hash();
         let seed_slot = seed.header.slot;
         let started = sm.start_fork_recovery(seed, peer);
+        if started && gated {
+            sm.set_fork_walk_handover(evidence);
+        }
         if started {
             info!(
                 "[FORK] RECOVERY_START seed {:.16} slot {} (branch tip {:.16}) from {}",
@@ -108,6 +172,17 @@ impl Node {
             );
         }
         started
+    }
+
+    /// INC-I-293 S-2: connected peers whose reported tip is off our chain, those
+    /// reporting `branch_tip` first, each group by lowest id; never by height.
+    fn evidence_peers(&self, sm: &SyncManager, branch_tip: Hash) -> Vec<PeerId> {
+        let mut peers: Vec<(bool, PeerId)> = (sm.peer_tips().into_iter())
+            .filter(|(_, tip)| !self.is_canonical(tip))
+            .map(|(p, tip)| (tip != branch_tip, p))
+            .collect();
+        peers.sort();
+        peers.into_iter().map(|(_, p)| p).collect()
     }
 
     /// Handle a completed fork recovery: eligibility-gate every walked block
@@ -173,9 +248,10 @@ impl Node {
             );
             let body_level = junk_body || body_refused;
             if !body_level && !super::header_auth::is_fork_signature_rejection(&result) {
+                let rank = self.branch_rank().await;
                 let branch_tip = {
                     let cache = self.fork_block_cache.read().await;
-                    cached_branch_tip(&cache, fork_tip)
+                    cached_branch_tip(&cache, fork_tip, &rank)
                 };
                 self.sync_manager
                     .write()
@@ -226,11 +302,17 @@ mod tests {
         for b in [&a, &a1, &a2, &stale] {
             cache.insert(b.hash(), b.clone());
         }
-        let (seed, tip) = select_walk_seed(&cache, |h| *h == stored).unwrap();
+        let (seed, tip) = select_walk_seed(&cache, |h| *h == stored, &BranchRank::Depth).unwrap();
         assert_eq!(seed.hash(), a1.hash());
         assert_eq!(tip, a2.hash());
-        assert_eq!(cached_branch_tip(&cache, a1.hash()), a2.hash());
-        assert_eq!(cached_branch_tip(&cache, stale.hash()), stale.hash());
+        assert_eq!(
+            cached_branch_tip(&cache, a1.hash(), &BranchRank::Depth),
+            a2.hash()
+        );
+        assert_eq!(
+            cached_branch_tip(&cache, stale.hash(), &BranchRank::Depth),
+            stale.hash()
+        );
     }
 
     #[test]
@@ -238,6 +320,6 @@ mod tests {
         let stored = crypto::hash::hash(b"stored");
         let a = blk(stored, 100);
         let cache = HashMap::from([(a.hash(), a)]);
-        assert!(select_walk_seed(&cache, |h| *h == stored).is_none());
+        assert!(select_walk_seed(&cache, |h| *h == stored, &BranchRank::Depth).is_none());
     }
 }

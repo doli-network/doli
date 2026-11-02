@@ -51,6 +51,7 @@ pub(super) fn att_event(payload: usize) -> NetworkEvent {
 pub(super) fn sync_resp(session_id: u64, payload: usize) -> NetworkEvent {
     NetworkEvent::SyncResponse {
         peer_id: PeerId::random(),
+        request: None,
         response: SyncResponse::StateChunk {
             session_id,
             body: vec![0x5c; payload],

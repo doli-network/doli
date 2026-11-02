@@ -60,6 +60,7 @@ impl Node {
         let local_height = match self.block_store.get_height_by_hash(&attestation.block_hash) {
             Ok(Some(h)) => h,
             _ => {
+                self.credit_fork_attester(&attestation).await;
                 self.maybe_fetch_attested_block(&attestation.block_hash, source_peer)
                     .await;
                 let bls_valid =
@@ -82,6 +83,28 @@ impl Node {
         }
         self.flush_finalized_to_archive().await;
         relay(&mut self.attest_seen, bls_valid)
+    }
+
+    /// INC-I-289 K-1: a member's attestation for a fork-cache or retained hash backs
+    /// that hash at the reorg doors; the node's own attestation never does. Below
+    /// the INC-I-288 gate no door reads the credit, so none is kept.
+    async fn credit_fork_attester(&mut self, a: &Attestation) {
+        if !self.weighs_by_support().await {
+            return;
+        }
+        let own = self.producer_key.as_ref().map(|k| *k.public_key());
+        let fork_only = self.wedge_retained_tips.contains(&a.block_hash)
+            || self
+                .fork_block_cache
+                .read()
+                .await
+                .contains_key(&a.block_hash);
+        if fork_only && own != Some(a.attester) {
+            crate::metrics::FORK_CREDITS.inc();
+            self.attest_seen
+                .fork_credit
+                .credit(a.block_hash, a.attester, a.slot);
+        }
     }
 
     /// Hand a gossip vote to the updater and return its relay verdict: Accept

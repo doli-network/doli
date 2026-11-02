@@ -252,6 +252,139 @@ bins/node has WRITE-ONLY access to finality (the erase); the read predicate has 
 Branch identity is computed twice (checkpoint_health, majority_best_hash) and routed only to paths
 that destroy history (snap target) or write a label (checkpoint tag). 2 absorbing states, unnamed,
 silent. 3 lossy escapes reachable by a full-history node.
+INC-I-288 addendum: 2 more authorities, not in the 13, also decided the branch (15 in fact):
+X1 FORK_GUARD slot rule (block_handling.rs `is_better` arm: drop the better-slot sibling unweighed)
+· X2 rollback clear (reset_sync_for_rollback zeroed our weight, so the first sibling won by delta=1).
+At and above `inc_i_288_fork_choice_activation_height`: X1 merged into A10 (the door weighs it),
+X2 removed (the rollback keeps the weights) → 13. Below the height: 15, unchanged.
+INC-I-288 round 2: no authority removed (still 13 above the height); two A4 inputs narrowed:
+the orphan-guessed height (best+1) no longer raises the network tip height (A4's gap), and an
+own-produced apply no longer opens A4 Gate 1 (peer-delivered applies still do).
+INC-I-288 round 4: 12 above the height. One weight rule: both branches weighed from their
+common ancestor (ReorgHandler::branch_weight), not the lossy base-relative accumulated cache.
+A10 merged into A3 (its own short-circuit, weigh_branches, removed; it acts on A3's delta).
+X3 the INC-I-281 hold's own tie rule (hold_removed_block; unlisted, so 14 in fact before) merged
+into the same verdict: only a strictly heavier sibling holds. A1 stays a door, same weight rule.
+Inputs narrowed: duplicate LRU pushes of a tracked block; same-slot blocks (slot-advance rule
+before the weight record). Below the height: unchanged (round 1's 15, plus X3).
+INC-I-288 round 4b: 12 above the height, none added or removed. X3 now uses A3's branch
+rule (the hold weighs each cached branch on the shared parent, a sibling plus its cached
+descendants, with the plan's candidate sum), so the hold has no weight rule of its own.
+The wedge escape's own slot drop (an A10 input added in round 4) is removed: the slot-advance
+rule is one ReorgHandler weight input (slot_weight) that every fork-block record and the
+gossip door's untracked candidate pass. Our side with an unknown block weight keeps our tip
+(A3 and A1 refuse). Below the height: unchanged.
+INC-I-288 round 4c: 12 above the height, none added or removed. The walk's seed rule (not an
+authority: it picks which branch A3 judges) ranks by A3's branch weight (recorded weight, else
+producer weight), not cached depth, and a rejected seed passes to the next; X3 weighs our
+side as the removed block plus its heaviest cached continuation; the slot-advance input reads
+the local tip height for its gate, like every other INC-I-288 site. Below the height: unchanged.
+INC-I-289: 12 above the height, none added or removed. A4 loses Rules 1 and 1b (the
+weight-free ShallowRollback{1}; SiblingFetch is reached only from them), so A4 no longer
+changes the branch by rollback. A Syncing state no longer blocks production (ResyncInProgress
+still does). Blocks a reorg rewinds are remembered like blocks a rollback removes (rollback
+memory + retained siblings), so their descendants reach A3 through the door. X3 weighs a
+cached block with no record and no stored height at its producer weight (the walk's rule).
+Below the height: unchanged.
+INC-I-289 K-2: no authority added or removed. The finalized checkpoint is persisted (CF_META
+`finality_checkpoint`) and re-armed at start only when the stored chain still holds that hash
+at that height, so the finality guards survive a restart. Snap install admits a snapshot only
+when its anchor provably descends from the finalized block (the canonical hash at its height,
+or a walk of at most 1024 local parent headers that meets the canonical chain at or above the
+finalized height); unproven is refused and the node falls back to normal sync. Below the
+height: unchanged. M-1 (AUDIT-P2-639-001): before the manifest, the snap peer serves the
+headers `f+1..=anchor` through the existing `GetHeaders` request (batches of 500); each parent
+link is checked and the last header must hash to the anchor, which admits a lagging node with
+no local headers; a span above `SNAP_DESCENT_PROOF_MAX_HEADERS` (2,000: one batch per 1 s tick,
+4 batches + the manifest tick is half a 10 s slot) is never proven: the proof moves to a quorum
+peer within the bound, else falls back to block sync before any download. M-2 (AUDIT-P2-639-006): when our canonical index holds the finalized
+block at its height and the common ancestor is at or above that height, the plan door admits
+the branch without the 1000-block ancestry walk (any depth); otherwise the walk decides as before.
+INC-I-289 K-1: no authority added or removed. A1 and A3 weigh a branch as the bond
+(selection_weight_at, the finality unit) of its DISTINCT supporters from the common
+ancestor, each producer once: the producers of its blocks, the attesters named by the bits of
+each branch block whose parent is on the branch (a block's bits attest its parent), and the
+verified gossip attesters the node holds for its blocks from OTHER producers (the finality
+tracker for applied blocks; a bounded map of at most 64 hashes, oldest evicted, for fork-cache
+and retained blocks; neither feeds attendance, the BLS pool or finality). In that map each
+attester holds one credit, its latest by slot: it moves only to a strictly higher slot (a
+same-slot conflict keeps the first) and frees a hash left with no attester. A block's bits count
+only when the block is at/above inc_i_178_attestation_bls_activation_height and the door's
+check of its aggregate (the apply check, never skipped as light) accepts; else they add 0. The
+node's own attestation counts only as a bit in a block on the branch. Not counted: block
+count, the first block's bits. An unsupported own block keeps our tip; an unknown candidate
+block adds nothing; the comparison (strictly heavier; the gossip door's tie switch) is
+unchanged. Below the height: unchanged. Like the plan door, the gossip door applies its
+finality refusal before it weighs either side, so a branch past finality reads no support.
+The support view shares each cached block's attestation facts (bitfield, aggregate) behind one
+handle per snapshot; a ranking reads them without copying (no authority added or removed).
+The node builds the support view (gossip door, recovered-fork evaluation, wedge plan) and credits fork-only gossip
+attesters only when its local tip is at/above inc_i_288_fork_choice_activation_height (the
+doors' `weighs_from_ancestor` predicate); below it neither exists (no authority added or removed).
+A candidate branch (both doors and the cached-branch ranking) weighs 0 when one of its blocks has a
+known slot not above its known parent's slot (apply's `SlotNotAdvancing`, the comparator the count
+rule's `slot_weight` uses), so a branch apply would reject never wins a plan.
+INC-I-289 N-3: no authority added or removed. X3, the walk's seed rule (and the branch tip a
+lost walk marks rejected), the cached-child drain order, the eviction pin and the body-retry
+branch tip rank a cached branch in the same unit: the bond of the distinct supporters of each
+cached chain block..tip, the best chain under a block taken over its cached tips (ties: lower
+slot, then lower hash, child by child); a cached child whose slot is not above its cached parent's
+does not end the parent's chain (the parent stays a tip, the child's path weighs 0; INC-I-289 O-1). X3 weighs our side as the removed block plus its best
+cached continuation, whole. Below the height: unchanged (cached depth; X3 keeps the handler
+weighing).
+INC-I-292 (INC-I-289 N-1): no authority added or removed. run_reorg's success tail (Normal mode)
+runs the ExtendsTip drain on the new tip's cached children: the existing drain intake at a second
+call site; X3 still gates re-adoption of a removed block. Not gated: same above and below the height.
+INC-I-289 L-1/L-2 (AUDIT-P2-639-004): no authority added or removed; a changed INPUT of A1, A3
+and X3. The support view takes its bonds (selection_weight_at at the epoch start), decode list
+(producer_list) and BLS keys (the applied set) from ONE epoch table for both branches: the table
+of the epoch that holds the common ancestor of the candidate and the local chain (the ranking:
+each cached branch with the table of the point where IT meets the local chain, else the tip's
+epoch when that point is unknown; INC-I-289 O-1). Tables come
+from a local store in cf_meta (`epoch_table:` ++ epoch start, not in the state root): written
+after every boundary block (and every epoch-0 block) commits, below the height too; pruned to
+every epoch within MAX_REORG_DEPTH of the tip plus one epoch, at least 4 (4 mainnet, 29 testnet,
+251 devnet); deleted when its boundary block is rolled back; a table whose boundary hash is not
+the stored canonical block is not used; a snap install keeps only the anchor epoch's table; at
+node start and after every non-boundary block, a tip epoch with no stored table gets the live
+table, keyed by the canonical block at the epoch start (first start of a build, lost put). Bits
+encoded against a list that changed after the ancestor weigh 0 on both sides. No table for the
+ancestor's epoch (and it is not the tip's epoch): the door refuses the reorg, counts
+doli_fork_choice_table_missing_total, logs one FORK_TABLE line per ancestor hash; the ranking
+weighs only that branch 0 (a Hash::ZERO-parent orphan past epoch 0's window included) and counts
+nothing. A door never takes the tip table for an older epoch; the ranking takes the tip's epoch
+only for an unknown attach point, and a missing table zeroes only its own branch. Below the height: unchanged.
+INC-I-293 F2: no authority added or removed. At/above the height the Orphan arm (parent neither
+stored nor retained) also calls the existing walk starter try_trigger_fork_recovery after the
+unchanged ORPHAN_CHASE; the walk still feeds A3. The walk asks the orphan's sender, else a
+peer whose reported tip is off our chain (R-2 103). Below the height: unchanged.
+INC-I-293 F3: no authority added or removed. At/above the height a sibling the wedge door keeps
+retained and off the chain hands its cached children, depth-first, to the same door call
+(at most WEDGE_RETAINED_CAP = 64 calls, stops when the tip moves), so a root that arrives last
+is weighed with its branch by A3. Below the height: unchanged.
+INC-I-293 F1: no authority added or removed. At/above the height the attestation fetch keeps its
+entry until the block is held (or the 30 s expiry) and re-asks the relayer, or the peer that
+inherited it at disconnect by reporting the same off-chain tip; at most 2 per peer per tick (R-2 101-103).
+INC-I-293 S-1: no authority added or removed. At/above the height both doors (A3) refuse a
+candidate already on our chain (gossip door: candidate block canonical; plan door: empty new
+chain); the walk-level R1 fence in fork_walk.rs is removed (one authority). Below: unchanged.
+INC-I-293 S-2: no authority added or removed. At/above the height every walk caller (Orphan,
+Wedged, ReorgCandidate fallback) asks an evidence peer (tip off our chain), every non-answer
+(None, silence past the request timeout, a refused body, a bound trip) marks the peer and moves
+the walk to the next one before any alternate (INC-I-293 U-1; a None counts only when it answers
+the walk's own by-hash request, matched by the local outbound request id; INC-I-293 U-2), the
+walk holds at most 64 × `max_block_size` of bodies (a bound trip is not blamed) and refuses (and
+blames) a body that does not match its header at intake (INC-I-293 U-1: including an aggregate
+on a body with no bit set, by `aggregate_fits_bitfield`, shared with block validation). The
+attestation refetch retires a relayer for the exact hash its None answered (matched by the local
+outbound request id); the entry moves to a peer reporting the same off-chain tip or is removed
+(INC-I-293 U-2). Below the height: unchanged.
+INC-I-293 U-1..U-3: 12 above the height, none added or removed. Gate reads in non-test code that
+select behaviour: 15 -> 16 by the field name, plus one by the node predicate. Added:
+manager/fork_walk.rs reply_skips_walk (`local_height + 1 >=` the height; pending_is_walk_fetch
+runs only behind it) and attest_refetch.rs retire_attest_fetch (weighs_by_support). The intake
+bound and the aggregate check sit inside walk_intake's existing read; hand_over runs below the
+height with an empty evidence list and returns false (the old path). Below the height: unchanged.
 ```
 
 ### Proposed (after M6)
@@ -291,7 +424,7 @@ Every milestone that touches consensus-adjacent code re-answers the three questi
 
 | Metric | Current (measured) | Proposed (after M6) | Radical minimum |
 |--------|---------|----------------|----------|
-| Distinct branch authorities | 13 (A1-A10, F1-F3) | 4 (fork_choice, converge, FinalityTracker, + SiblingFetch until REQ-FORK-019) | 3 |
+| Distinct branch authorities | 12 above the INC-I-288 height (census baseline 13: A1-A10, F1-F3) | 4 (fork_choice, converge, FinalityTracker, + SiblingFetch until REQ-FORK-019) | 3 |
 | Fork-choice planners | 2 + 1 dead wrapper | 1 | 1 |
 | Finality stores | 3 + 2 depths | 1 + 1 depth (D1 deleted in M1) | 1 |
 | Rollback doors / guard regimes | 4 primitives, 2 implicit regimes | 1 door, 4 named authorities | 2 primitives |

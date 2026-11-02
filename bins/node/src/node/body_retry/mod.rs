@@ -210,9 +210,10 @@ impl Node {
 
     /// Fork choice for the tip of the cached chain that descends from `hash`.
     async fn retry_branch(&mut self, hash: Hash) {
+        let rank = self.branch_rank().await;
         let tip = {
             let cache = self.fork_block_cache.read().await;
-            cache.get(&cached_branch_tip(&cache, hash)).cloned()
+            cache.get(&cached_branch_tip(&cache, hash, &rank)).cloned()
         };
         let Some(tip) = tip.filter(|t| t.hash() != hash) else {
             return;

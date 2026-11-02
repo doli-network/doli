@@ -8,10 +8,10 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crypto::{Hash, KeyPair};
+use crypto::{Hash, KeyPair, PublicKey};
 use doli_core::consensus::ConsensusParams;
 use doli_core::validation::ValidationMode;
-use doli_core::Block;
+use doli_core::{Attestation, Block, Network, NetworkParams};
 use doli_node::node::{Node, RollbackAuthority, RollbackOutcome};
 use network::protocols::{SyncRequest, SyncResponse};
 use network::PeerId;
@@ -75,8 +75,13 @@ fn chain(params: &ConsensusParams, keys: &[KeyPair], prev: Hash, slots: &[u32]) 
 
 /// Base h=1..=F, then the node's own dead D1 (h=F+1) and D2 (h=F+2): tip = D2.
 pub async fn rig() -> Rig {
+    rig_with(3).await
+}
+
+/// [`rig`] with `n` bonded producers (keys[0] is the node's own key).
+pub async fn rig_with(n: usize) -> Rig {
     let tmp = TempDir::new().unwrap();
-    let keys: Vec<KeyPair> = (0..3).map(|_| KeyPair::generate()).collect();
+    let keys: Vec<KeyPair> = (0..n).map(|_| KeyPair::generate()).collect();
     let mut node = Node::new_for_test(tmp.path().to_path_buf(), keys.clone())
         .await
         .expect("Node::new_for_test");
@@ -301,6 +306,139 @@ pub async fn sibling_vs_removed(r: &Rig, s: &Block, t: &Block, height: u64) -> (
         .map(|p| p.effective_weight(height))
         .expect("fixture: T's producer is registered");
     (added, w_t)
+}
+
+pub const AH_ENV: &str = "DOLI_INC_I_288_FORK_CHOICE_ACTIVATION_HEIGHT";
+const CHILD_ENV: &str = "INC_I_281_BELOW_AH_CHILD";
+pub const BELOW_AH: u64 = 1_000_000_000;
+
+/// INC-I-289: parent re-execs test `name` (crate-root fn name) alone with the
+/// INC-I-288 gate far above every test height; returns true in the child only.
+pub fn in_below_ah_child(name: &str) -> bool {
+    if std::env::var_os(CHILD_ENV).is_some() {
+        let gate = NetworkParams::load(Network::Devnet).inc_i_288_fork_choice_activation_height;
+        assert_eq!(gate, BELOW_AH, "child must pick up the AH env override");
+        return true;
+    }
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([name, "--exact", "--test-threads=1", "--nocapture"])
+        .env(CHILD_ENV, "1")
+        .env(AH_ENV, BELOW_AH.to_string())
+        .output()
+        .expect("spawn child test process");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("1 passed"),
+        "below-AH child failed or did not run:\n{stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    false
+}
+
+/// Producers the INC-I-289 above-gate twins need: one sibling block plus the
+/// non-own attesters out-weighs a removed branch of three distinct producers.
+pub const BOND_KEYS: usize = 5;
+
+/// [`rig_with`] `BOND_KEYS`, asserted to run at/above the INC-I-288 gate.
+pub async fn bond_rig() -> Rig {
+    let r = rig_with(BOND_KEYS).await;
+    let gate = r
+        .node
+        .config
+        .network
+        .params()
+        .inc_i_288_fork_choice_activation_height;
+    assert!(
+        gate <= F,
+        "fixture: the node must run above the gate ({gate})"
+    );
+    r
+}
+
+fn own(r: &Rig) -> PublicKey {
+    *r.node.producer_key.as_ref().expect("own key").public_key()
+}
+
+/// INC-I-289 K-1: `s` cached, then attested over gossip by every non-own producer
+/// (the node's own attestation never counts; a fork block counts once cached).
+pub async fn back_sibling(r: &mut Rig, s: &Block, height: u64) {
+    r.node
+        .fork_block_cache
+        .write()
+        .await
+        .insert(s.hash(), s.clone());
+    let own = own(r);
+    let keys: Vec<KeyPair> = r.keys.clone();
+    for k in keys.iter().filter(|k| *k.public_key() != own) {
+        let a = Attestation::new(
+            s.hash(),
+            s.header.slot,
+            height,
+            1,
+            k.private_key(),
+            *k.public_key(),
+        );
+        assert!(a.verify().is_ok(), "fixture: attestation self-signed");
+        r.node
+            .on_new_attestation(a.to_bytes(), PeerId::random())
+            .await;
+    }
+}
+
+/// K-1 support in bond as `support_view` counts it for blocks without bits: each
+/// block's producer, plus every non-own producer for a `backed` block (the
+/// twins' only gossip), each distinct supporter once.
+pub async fn bond_support(r: &Rig, branch: &[&Block], backed: &[Hash]) -> u64 {
+    let own = own(r);
+    let height = r.node.chain_state.read().await.best_height;
+    let audit = r
+        .node
+        .config
+        .network
+        .params()
+        .security_audit_activation_height;
+    let ps = r.node.producer_set.read().await;
+    let mut who = std::collections::BTreeMap::new();
+    for b in branch {
+        who.insert(*b.header.producer.as_bytes(), b.header.producer);
+        if backed.contains(&b.hash()) {
+            let others = r
+                .keys
+                .iter()
+                .map(|k| *k.public_key())
+                .filter(|pk| *pk != own);
+            who.extend(others.map(|pk| (*pk.as_bytes(), pk)));
+        }
+    }
+    who.values()
+        .map(|pk| {
+            let p = ps
+                .get_by_pubkey(pk)
+                .expect("fixture: supporter is a producer");
+            p.selection_weight_at(height, audit)
+        })
+        .sum()
+}
+
+/// The twin's asymmetry: the sibling branch wins by bond support while it is not
+/// longer than the removed branch, so a 1-per-block rule would not hold.
+pub async fn assert_bond_heavier(r: &Rig, cell: &str, removed: &[&Block], sibling: &[&Block]) {
+    let backed: Vec<Hash> = sibling.iter().map(|b| b.hash()).collect();
+    let ours = bond_support(r, removed, &[]).await;
+    let theirs = bond_support(r, sibling, &backed).await;
+    println!(
+        "INC289_TWIN {cell} support removed={ours} sibling={theirs} blocks removed={} sibling={}",
+        removed.len(),
+        sibling.len()
+    );
+    assert!(
+        theirs > ours,
+        "{cell}: sibling support {theirs} must exceed {ours}"
+    );
+    assert!(
+        sibling.len() <= removed.len(),
+        "{cell}: the sibling branch must not be longer than the removed one"
+    );
 }
 
 pub fn probe_reapply(path: &str, readopted: bool) {

@@ -30,6 +30,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bound on remembered (branch tip, local tip) verdicts that did not win fork choice.
 const MAX_REJECTED_BRANCHES: usize = 32;
 
+/// INC-I-293 U-1: at/above the INC-I-288 gate one walk holds at most this many
+/// blocks of the era block size limit (`consensus::max_block_size`), seed included.
+pub(crate) const WALK_FULL_BLOCKS: usize = 64;
+
 /// Active recovery session state
 struct ActiveRecovery {
     /// Blocks collected so far, newest first (tip → ancestor direction)
@@ -48,6 +52,11 @@ struct ActiveRecovery {
     request_sent_at: Option<Instant>,
     /// Alternate peers to try if primary fails or times out
     alternate_peers: Vec<PeerId>,
+    /// INC-I-293 S-2: evidence peers a `None` answer hands the walk to, in order.
+    /// Set by the node at/above the INC-I-288 gate only; empty: `None` cancels.
+    handover: VecDeque<PeerId>,
+    /// Sum of `Block::size()` over `blocks`; counted from the first bounded hop.
+    held_bytes: Option<usize>,
 }
 
 /// Result of a completed fork recovery
@@ -131,6 +140,8 @@ impl ForkRecoveryTracker {
             last_progress_at: Instant::now(),
             request_sent_at: None,
             alternate_peers: Vec::new(),
+            handover: VecDeque::new(),
+            held_bytes: None,
         });
         true
     }
@@ -139,6 +150,13 @@ impl ForkRecoveryTracker {
     pub fn set_alternate_peers(&mut self, peers: Vec<PeerId>) {
         if let Some(recovery) = self.active.as_mut() {
             recovery.alternate_peers = peers.into_iter().filter(|p| *p != recovery.peer).collect();
+        }
+    }
+
+    /// INC-I-293 S-2: the evidence peers a `None` answer hands this walk to.
+    pub fn set_handover_peers(&mut self, peers: Vec<PeerId>) {
+        if let Some(recovery) = self.active.as_mut() {
+            recovery.handover = peers.into_iter().filter(|p| *p != recovery.peer).collect();
         }
     }
 
@@ -159,18 +177,24 @@ impl ForkRecoveryTracker {
             if sent_at.elapsed() <= REQUEST_TIMEOUT {
                 return None; // Still waiting, not timed out yet
             }
-            // No alternates left (`?` = None) — let the session timeout handle it
-            let next_peer = recovery.alternate_peers.pop()?;
-            warn!(
-                "Fork recovery: request to {} timed out after {}s — failing over to {}",
-                recovery.peer,
-                sent_at.elapsed().as_secs(),
-                next_peer
-            );
-            recovery.peer = next_peer;
-            recovery.pending = false;
+            let silent = recovery.peer;
+            // INC-I-293 U-1: the next evidence peer first; alternates only after them.
+            if !self.hand_over(silent, "did not answer in time for") {
+                let recovery = self.active.as_mut()?;
+                // No alternates left (`?` = None) — let the session timeout handle it
+                let next_peer = recovery.alternate_peers.pop()?;
+                warn!(
+                    "Fork recovery: request to {} timed out after {}s — failing over to {}",
+                    recovery.peer,
+                    sent_at.elapsed().as_secs(),
+                    next_peer
+                );
+                recovery.peer = next_peer;
+                recovery.pending = false;
+            }
             // Fall through to send new request below
         }
+        let recovery = self.active.as_mut()?;
         recovery.pending = true;
         recovery.request_sent_at = Some(Instant::now());
         Some((recovery.peer, recovery.next_parent))
@@ -211,15 +235,70 @@ impl ForkRecoveryTracker {
                 true
             }
             None => {
-                self.cancel("peer does not have block");
+                if !self.hand_over(peer, "does not have") {
+                    self.cancel("peer does not have block");
+                }
                 true
             }
         }
     }
 
+    /// INC-I-293 U-1: `peer` gave no usable answer for the pending fetch. It is
+    /// marked for this walk (never asked again) and the same fetch moves to the
+    /// next evidence peer; false: no evidence peer is left (the caller decides).
+    pub fn hand_over(&mut self, peer: PeerId, what: &str) -> bool {
+        let Some(recovery) = self.active.as_mut() else {
+            return false;
+        };
+        recovery.handover.retain(|p| *p != peer);
+        recovery.alternate_peers.retain(|p| *p != peer);
+        let Some(next) = recovery.handover.pop_front() else {
+            return false;
+        };
+        warn!(
+            "Fork recovery: {} {} block {:.16} — asking evidence peer {}",
+            peer, what, recovery.next_parent, next
+        );
+        recovery.peer = next;
+        recovery.pending = false;
+        recovery.request_sent_at = None;
+        true
+    }
+
+    /// INC-I-293 S-2: false (nothing counted) when holding `blk` would pass `max`
+    /// body bytes; else `blk` is counted, as the pending answer it is pushed next.
+    pub fn admit_bytes(&mut self, blk: &Block, max: usize) -> bool {
+        let Some(recovery) = self.active.as_mut() else {
+            return true;
+        };
+        let held = *recovery
+            .held_bytes
+            .get_or_insert_with(|| recovery.blocks.iter().map(Block::size).sum());
+        let after = held.saturating_add(blk.size());
+        if after > max {
+            return false;
+        }
+        recovery.held_bytes = Some(after);
+        true
+    }
+
     /// Does `blk` answer the walk's pending fetch from `peer`?
     pub fn is_pending_answer(&self, peer: PeerId, blk: &Block) -> bool {
         matches!(&self.active, Some(r) if r.pending && r.peer == peer && blk.hash() == r.next_parent)
+    }
+
+    /// INC-I-293 U-2: the hash this walk waits for from `peer`, if it waits on it.
+    pub fn awaited_from(&self, peer: PeerId) -> Option<Hash> {
+        self.active
+            .as_ref()
+            .filter(|r| r.pending && r.peer == peer)
+            .map(|r| r.next_parent)
+    }
+
+    /// (peer, hash) of the walk's pending fetch: a `None` from that peer answers it.
+    pub fn pending_fetch(&self) -> Option<(PeerId, Hash)> {
+        let r = self.active.as_ref().filter(|r| r.pending)?;
+        Some((r.peer, r.next_parent))
     }
 
     /// Check if the chain connected to our store.
@@ -340,3 +419,15 @@ impl Default for ForkRecoveryTracker {
 #[cfg(test)]
 #[path = "fork_recovery_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "fork_recovery_walk_bytes_tests.rs"]
+mod walk_bytes_tests;
+
+#[cfg(test)]
+#[path = "fork_recovery_walk_bound_tests.rs"]
+mod walk_bound_tests;
+
+#[cfg(test)]
+#[path = "fork_recovery_walk_intake_tests.rs"]
+mod walk_intake_tests;

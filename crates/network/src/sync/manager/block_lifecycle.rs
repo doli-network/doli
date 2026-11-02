@@ -28,11 +28,27 @@ impl SyncManager {
         producer_weight: u64,
         prev_hash: Hash,
     ) {
+        self.block_applied_with_origin(hash, height, slot, producer_weight, prev_hash, false);
+    }
+
+    /// `block_applied_with_weight`, plus whether this node produced the block. At/above
+    /// the INC-I-288 gate an own block is not post-rollback progress for Gate 1
+    /// (INV-SYNC-010).
+    pub fn block_applied_with_origin(
+        &mut self,
+        hash: Hash,
+        height: u64,
+        slot: u32,
+        producer_weight: u64,
+        prev_hash: Hash,
+        own: bool,
+    ) {
         // Record block with weight for fork choice rule.
         // INC-I-147 D6: pass the REAL chain height — deriving it from the parent yields
         // a per-process counter once the node restarts mid-chain.
         self.reorg_handler
             .record_block_with_height(hash, prev_hash, producer_weight, height);
+        self.reorg_handler.note_block_slot(hash, slot);
 
         self.local_height = height;
         self.local_hash = hash;
@@ -52,7 +68,9 @@ impl SyncManager {
             self.recent_canonical_hashes.pop_front();
         }
 
-        self.rollback_memory.note_applied(&hash, Instant::now());
+        if !own || height < self.config.inc_i_288_fork_choice_activation_height {
+            self.rollback_memory.note_applied(&hash, Instant::now());
+        }
         self.network.blocks_applied += 1;
         self.network.last_block_applied = Instant::now();
         self.network.last_sync_activity = Instant::now();
@@ -407,20 +425,29 @@ impl SyncManager {
     /// `get_height` resolves a hash to its REAL chain height. `crates/network` has no
     /// `doli-storage` dependency, so the block-store lookup arrives as a closure from
     /// `bins/node` (INC-I-204 M5 / INV-SYNC-012).
+    /// `get_support` names each block's supporters (INC-I-289 K-1, read only at/above
+    /// the INC-I-288 gate).
     pub fn handle_new_block_weighted(
         &mut self,
         block: Block,
         producer_weight: u64,
         get_height: impl Fn(&Hash) -> Option<u64>,
+        get_support: impl Fn(&Hash) -> Option<super::super::reorg::BlockSupport>,
     ) -> Option<super::super::reorg::ReorgResult> {
         let finality = self.fork_choice_finality();
-        self.reorg_handler.check_reorg_weighted(
+        self.reorg_handler.check_reorg_supported(
             &block,
             self.local_hash,
             producer_weight,
             get_height,
+            get_support,
             finality,
         )
+    }
+
+    /// INC-I-289: the verified gossip attesters held for each pending block.
+    pub fn pending_attesters(&self) -> Vec<(Hash, Vec<crypto::PublicKey>)> {
+        self.finality_tracker.pending_attesters()
     }
 
     /// The derived finality view every fork-choice door reads (INC-I-204 M5).
@@ -433,6 +460,7 @@ impl SyncManager {
             finalized_height: cp.map(|c| c.height),
             finalized_hash: cp.map(|c| c.block_hash),
             local_tip_height: self.local_height,
+            finalized_on_canonical: false,
         }
     }
 
@@ -487,6 +515,27 @@ impl SyncManager {
     ) {
         self.reorg_handler
             .record_fork_block_with_height(hash, prev_hash, weight, real_height);
+    }
+
+    /// Records a fork block at `slot`; at/above the INC-I-288 gate (local tip) via the slot rule.
+    pub fn record_fork_block_at_slot(
+        &mut self,
+        hash: Hash,
+        prev_hash: Hash,
+        weight: u64,
+        real_height: u64,
+        slot: u32,
+        parent_slot: Option<u32>,
+    ) -> u64 {
+        let rh = &mut self.reorg_handler;
+        let weight = if rh.weighs_from_ancestor(self.local_height) {
+            rh.slot_weight(slot, &prev_hash, parent_slot, weight)
+        } else {
+            weight
+        };
+        rh.record_fork_block_with_height(hash, prev_hash, weight, real_height);
+        rh.note_block_slot(hash, slot);
+        weight
     }
 
     /// Seed the reorg handler with the snap sync tip so fork detection works immediately.
@@ -713,9 +762,15 @@ impl SyncManager {
         // retry from the new (rolled-back) tip. If peers don't recognize it,
         // the empty-headers counter will escalate to genesis resync.
         self.recovery_phase = super::RecoveryPhase::Normal;
-        // Clear stale weight history to prevent minority fork weights from
-        // contaminating future fork choice decisions after a resync.
-        self.reorg_handler.clear();
+        // INC-I-288: the caller already moved local_* to the new tip. At/above the
+        // gate fork choice keeps its memory; our weight is the new tip's recorded
+        // weight (0 when untracked, the same value a clear leaves).
+        if self.local_height >= self.config.inc_i_288_fork_choice_activation_height {
+            let weight = self.reorg_handler.chain_weight(&self.local_hash);
+            self.reorg_handler.set_current_weight(weight);
+        } else {
+            self.reorg_handler.clear();
+        }
         self.reset_sync_buffers();
     }
 

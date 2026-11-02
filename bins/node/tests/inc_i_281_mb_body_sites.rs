@@ -290,6 +290,8 @@ async fn relay_junk_then_honest_copy() {
     wrong.extend(deliver(&mut fx, &br[0], relay).await);
     let _ = deliver(&mut fx, &junk, relay).await;
     wrong.extend(deliver(&mut fx, &br[1], relay).await);
+    // INC-I-289 sweep: (a) — C (all by the node's key) beat D by block count at C_B+2 → non-own producers attest the cached C_B+1 before the tip.
+    fx.attest(&br[1], fx.b() + 1).await;
     wrong.extend(deliver(&mut fx, &br[2], relay).await);
     if let Some(w) = landed(&fx, &br).await {
         wrong.push(format!(
@@ -336,6 +338,8 @@ async fn walk_replays_a_refused_variant() {
     let (logs, g) = logged();
     let _ = deliver(&mut fx, &br[0], h1).await;
     let _ = deliver(&mut fx, &v, a).await;
+    // INC-I-289 sweep: (a) — the tip triggered the reorg by block count → non-own producers attest the cached C_B+1 hash, so the reorg and the replay walk still reach the variant.
+    fx.attest(&br[1], fx.b() + 1).await;
     let _ = deliver(&mut fx, &br[2], h1).await;
     let pre = fx.node.check_producer_eligibility(&v).await;
     assert!(

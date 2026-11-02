@@ -173,7 +173,9 @@ impl Node {
                 //
                 // Legitimate reorg comes through header-first sync, not gossip.
                 // O(1): one get_block_height + one get_block_by_height lookup.
-                if is_better {
+                // INC-I-288: at/above its gate the slot no longer decides; the weight
+                // door below weighs every sibling.
+                if is_better && fork_height < net.inc_i_288_fork_choice_activation_height {
                     // INC-I-040: If the dropped block has a BETTER (lower) slot,
                     // WE are on the losing fork. Signal stuck_fork for
                     // recovery via the RecoveryCoordinator on the next
@@ -262,6 +264,15 @@ impl Node {
                 );
                 // Cache the orphan so it's available when the missing parent arrives.
                 self.cache_block_with_eviction(block_hash, block).await;
+                // INC-I-293 F2: at/above the gate the by-height chase cannot reach a
+                // missing fork root at or below our tip; the by-hash walk can. An orphan
+                // beyond the reorg depth is a catch-up: header-first sync's job.
+                let best_slot = self.chain_state.read().await.best_slot;
+                let within_reorg_depth =
+                    block_slot <= best_slot.saturating_add(network::MAX_REORG_DEPTH as u32);
+                if within_reorg_depth && self.weighs_by_support().await {
+                    self.try_trigger_fork_recovery_from(Some(source_peer)).await;
+                }
                 return Ok(());
             }
 
@@ -289,12 +300,14 @@ impl Node {
                         .unwrap_or(1)
                 };
 
+                let view = self.gated_support_view(block.header.prev_hash).await;
                 let reorg_result = {
                     let store = &self.block_store;
                     self.sync_manager.write().await.handle_new_block_weighted(
                         block.clone(),
                         producer_weight,
                         |h| store.get_height_by_hash(h).ok().flatten(),
+                        |h| view.as_ref()?.support(store, h),
                     )
                 };
 
@@ -395,11 +408,7 @@ impl Node {
         // than that divergence needs, but narrowing it to eligibility-only re-arms the
         // Full-only strict EpochReward check (validation_checks.rs:1033), which decodes
         // the bitfield against the SAME divergent list — valid epoch blocks would bail.
-        let mode = if self.snap_sync_height.is_some() || self.floor_fallback_window {
-            ValidationMode::Light
-        } else {
-            ValidationMode::Full
-        };
+        let mode = self.tip_apply_mode();
         if let Err(e) = self.apply_peer_body(block, mode).await {
             let err_str = e.to_string();
             warn!(
@@ -1046,6 +1055,10 @@ impl Node {
                 cache.remove(hash);
             }
         }
+        if mode == ReorgMode::Normal {
+            self.remember_reorged_out(&reorg_result.rollback, current_height)
+                .await;
+        }
 
         // INC-I-138 D5: reorg blocks are peer-received — mark peer-confirmed
         // progress so the suppression guard can distinguish BEHIND from SELF-FORK.
@@ -1070,6 +1083,13 @@ impl Node {
         let new_tip_height = self.chain_state.read().await.best_height;
 
         info!("Reorg complete: now at height {}", new_tip_height);
+
+        // INC-I-292: the landed tip's cached children chain on it now, as after an
+        // ExtendsTip apply; the drain keeps the INC-I-281 hold. Restore mode must
+        // end on its prior tip, so it does not drain.
+        if mode == ReorgMode::Normal {
+            self.drain_cached_children(self.tip_apply_mode()).await;
+        }
 
         Ok(None)
     }

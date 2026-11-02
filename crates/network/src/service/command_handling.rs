@@ -14,6 +14,7 @@ use crate::config::NetworkConfig;
 use crate::gossip::{BLOCKS_TOPIC, PRODUCERS_TOPIC, TRANSACTIONS_TOPIC, VOTES_TOPIC};
 use crate::rate_limit::RateLimiter;
 
+use super::sync_requests::OutboundSyncRequests;
 use super::types::NetworkCommand;
 use super::verdict::apply_gossip_verdict;
 
@@ -23,6 +24,7 @@ pub(super) async fn handle_command(
     swarm: &mut Swarm<DoliBehaviour>,
     config: &NetworkConfig,
     rate_limiter: &mut RateLimiter,
+    sync_requests: &mut OutboundSyncRequests,
 ) {
     match command {
         NetworkCommand::BroadcastBlock(block) => {
@@ -86,7 +88,9 @@ pub(super) async fn handle_command(
                 "[SYNC_DEBUG] Sending sync request to peer={}, request={:?}",
                 peer_id, request
             );
-            swarm.behaviour_mut().sync.send_request(&peer_id, request);
+            let sent = request.clone();
+            let id = swarm.behaviour_mut().sync.send_request(&peer_id, request);
+            sync_requests.insert(id, sent);
         }
 
         NetworkCommand::SendStatusResponse { channel, response } => {

@@ -155,6 +155,9 @@ async fn f_9_attest_fetch_fires_at_most_8_get_block_by_hash_per_tick() {
         assert!(Instant::now() < deadline, "setup: A never connected to B");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    // INC-I-293 F1: above the gate the fetch goes to a peer in the sync peer table;
+    // no event loop runs here, so register A as its status exchange would.
+    (b.sync_manager.write().await).add_peer(a_peer, 1, Hash::ZERO, 1);
     let matured = Instant::now() - Duration::from_millis(600);
     let hashes: HashSet<Hash> = (0..40u8)
         .map(|i| Hash::from_bytes([0xC0 ^ i; 32]))

@@ -1,4 +1,5 @@
-use super::fork_walk::{cached_branches, select_walk_seed};
+use super::branch_rank::{ranked_branches, BranchRank};
+use super::fork_walk::select_walk_seed;
 use super::*;
 
 const CACHE_CAP: usize = 100;
@@ -6,11 +7,15 @@ const EVICT_BATCH: usize = 50;
 const MAX_PINNED: usize = 50;
 const MAX_DRAIN: u32 = 50;
 
-/// Cached children of `parent` in drain order: longest cached descendant chain
-/// first, then lower slot, then lower hash.
-pub(super) fn drain_order(cache: &HashMap<Hash, Block>, parent: Hash) -> Vec<Hash> {
-    let branches = cached_branches(cache);
-    let mut kids: Vec<(std::cmp::Reverse<usize>, u32, Hash)> = cache
+/// Cached children of `parent` in drain order: heaviest cached descendant chain
+/// by `rank` first, then lower slot, then lower hash.
+pub(super) fn drain_order(
+    cache: &HashMap<Hash, Block>,
+    parent: Hash,
+    rank: &BranchRank,
+) -> Vec<Hash> {
+    let branches = ranked_branches(cache, rank);
+    let mut kids: Vec<(std::cmp::Reverse<u64>, u32, Hash)> = cache
         .iter()
         .filter(|(_, b)| b.header.prev_hash == parent)
         .map(|(h, b)| (std::cmp::Reverse(branches[h].0), b.header.slot, *h))
@@ -50,10 +55,14 @@ pub(super) fn admit(
     true
 }
 
-/// The walk seed and its longest cached descendant chain, fork-nearest first,
+/// The walk seed and its heaviest cached descendant chain, fork-nearest first,
 /// capped at `MAX_PINNED`.
-fn seed_chain(cache: &HashMap<Hash, Block>, is_canonical: impl Fn(&Hash) -> bool) -> HashSet<Hash> {
-    let Some((seed, tip)) = select_walk_seed(cache, is_canonical) else {
+fn seed_chain(
+    cache: &HashMap<Hash, Block>,
+    is_canonical: impl Fn(&Hash) -> bool,
+    rank: &BranchRank,
+) -> HashSet<Hash> {
+    let Some((seed, tip)) = select_walk_seed(cache, is_canonical, rank) else {
         return HashSet::new();
     };
     let seed_hash = seed.hash();
@@ -91,7 +100,10 @@ impl Node {
         if cache.len() <= CACHE_CAP {
             return true;
         }
-        let pinned = seed_chain(&cache, |h| self.is_canonical(h));
+        drop(cache);
+        let rank = self.branch_rank().await;
+        let mut cache = self.fork_block_cache.write().await;
+        let pinned = seed_chain(&cache, |h| self.is_canonical(h), &rank);
         let mut by_slot: Vec<(u32, Hash)> = cache
             .iter()
             .filter(|(h, _)| !pinned.contains(*h))
@@ -104,13 +116,33 @@ impl Node {
         true
     }
 
+    /// The mode for a block that extends the tip: Light in the post-snap and
+    /// floor-fallback windows (INC-I-010, INC-I-190), else Full.
+    pub(super) fn tip_apply_mode(&self) -> ValidationMode {
+        if self.snap_sync_height.is_some() || self.floor_fallback_window {
+            ValidationMode::Light
+        } else {
+            ValidationMode::Full
+        }
+    }
+
     /// Apply cached blocks that chain on the tip, in `drain_order`. A child
-    /// that fails to apply is dropped and its next sibling is tried.
+    /// that fails to apply is dropped and its next sibling is tried. Runs after
+    /// an ExtendsTip apply and after a reorg lands (INC-I-292).
     pub(super) async fn drain_cached_children(&mut self, mode: ValidationMode) {
         let mut attempts = 0u32;
         'tip: while attempts < MAX_DRAIN {
             let tip_hash = self.chain_state.read().await.best_hash;
-            let order = drain_order(&*self.fork_block_cache.read().await, tip_hash);
+            let kids = (self.fork_block_cache.read().await.values())
+                .filter(|b| b.header.prev_hash == tip_hash)
+                .count();
+            // One child needs no rank: skip the support snapshot.
+            let rank = if kids > 1 {
+                self.branch_rank().await
+            } else {
+                BranchRank::Depth
+            };
+            let order = drain_order(&*self.fork_block_cache.read().await, tip_hash, &rank);
             for h in order {
                 if attempts >= MAX_DRAIN {
                     break 'tip;
@@ -145,45 +177,56 @@ impl Node {
 
     /// INC-I-281: true if a non-fork-choice intake must not apply `block` (a
     /// child of the tip) now: a fork-remedy rollback removed it and a cached
-    /// sibling would win fork choice against it. Decided by fork choice, not a
-    /// timer. Fork choice does not call this.
+    /// sibling branch would win fork choice against it. Decided by fork choice,
+    /// not a timer. Fork choice does not call this.
     pub(super) async fn hold_removed_block(&self, block: &Block) -> bool {
         let hash = block.hash();
         if !self.sync_manager.read().await.removed_by_rollback(&hash) {
             return false;
         }
         let parent = block.header.prev_hash;
-        let siblings: Vec<Hash> = {
-            let cache = self.fork_block_cache.read().await;
-            cache
-                .iter()
-                .filter(|(h, b)| **h != hash && b.header.prev_hash == parent)
-                .map(|(h, _)| *h)
-                .collect()
-        };
+        let siblings: Vec<Hash> = (self.fork_block_cache.read().await)
+            .iter()
+            .filter(|(h, b)| **h != hash && b.header.prev_hash == parent)
+            .map(|(h, _)| *h)
+            .collect();
         if siblings.is_empty() {
             return false;
         }
-        // The rollback cleared the reorg handler: weigh the block as the wedge
-        // escape weighs a sibling (parent weight + producer weight).
-        let height = self.chain_state.read().await.best_height + 1;
-        let weight = {
-            let ps = self.producer_set.read().await;
-            ps.get_by_pubkey(&block.header.producer)
-                .map(|p| p.effective_weight(height))
-                .unwrap_or(1)
-        };
-        let held = {
-            let sync = self.sync_manager.read().await;
-            let rh = sync.reorg_handler();
-            let finality = sync.fork_choice_finality();
-            let ours = rh.chain_weight(&parent).saturating_add(weight);
-            siblings.iter().any(|s| {
-                matches!(
-                    rh.weigh_untracked(&hash, ours, s, finality),
-                    network::WeightVerdict::Heavier | network::WeightVerdict::TieSwitch
-                )
-            })
+        let held = match self.branch_rank().await {
+            // INC-I-288/289: branch against branch from the shared parent (the tip), in
+            // the doors' unit: the removed block plus its best cached continuation
+            // against each cached sibling branch.
+            BranchRank::Bond(mut view, store) => {
+                view.include(block);
+                let mut cache = self.fork_block_cache.read().await.clone();
+                cache.insert(hash, block.clone());
+                let best = ranked_branches(&cache, &BranchRank::Bond(view, store));
+                let ours = best[&hash].0;
+                siblings
+                    .iter()
+                    .any(|s| best.get(s).is_some_and(|(w, _)| *w > ours))
+            }
+            // Below the gate the rollback cleared the reorg handler: weigh the block
+            // as the wedge escape weighs a sibling (parent weight + producer weight).
+            BranchRank::Depth => {
+                let height = self.chain_state.read().await.best_height + 1;
+                let ps = self.producer_set.read().await;
+                let weight = ps
+                    .get_by_pubkey(&block.header.producer)
+                    .map(|p| p.effective_weight(height))
+                    .unwrap_or(1);
+                let sync = self.sync_manager.read().await;
+                let rh = sync.reorg_handler();
+                let finality = sync.fork_choice_finality();
+                let ours = rh.chain_weight(&parent).saturating_add(weight);
+                siblings.iter().any(|s| {
+                    matches!(
+                        rh.weigh_untracked(&hash, ours, s, finality),
+                        network::WeightVerdict::Heavier | network::WeightVerdict::TieSwitch
+                    )
+                })
+            }
         };
         if held
             && self
@@ -198,6 +241,28 @@ impl Node {
             );
         }
         held
+    }
+
+    /// INC-I-289: at/above the INC-I-288 gate, blocks that a reorg rewinds are
+    /// remembered as a fork-remedy rollback remembers them, and stay retained
+    /// siblings, so their descendants reach the weighed door.
+    pub(super) async fn remember_reorged_out(&mut self, rewound: &[Hash], tip_height: u64) {
+        let gate = self
+            .config
+            .network
+            .params()
+            .inc_i_288_fork_choice_activation_height;
+        if tip_height < gate {
+            return;
+        }
+        let mut sync = self.sync_manager.write().await;
+        for h in rewound {
+            sync.note_fork_remedy_removed(*h);
+            if self.wedge_retained_tips.len() >= super::wedge_escape::WEDGE_RETAINED_CAP {
+                self.wedge_retained_tips.clear();
+            }
+            self.wedge_retained_tips.insert(*h);
+        }
     }
 }
 
@@ -264,9 +329,9 @@ mod tests {
             chain.push(prev);
             cache.insert(prev, b);
         }
-        let pinned = seed_chain(&cache, |_| false);
+        let pinned = seed_chain(&cache, |_| false, &BranchRank::Depth);
         assert_eq!(pinned.len(), MAX_PINNED);
         assert!(chain[..MAX_PINNED].iter().all(|h| pinned.contains(h)));
-        assert!(seed_chain(&HashMap::new(), |_| false).is_empty());
+        assert!(seed_chain(&HashMap::new(), |_| false, &BranchRank::Depth).is_empty());
     }
 }

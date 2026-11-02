@@ -614,6 +614,18 @@ lazy_static! {
         ),
         &["outcome"]
     ).unwrap();
+    /// INC-I-289: support views built and fork-only attestations credited for the
+    /// reorg doors (both are read only at/above the INC-I-288 gate).
+    pub static ref SUPPORT_VIEWS_BUILT: IntCounter = IntCounter::new(
+        "doli_support_views_built_total", "Support views built for the reorg doors"
+    ).unwrap();
+    pub static ref FORK_CREDITS: IntCounter = IntCounter::new(
+        "doli_fork_credits_total", "Fork-only attestations credited for the reorg doors"
+    ).unwrap();
+    /// INC-I-289 L-2: reorgs refused because the ancestor's epoch table is not kept.
+    pub static ref FORK_CHOICE_TABLE_MISSING: IntCounter = IntCounter::new(
+        "doli_fork_choice_table_missing_total", "Reorgs refused: no epoch table for the common ancestor"
+    ).unwrap();
 }
 
 lazy_static! {
@@ -873,6 +885,9 @@ pub fn register_metrics() {
     // Fork lifecycle (INC-I-204 M0)
     let _ = REGISTRY.register(Box::new(UNIQUE_CHAIN_TIPS.clone()));
     let _ = REGISTRY.register(Box::new(WEDGE_ESCAPE_OUTCOMES.clone()));
+    let _ = REGISTRY.register(Box::new(SUPPORT_VIEWS_BUILT.clone()));
+    let _ = REGISTRY.register(Box::new(FORK_CREDITS.clone()));
+    let _ = REGISTRY.register(Box::new(FORK_CHOICE_TABLE_MISSING.clone()));
     let _ = REGISTRY.register(Box::new(PRE_ACTIVATION_BRANCH.clone()));
     let _ = REGISTRY.register(Box::new(REORG_FINALITY_PROBE.clone()));
     // INC-I-204 M4.1: the operator escape counter.

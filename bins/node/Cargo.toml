@@ -233,6 +233,17 @@ path = "tests/inc_i_281_mb_body_retry.rs"
 name = "inc_i_281_mb_body_sites"
 path = "tests/inc_i_281_mb_body_sites.rs"
 
+# INC-I-289 J-2 support view only at/above the fork-choice gate — own binary: its
+# below-gate cell re-execs itself with the gate env override and reads process-wide counters.
+[[test]]
+name = "inc_i_289_j2_support_view_gate"
+path = "tests/inc_i_289_j2_support_view_gate.rs"
+
+# INC-I-289 J-3 the bond union's slot-advance screen — own binary (log capture on the plan door).
+[[test]]
+name = "inc_i_289_j3_slot_rule"
+path = "tests/inc_i_289_j3_slot_rule.rs"
+
 # INC-I-236 M2 node intake (gossip pre-filter, snap anchor) and apply-entry locks.
 [[test]]
 name = "inc_i_236_m2_intake_node"
@@ -253,3 +264,134 @@ path = "tests/inc_i_236_m2_p3_arms.rs"
 [[test]]
 name = "inc_i_236_m2_restore_rpc"
 path = "tests/inc_i_236_m2_restore_rpc.rs"
+
+# INC-I-289 / AUDIT-P1-639-001 — own binary, same constraint as
+# m1_snap_install_peak_alloc: the file installs a counting `#[global_allocator]`
+# (per-BINARY) to measure the bytes one cached-branch ranking allocates.
+[[test]]
+name = "inc_i_289_j1_rank_bytes"
+path = "tests/inc_i_289_j1_rank_bytes.rs"
+
+# INC-I-289 gate edge (QA-639-003): every test re-execs itself in a child process
+# with the INC-I-288 gate env override at tip, tip+1 or tip-1 (per-process OnceLock).
+[[test]]
+name = "inc_i_289_j4_gate_edge"
+path = "tests/inc_i_289_j4_gate_edge.rs"
+
+# INC-I-289 K-2 support view bytes below the fork-choice gate: own binary — its
+# counting #[global_allocator] (per-BINARY) measures one recovered-fork door, and its
+# below-gate cell re-execs itself with the gate env override.
+[[test]]
+name = "inc_i_289_k2_view_bytes_below_gate"
+path = "tests/inc_i_289_k2_view_bytes_below_gate.rs"
+
+# INC-I-289 L-2 bounded persisted epoch-table store — own binary: it reads the
+# process-wide table-missing counter and captures the refusal log line.
+[[test]]
+name = "inc_i_289_l2_epoch_table_store"
+path = "tests/inc_i_289_l2_epoch_table_store.rs"
+
+# INC-I-289 L-1 the doors weigh with the ancestor-epoch table — own binary: two
+# devnet nodes on competing branches across an epoch boundary.
+[[test]]
+name = "inc_i_289_l1_ancestor_table"
+path = "tests/inc_i_289_l1_ancestor_table.rs"
+
+# INC-I-289 M-1 snap descent proof (AUDIT-P2-639-001) — own binary: log capture
+# on the bound refusal and a below-AH child re-exec.
+[[test]]
+name = "inc_i_289_m1_snap_descent"
+path = "tests/inc_i_289_m1_snap_descent.rs"
+
+# INC-I-289 M-2 finality lock exit (AUDIT-P2-639-006) — own binary: a below-AH
+# child re-exec and a 1,100-block restart rig.
+[[test]]
+name = "inc_i_289_m2_finality_lock_exit"
+path = "tests/inc_i_289_m2_finality_lock_exit.rs"
+
+# INC-I-289 N-1 snap descent red (AUDIT-P2-639-001) — own binary: two 1,600-block
+# devnet rigs driven through the public snap round.
+[[test]]
+name = "inc_i_289_n1_snap_descent_red"
+path = "tests/inc_i_289_n1_snap_descent_red.rs"
+
+# INC-I-289 N-4 epoch-table bootstrap (AUDIT-P1-644-001) — own binary: restart rigs.
+[[test]]
+name = "inc_i_289_n4_table_bootstrap"
+path = "tests/inc_i_289_n4_table_bootstrap.rs"
+
+# INC-I-289 O-1 cached-branch rank (AUDIT-P2-644-001/-002) — own binary: the
+# process-wide table-missing metric is read as a delta.
+[[test]]
+name = "inc_i_289_o1_rank_table"
+path = "tests/inc_i_289_o1_rank_table.rs"
+
+# INC-I-293 F2 orphan walk (run 647 Q-2) — own binary: the below-AH cell re-execs
+# itself with the INC-I-288 AH env override.
+[[test]]
+name = "inc_i_293_f2_orphan_walk"
+path = "tests/inc_i_293_f2_orphan_walk.rs"
+harness = true
+
+# INC-I-293 F3 root-last red (run 647 Q-2) — own binary: the below-gate cells
+# re-exec themselves with the INC-I-288 AH env override.
+[[test]]
+name = "inc_i_293_f3_root_last"
+path = "tests/inc_i_293_f3_root_last.rs"
+
+# INC-I-293 F1 attest-fetch red (run 647 Q-2) — own binary: real loopback
+# libp2p services and a below-AH child re-exec.
+[[test]]
+name = "inc_i_293_f1_attest_fetch"
+path = "tests/inc_i_293_f1_attest_fetch.rs"
+
+# INC-I-293 R1 stale walk (run 648) — own binary: the below-gate cell re-execs
+# itself with the INC-I-288 AH env override.
+[[test]]
+name = "inc_i_293_r1_stale_walk"
+path = "tests/inc_i_293_r1_stale_walk.rs"
+
+# INC-I-293 R-2 (run 648, finding 103) — own binary: the orphan walk and the
+# attestation refetch ask a peer on the heavier branch; real loopback libp2p
+# services and below-AH child re-execs.
+[[test]]
+name = "inc_i_293_r2_branch_peer"
+path = "tests/inc_i_293_r2_branch_peer.rs"
+
+# INC-I-293 R-2 root priority red (run 648, SEC-FIXVERIFY-647-101) — own binary:
+# real loopback libp2p services and a below-AH child re-exec.
+[[test]]
+name = "inc_i_293_r2_root_priority"
+path = "tests/inc_i_293_r2_root_priority.rs"
+
+# INC-I-293 R-2 junk-fetch bound (run 648, SEC-FIXVERIFY-647-102) — own binary:
+# real loopback libp2p services and a below-AH child re-exec.
+[[test]]
+name = "inc_i_293_r2_junk_bound"
+path = "tests/inc_i_293_r2_junk_bound.rs"
+
+# INC-I-293 S-2 (run 649) — own binary: every walk caller asks an evidence peer and
+# a None answer moves the walk on; below-AH child re-execs.
+[[test]]
+name = "inc_i_293_s2_walk_peer"
+path = "tests/inc_i_293_s2_walk_peer.rs"
+
+# INC-I-293 S-2 (run 649, AUDIT-P2-648-003 / REV-648-001) — own binary: an asked
+# and unanswered attestation fetch does not keep its queue place; real loopback
+# libp2p services and a below-AH child re-exec.
+[[test]]
+name = "inc_i_293_s2_fetch_rotation"
+path = "tests/inc_i_293_s2_fetch_rotation.rs"
+
+# INC-I-293 U-1 (run 651, AUDIT-P2-649-001) — own binary: every non-answer of a
+# walk peer hands the same walk to the next evidence peer; a below-AH child re-exec.
+[[test]]
+name = "inc_i_293_u1_nonanswer"
+path = "tests/inc_i_293_u1_nonanswer.rs"
+
+# INC-I-293 U-2 (run 651, SEC-FIXVERIFY-647-104) — own binary: the attestation
+# refetch rotates away from a relayer that answered None for the hash; real
+# loopback libp2p services and a below-AH child re-exec.
+[[test]]
+name = "inc_i_293_u2_fetch_none_rotation"
+path = "tests/inc_i_293_u2_fetch_none_rotation.rs"

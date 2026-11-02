@@ -83,9 +83,11 @@ async fn snapshot(fx: &Fx) -> Snapshot {
 
 /// Post-genesis fixture and [C_B, C'_{B+1}, C'_{B+2}], C'_{B+1} registered but unscheduled.
 async fn refused_setup() -> (Fx, Vec<Block>) {
-    let fx = fixture_at(post_genesis_offset()).await;
+    let mut fx = fixture_at(post_genesis_offset()).await;
     fx.assert_past_genesis();
     let br = fx.ineligible();
+    // INC-I-289 sweep: (a) — the walk tried [C_B, C'] by block count; under K-1 it ties D ({k0, C'_B+1's producer} vs 2) → non-own producers attest C'_B+1, so the in-reorg check still refuses C'.
+    fx.back(&br[1], fx.b() + 1).await;
     let by = br[1].header.producer;
     assert_ne!(
         by,
@@ -330,6 +332,8 @@ async fn honest_straddle_still_reorgs() {
     let mut fx = fixture_at(post_genesis_offset()).await;
     fx.assert_past_genesis();
     let canon = fx.canonical();
+    // INC-I-289 sweep: (a) — the walked C (all by the node's key) beat D by block count → non-own producers attest C_B+1, so the walk still lands it.
+    fx.back(&canon[1], fx.b() + 1).await;
     let (result, logs) = walk_logged(&mut fx, &canon).await;
     let st = fx.state().await;
     let tip = canon[2].hash();
