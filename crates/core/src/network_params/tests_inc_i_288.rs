@@ -45,7 +45,7 @@ fn load_with(value: Option<&str>) -> [u64; 3] {
 // O3: mainnet value == 867_000 with the env var set (override refused on mainnet)
 // PATHS: defaults(Mainnet) | env_loader(Mainnet, unset) | env_loader(Mainnet, set)
 // MATRIX: 3 outputs x 3 paths x {mainnet, testnet=366_891, devnet=0}
-// AUDIT-P2-629-006 / INC-I-293 ZB-1 — Decision: a failure means mainnet fork choice drifts off its 867_000 pin by default or by one node's .env.
+// INC-I-293 ZB-1 — Decision: a failure means mainnet fork choice drifts off its 867_000 pin by default or by one node's .env.
 #[test]
 fn network_params_mainnet_lock() {
     let defaults = [Network::Mainnet, Network::Testnet, Network::Devnet]

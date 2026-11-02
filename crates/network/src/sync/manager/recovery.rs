@@ -1341,4 +1341,61 @@ mod tests {
             action
         );
     }
+
+    // --- INC-I-294 reproduction ----------------------------------------------
+    //
+    // A node at height H holds a valid, recently applied tip (last apply 20 s
+    // ago, finality two blocks below). Its evidence window still holds two
+    // OrphanGossip entries that are far older than EVIDENCE_TTL: nothing has
+    // called `report()` since, so nothing pruned them. One peer status then
+    // advertises H+1 (gap = 1); no header or sibling for H+1 was ever fetched.
+    //
+    // The module contract (header, "Evidence decays") says evidence older than
+    // EVIDENCE_TTL must not trigger an action. The correct outcome is anything
+    // except a depth-1 rollback of the node's own tip.
+    #[test]
+    fn inc_i_294_expired_orphan_evidence_does_not_roll_back_a_fresh_tip_on_one_block_gap() {
+        let mut coord = RecoveryCoordinator::new();
+        let expired = Instant::now()
+            .checked_sub(EVIDENCE_TTL * 10)
+            .expect("monotonic clock is older than ten evidence lifetimes");
+        coord.evidence.push_back((
+            expired,
+            RecoveryEvidence::OrphanGossip { slot: 2000, gap: 1 },
+        ));
+        coord.evidence.push_back((
+            expired,
+            RecoveryEvidence::OrphanGossip { slot: 2001, gap: 1 },
+        ));
+
+        let mut ctx = base_ctx();
+        ctx.local_height = 1000; // valid tip H
+        ctx.network_tip_height = 1001; // one peer status says H+1
+        ctx.last_applied_secs = 20; // tip applied 20 s ago (recently synced)
+        ctx.last_finality_height = Some(998); // finality at H-2
+        ctx.shallow_rollback_count = 0;
+
+        let action = coord.classify(&ctx);
+        assert!(
+            !matches!(action, RecoveryAction::ShallowRollback { .. }),
+            "INC-I-294: evidence older than EVIDENCE_TTL ({}s) plus a one-block status gap \
+             approved a depth-1 rollback of a valid tip: got {:?}",
+            EVIDENCE_TTL.as_secs(),
+            action
+        );
+    }
+
+    // INC-I-294 control: the same tip and the same one-block status gap with an
+    // EMPTY evidence window. Passes on this tree; it shows that the old evidence
+    // entries above are a required input of the depth-1 approval.
+    #[test]
+    fn inc_i_294_control_one_block_gap_without_evidence_is_header_first() {
+        let coord = RecoveryCoordinator::new();
+        let mut ctx = base_ctx();
+        ctx.local_height = 1000;
+        ctx.network_tip_height = 1001;
+        ctx.last_applied_secs = 20;
+        ctx.last_finality_height = Some(998);
+        assert_eq!(coord.classify(&ctx), RecoveryAction::HeaderFirstSync);
+    }
 }
