@@ -60,6 +60,8 @@ mod tests_inc_i237_tip_race;
 #[cfg(test)]
 mod tests_inc_i289_m1_snap_descent;
 #[cfg(test)]
+mod tests_inc_i293_mainnet_gate_cells;
+#[cfg(test)]
 mod tests_m3_state_session;
 #[cfg(test)]
 mod tests_m5_quorum_anchor;

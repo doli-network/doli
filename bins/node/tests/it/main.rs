@@ -275,6 +275,7 @@ mod inc_i_289_l1_verified_bits;
 mod inc_i_289_n2_tied_fork_above_gate;
 mod inc_i_289_n3_ranking_unit;
 mod inc_i_292_cached_child_after_reorg;
+mod inc_i_293_mainnet_gate_cells;
 mod inc_i_293_s1_door_prefix;
 mod inc_i_293_v1_aggregate_partition;
 mod m1_snap_install_identity;
