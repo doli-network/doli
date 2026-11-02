@@ -6,7 +6,7 @@ When multiple nodes are forked, stuck, or diverged and manual per-node fixes are
 
 ## Prerequisites
 
-- SSH access to all servers (ai1-ai5, ai7-ai11)
+- SSH access to all servers (ai1-ai5, ai7, ai9, ai11)
 - All nodes must be stopped before starting
 - Choose ONE canonical node (highest height, largest data dir)
 
@@ -41,8 +41,8 @@ ssh ai2 "sudo systemctl stop doli-mainnet-seed doli-mainnet-n4 doli-mainnet-n5" 
 ssh ai3 "sudo systemctl stop doli-mainnet-seed doli-mainnet-ivan doli-mainnet-santiago" &
 ssh ai4 "sudo systemctl stop doli-mainnet-n6 doli-mainnet-n7 doli-mainnet-n8" &
 ssh ai5 "sudo systemctl stop doli-mainnet-n9 doli-mainnet-n10 doli-mainnet-n11 doli-mainnet-n12" &
-# ai7-ai11: stop all doli-mainnet-* services
-for s in ai7 ai8 ai9 ai10 ai11; do
+# ai7, ai9, ai11: stop all doli-mainnet-* services
+for s in ai7 ai9 ai11; do
   ssh $s "sudo systemctl stop \$(systemctl list-units --type=service --state=running --no-legend | grep -oE 'doli-mainnet-\S+' | tr '\n' ' ')" &
 done
 wait
@@ -67,7 +67,7 @@ ssh ai4 "rm -rf /mainnet/n6/data/* /mainnet/n7/data/* /mainnet/n8/data/*"
 ssh ai5 "rm -rf /mainnet/n9/data/* /mainnet/n10/data/* /mainnet/n11/data/*"
 ```
 
-### External servers (ai7-ai11) — PRESERVE WALLETS
+### External servers (ai7, ai9, ai11) — PRESERVE WALLETS
 
 **CRITICAL**: ai7 and ai11 have `wallet.json` inside `data/`. Must backup first.
 
@@ -90,10 +90,8 @@ ssh ai11 "for n in folsi miri pastora; do
   sudo rm -rf /var/lib/doli/mainnet/\$n/data/*
 done"
 
-# ai8, ai9, ai10 — no wallet in data, simple wipe
-ssh ai8 "rm -rf /mainnet/leandro/data/*"
+# ai9 — no wallet in data, simple wipe
 ssh ai9 "sudo rm -rf /var/lib/doli/mainnet/blocks /var/lib/doli/mainnet/state_db /var/lib/doli/mainnet/utxo_store /var/lib/doli/mainnet/signed_slots.db"
-ssh ai10 "rm -rf /mainnet/daniel/data/*"
 
 # Restore wallets (sudo + chown required)
 ssh ai7 "for n in adri abraham ori isudoajl alan alessandro; do
@@ -136,7 +134,7 @@ rsync -a --exclude='producer.lock' --exclude='signed_slots.db' /mainnet/ivan/dat
 ssh ai4 "for n in n7 n8; do rsync -a --exclude='producer.lock' --exclude='signed_slots.db' /mainnet/n6/data/ /mainnet/\$n/data/ && echo \"\$n done\"; done"
 ```
 
-**Note**: ai7-ai11 external nodes do NOT need rsync — they recover via snap sync on startup.
+**Note**: ai7, ai9, ai11 external nodes do NOT need rsync — they recover via snap sync on startup.
 
 ## Step 4: Start seeds FIRST
 
@@ -161,7 +159,7 @@ ssh ai5 "sudo systemctl start doli-mainnet-n9 doli-mainnet-n10 doli-mainnet-n11 
 ## Step 6: Start external producers
 
 ```bash
-for s in ai7 ai8 ai9 ai10 ai11; do
+for s in ai7 ai9 ai11; do
   ssh $s "sudo systemctl start \$(systemctl list-units --type=service --all --no-legend | grep 'doli-mainnet' | grep -oE 'doli-mainnet-\S+' | tr '\n' ' ')" && echo "$s started" &
 done
 wait
@@ -211,7 +209,7 @@ If any node forks within 30 minutes, investigate before deploying any changes.
 1. **Forgetting wallet backup on ai7/ai11** — wallets inside `data/`, `rm -rf data/*` destroys them permanently
 2. **Starting producers before seeds** — producers can't find peers, produce isolated blocks, create forks
 3. **ai9 uses `/var/lib/doli/mainnet/`** not `/mainnet/*/data/` — different path, needs sudo
-4. **rsync from ai5 requires SSH config** — ai7-ai11 may not resolve `ai5` hostname, use IP or configure SSH
+4. **rsync from ai5 requires SSH config** — ai7, ai9, ai11 may not resolve `ai5` hostname, use IP or configure SSH
 5. **Not stopping ALL nodes first** — running nodes gossip stale blocks to recovering nodes
 
 ## Incident history
