@@ -355,8 +355,9 @@ impl RecoveryCoordinator {
         // After a rollback, if we applied any block, we reconnected to
         // canonical. Further orphan accumulation means we're behind, not
         // forked — don't rollback again.
-        if ctx.applied_since_rollback() && !self.evidence.is_empty() {
-            let has_orphan_or_empty = self.evidence.iter().any(|(_, e)| {
+        let now = Instant::now();
+        if ctx.applied_since_rollback() {
+            let has_orphan_or_empty = self.live(now).any(|e| {
                 matches!(
                     e,
                     RecoveryEvidence::OrphanGossip { .. } | RecoveryEvidence::EmptyHeaders { .. }
@@ -375,17 +376,15 @@ impl RecoveryCoordinator {
             }
         }
 
-        let empty_count = self.count(|e| matches!(e, RecoveryEvidence::EmptyHeaders { .. }));
-        let orphan_count = self.count(|e| matches!(e, RecoveryEvidence::OrphanGossip { .. }));
-        let apply_fails = self.count(|e| matches!(e, RecoveryEvidence::ApplyFailure { .. }));
+        let empty_count = self.count(now, |e| matches!(e, RecoveryEvidence::EmptyHeaders { .. }));
+        let orphan_count = self.count(now, |e| matches!(e, RecoveryEvidence::OrphanGossip { .. }));
+        let apply_fails = self.count(now, |e| matches!(e, RecoveryEvidence::ApplyFailure { .. }));
         let stale_tip = self
-            .evidence
-            .iter()
-            .any(|(_, e)| matches!(e, RecoveryEvidence::StaleTip { .. }));
+            .live(now)
+            .any(|e| matches!(e, RecoveryEvidence::StaleTip { .. }));
         let stuck_fork = self
-            .evidence
-            .iter()
-            .any(|(_, e)| matches!(e, RecoveryEvidence::StuckFork { .. }));
+            .live(now)
+            .any(|e| matches!(e, RecoveryEvidence::StuckFork { .. }));
 
         let gap = ctx.gap();
         let minor_fork_evidence = empty_count >= thresholds::MIN_MINOR_FORK_EVIDENCE
@@ -555,8 +554,16 @@ impl RecoveryCoordinator {
         }
     }
 
-    fn count(&self, pred: impl Fn(&RecoveryEvidence) -> bool) -> u32 {
-        self.evidence.iter().filter(|(_, e)| pred(e)).count() as u32
+    /// Evidence not yet past EVIDENCE_TTL at `now` (the same boundary `prune` uses).
+    fn live(&self, now: Instant) -> impl Iterator<Item = &RecoveryEvidence> + '_ {
+        self.evidence
+            .iter()
+            .filter(move |(t, _)| now.duration_since(*t) <= EVIDENCE_TTL)
+            .map(|(_, e)| e)
+    }
+
+    fn count(&self, now: Instant, pred: impl Fn(&RecoveryEvidence) -> bool) -> u32 {
+        self.live(now).filter(|e| pred(e)).count() as u32
     }
 
     /// Test-only: count current evidence entries.
@@ -1168,6 +1175,7 @@ mod tests {
     //     P2a: target == finality (local=1001, finality=1000, depth=1 -> target=1000 == 1000)
     //     P3a: target well above finality (local=1010, finality=1000, depth=1 -> target=1009 > 1000)
     //     P4a: finality=None (local=100, depth=1 -> target=99, no check)
+    //     E1: evidence age > EVIDENCE_TTL (unpruned) + gap=1 + fresh tip  => not ShallowRollback (INC-I-294); empty window => HeaderFirstSync (control)
     //   MATRIX: 1 output (O1) x 5 partitions = 5 cells
     //     P1a: O1=RecoveryAction::None (asserted in classify_refuses_shallow_rollback_below_finality)
     //     P1b: O1=RecoveryAction::None (asserted in test_finality_guard_refuses_rollback_below_finality)
