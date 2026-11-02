@@ -278,6 +278,7 @@ mod inc_i_292_cached_child_after_reorg;
 mod inc_i_293_mainnet_gate_cells;
 mod inc_i_293_s1_door_prefix;
 mod inc_i_293_v1_aggregate_partition;
+mod inc_i_294_m3_truncate_epoch_state;
 mod m1_snap_install_identity;
 mod m3_common;
 mod m3_staging_install;
