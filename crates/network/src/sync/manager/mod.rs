@@ -64,6 +64,10 @@ mod tests_inc_i293_mainnet_gate_cells;
 #[cfg(test)]
 mod tests_inc_i294_header_proof;
 #[cfg(test)]
+mod tests_inc_i294_m4_evidence_summary;
+#[cfg(test)]
+mod tests_inc_i294_m4_net_tip_log;
+#[cfg(test)]
 mod tests_m3_state_session;
 #[cfg(test)]
 mod tests_m5_quorum_anchor;

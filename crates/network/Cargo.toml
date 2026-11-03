@@ -32,6 +32,7 @@ libc = "0.2"
 [dev-dependencies]
 vdf = { workspace = true }
 tempfile = { workspace = true }
+tracing-subscriber.workspace = true
 
 # INC-I-237 M0 / REQ-GRV-SEC-005 (C7 b) — its OWN test binary on purpose: it
 # installs a counting `#[global_allocator]`, which is per-BINARY; inside

@@ -102,6 +102,11 @@ pub(crate) fn classify_gossip_block(
 /// Minimum spacing between ORPHAN_CHASE requests for the same (peer, height).
 pub(super) const ORPHAN_CHASE_REPEAT_WINDOW: Duration = Duration::from_secs(3);
 
+/// The `[APPLY_END]` line for a `process_block` exit that does not apply the block.
+fn log_apply_dropped(slot: u32, hash: &Hash, reason: &str) {
+    info!("[APPLY_END] slot={slot} hash={hash} status=dropped reason={reason}");
+}
+
 impl Node {
     /// Handle a new block from the network (behind `handle_new_block`).
     pub(super) async fn process_block(&mut self, block: Block, source_peer: PeerId) -> Result<()> {
@@ -114,7 +119,8 @@ impl Node {
         info!("[APPLY_START] slot={} hash={}", block_slot, block_hash);
 
         // A stored block is evaluated with its stored body, never the peer copy.
-        let Some(block) = self.intake_body(block).await? else {
+        let dropped_on_err = |_: &_| log_apply_dropped(block_slot, &block_hash, "error");
+        let Some(block) = self.intake_body(block).await.inspect_err(dropped_on_err)? else {
             debug!("Block {} already known", block_hash);
             info!(
                 "[APPLY_END] slot={} apply_ms={} status=already_known",
@@ -131,6 +137,7 @@ impl Node {
         let net = self.config.network.params();
         // INC-I-236: no pre-classification height, so gate on the prospective tip.
         if !self.gossip_block_authenticated(&block, best_height) {
+            log_apply_dropped(block_slot, &block_hash, "unauthenticated");
             return Ok(());
         }
         // Equivocation check (even for forks)
@@ -160,6 +167,7 @@ impl Node {
         match class {
             BlockClass::Rejected(reason) => {
                 debug!("[CLASSIFY] Dropping block {}: {}", block_hash, reason);
+                log_apply_dropped(block_slot, &block_hash, &reason);
                 return Ok(());
             }
 
@@ -188,6 +196,7 @@ impl Node {
                     let mut sync = self.sync_manager.write().await;
                     sync.signal_stuck_fork();
                     sync.report_header_divergence(source_peer, best_height);
+                    log_apply_dropped(block_slot, &block_hash, "height_occupied");
                 } else {
                     // INC-I-143 F2 (wedge-escape): do NOT drop the sibling
                     // permanently. It builds on a parent we already have — retain it
@@ -203,7 +212,10 @@ impl Node {
                         block_slot,
                         canonical_slot
                     );
-                    self.retain_sibling_and_try_escape(block).await?;
+                    self.retain_sibling_and_try_escape(block)
+                        .await
+                        .inspect_err(dropped_on_err)?;
+                    log_apply_dropped(block_slot, &block_hash, "wedge_escape");
                 }
                 return Ok(());
             }
@@ -231,7 +243,10 @@ impl Node {
                         "[WEDGE_ESCAPE] Orphan {:.8} descends from a validated retained sibling — re-evaluating (INC-I-143)",
                         block_hash
                     );
-                    self.retain_sibling_and_try_escape(block).await?;
+                    self.retain_sibling_and_try_escape(block)
+                        .await
+                        .inspect_err(dropped_on_err)?;
+                    log_apply_dropped(block_slot, &block_hash, "wedge_escape");
                     return Ok(());
                 }
 
@@ -242,6 +257,7 @@ impl Node {
                 // most once per ORPHAN_CHASE_REPEAT_WINDOW.
                 //
                 // STABILITY PILLAR: ORPHAN_CHASE — do not modify this request logic.
+                let chases_before = self.orphan_chase_requests;
                 if self.orphan_chase_guard.should_chase(
                     source_peer,
                     need_height,
@@ -275,6 +291,13 @@ impl Node {
                 if within_reorg_depth && self.weighs_by_support().await {
                     self.try_trigger_fork_recovery_from(Some(source_peer)).await;
                 }
+                let chased = self.orphan_chase_requests > chases_before;
+                let reason = if chased {
+                    "orphan_chased"
+                } else {
+                    "orphan_not_chased"
+                };
+                log_apply_dropped(block_slot, &block_hash, reason);
                 return Ok(());
             }
 
@@ -285,6 +308,7 @@ impl Node {
                     .cache_block_with_eviction(block_hash, block.clone())
                     .await
                 {
+                    log_apply_dropped(block_slot, &block_hash, "cache_refused");
                     return Ok(());
                 }
 
@@ -313,6 +337,7 @@ impl Node {
                     )
                 };
 
+                let reorged = reorg_result.is_some();
                 if let Some(reorg_result) = reorg_result {
                     info!(
                         "Reorg to heavier chain: rolling back {} blocks, applying {} new blocks, weight_delta=+{}",
@@ -338,6 +363,7 @@ impl Node {
                                 "Fork recovery started: walking parents from block {} (asking source peer {})",
                                 block_hash, source_peer
                             );
+                            log_apply_dropped(block_slot, &block_hash, "fork_recovery_started");
                             return Ok(());
                         }
                     }
@@ -371,6 +397,8 @@ impl Node {
                         }
                     }
                 }
+                let reason = if reorged { "reorg" } else { "cached_for_reorg" };
+                log_apply_dropped(block_slot, &block_hash, reason);
                 return Ok(());
             }
 
@@ -390,9 +418,11 @@ impl Node {
                 "[CLASSIFY] Dropping tip-extending block {}: genesis mismatch",
                 block_hash
             );
+            log_apply_dropped(block_slot, &block_hash, "genesis_mismatch");
             return Ok(());
         }
         if self.hold_removed_block(&block).await {
+            log_apply_dropped(block_slot, &block_hash, "held_removed");
             return Ok(());
         }
 
@@ -420,6 +450,7 @@ impl Node {
                 hex::encode(&block_producer.as_bytes()[..4]),
                 err_str,
             );
+            log_apply_dropped(block_slot, &block_hash, "rejected");
             return Ok(());
         }
 

@@ -310,6 +310,11 @@ const EVIDENCE_TTL: Duration = Duration::from_secs(120);
 /// Minimum time between same-action repeats.
 const ACTION_COOLDOWN: Duration = Duration::from_secs(30);
 
+/// The evidence age boundary shared by `live` and `evidence_summary`.
+fn is_live(at: Instant, now: Instant) -> bool {
+    now.duration_since(at) <= EVIDENCE_TTL
+}
+
 impl RecoveryCoordinator {
     /// Create an empty coordinator with no evidence and no prior action.
     pub fn new() -> Self {
@@ -570,8 +575,39 @@ impl RecoveryCoordinator {
     fn live(&self, now: Instant) -> impl Iterator<Item = &RecoveryEvidence> + '_ {
         self.evidence
             .iter()
-            .filter(move |(t, _)| now.duration_since(*t) <= EVIDENCE_TTL)
+            .filter(move |(t, _)| is_live(*t, now))
             .map(|(_, e)| e)
+    }
+
+    /// Live evidence per kind (`kind:N age=As..Bs`) then `expired:N`, for the `[COORDINATOR]` line.
+    pub(crate) fn evidence_summary(&self, now: Instant) -> String {
+        use RecoveryEvidence as E;
+        let (mut kinds, mut live) = (Vec::<(&str, usize, u64, u64)>::new(), 0);
+        for (t, e) in self.evidence.iter().filter(|(t, _)| is_live(*t, now)) {
+            let name = match e {
+                E::EmptyHeaders { .. } => "empty_headers",
+                E::OrphanGossip { .. } => "orphan",
+                E::ApplyFailure { .. } => "apply_fail",
+                E::StaleTip { .. } => "stale_tip",
+                E::StuckFork { .. } => "stuck_fork",
+                E::HeaderDivergence { .. } => "header_proof",
+            };
+            let age = now.duration_since(*t).as_secs();
+            live += 1;
+            match kinds.iter_mut().find(|k| k.0 == name) {
+                Some(k) => *k = (name, k.1 + 1, k.2.min(age), k.3.max(age)),
+                None => kinds.push((name, 1, age, age)),
+            }
+        }
+        let mut items: Vec<String> = kinds
+            .iter()
+            .map(|&(name, n, lo, hi)| match lo == hi {
+                true => format!("{name}:{n} age={lo}s"),
+                false => format!("{name}:{n} age={lo}s..{hi}s"),
+            })
+            .collect();
+        items.push(format!("expired:{}", self.evidence.len() - live));
+        format!("ev=[{}]", items.join(", "))
     }
 
     fn count(&self, now: Instant, pred: impl Fn(&RecoveryEvidence) -> bool) -> u32 {

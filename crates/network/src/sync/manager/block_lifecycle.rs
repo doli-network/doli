@@ -682,7 +682,7 @@ impl SyncManager {
         if action != RecoveryAction::None {
             info!(
                 "[COORDINATOR] action={:?} gap={} last_applied={}s peers={} \
-                 shallow_rb={} last_rb_h={:?} snap_attempts={} grace={}",
+                 shallow_rb={} last_rb_h={:?} snap_attempts={} grace={} {}",
                 action,
                 ctx.gap(),
                 ctx.last_applied_secs,
@@ -691,6 +691,7 @@ impl SyncManager {
                 ctx.last_rollback_local_height,
                 ctx.snap_attempts,
                 ctx.in_grace_period,
+                self.recovery.evidence_summary(Instant::now()),
             );
         }
         self.recovery.record_action(action);
