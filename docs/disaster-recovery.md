@@ -226,6 +226,9 @@ sudo systemctl start doli-node
 | Blocks missing (snap sync gaps), state correct | `backfillFromPeer` (hot, no restart) or `restore --backfill` |
 | Everything lost (empty data dir) | `restore --from-rpc` or full resync |
 | Height index corrupt but state OK | `reindex` only (no `recover` needed) |
+| Wrong blocks at the tip, at most 100 deep | `truncate --blocks N` on a stopped node (`docs/troubleshooting.md` §7.1b) |
+
+**Shallow rollback (`truncate`).** `truncate` reads the undo records; `recover` replays every block. A truncated node holds the state of a node that never applied the dropped blocks: the UTXO set, the producer set, the chain state and (since INC-I-294) the epoch state come from the undo records, as in the live rollback. The bound is `UNDO_KEEP_DEPTH` (100 blocks). A deeper truncate is refused and the error points to `recover`.
 
 ---
 
