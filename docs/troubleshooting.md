@@ -1268,7 +1268,7 @@ cp -r data_dir/checkpoints/h{HEIGHT}-{TS}/blocks data_dir/blocks
 
 ### 4.6b. Finality Lock After a Restart (INC-I-289 K-2, M-1, M-2)
 
-**Background:** at and above `inc_i_288_fork_choice_activation_height` (mainnet 867,000; testnet 366,891; devnet 0) a finalized block is kept across a restart, a reorg and a snap install, and fork choice weighs each branch by the bond of its verified supporters with the epoch table of the common ancestor. Below that height the `[FINALITY]`, `FORK_TABLE`, `Refusing snapshot` and `Descent proof` lines do not appear; the `FINALITY:` and `[WEDGE_ESCAPE]` lines can, because they predate INC-I-289. Rules: `specs/protocol.md` §5.5.
+**Background:** at and above `inc_i_288_fork_choice_activation_height` (mainnet 881,800; testnet 366,891; devnet 0) a finalized block is kept across a restart, a reorg and a snap install, and fork choice weighs each branch by the bond of its verified supporters with the epoch table of the common ancestor. Below that height the `[FINALITY]`, `FORK_TABLE`, `Refusing snapshot` and `Descent proof` lines do not appear; the `FINALITY:` and `[WEDGE_ESCAPE]` lines can, because they predate INC-I-289. Rules: `specs/protocol.md` §5.5.
 
 **Log lines** (`…` = a value; the text is otherwise verbatim):
 

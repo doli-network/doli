@@ -5,7 +5,7 @@
 //! cell heights are literals, so a moved mainnet pin fails here instead of
 //! silently moving the cells with it.
 //!
-// OUTPUT CONTRACT (heights = local tip: 866_998 | 866_999 | 867_000)
+// OUTPUT CONTRACT (heights = local tip: 881_798 | 881_799 | 881_800)
 //   F1 SyncManager::reply_skips_walk(walk peer, answered) -> bool
 //     answered = GetHeaders (not the walk fetch):     false | true  | true
 //     answered = GetBlockByHash(the awaited hash):    false | false | false
@@ -38,12 +38,12 @@ use crate::protocols::SyncRequest;
 use crate::sync::manager::{SyncConfig, SyncManager, SyncPhase, SyncPipelineData, SyncState};
 
 /// The operator pin. The cells below use literal tips around it.
-const MAINNET_GATE: u64 = 867_000;
-const TIP_OFF: u64 = 866_998;
-const TIP_EDGE: u64 = 866_999;
-const TIP_ON: u64 = 867_000;
+const MAINNET_GATE: u64 = 881_800;
+const TIP_OFF: u64 = 881_798;
+const TIP_EDGE: u64 = 881_799;
+const TIP_ON: u64 = 881_800;
 /// Snap cells: the finalized checkpoint, and a proof span over one 500-header batch.
-const FH: u64 = 866_990;
+const FH: u64 = 881_790;
 const SPAN: u64 = 600;
 const PAD: usize = 64 * 1024;
 const TS: u64 = 1_700_000_000;
@@ -60,9 +60,9 @@ fn mainnet_config() -> SyncConfig {
     }
 }
 
-// ZB-2 INC-I-293 (Must, premise) — Decision: a failure means the mainnet pin is not 867_000 (or the signature/BLS gates are not crossed at the cell tips), so the three-height cells below do not test the operator's boundary.
+// ZB-2 INC-I-293 (Must, premise) — Decision: a failure means the mainnet pin is not 881_800 (or the signature/BLS gates are not crossed at the cell tips), so the three-height cells below do not test the operator's boundary.
 #[test]
-fn zb2_mainnet_gate_is_867_000_and_cells_isolate_it() {
+fn zb2_mainnet_gate_matches_cells_and_cells_isolate_it() {
     let c = mainnet_config();
     assert_eq!(
         c.inc_i_288_fork_choice_activation_height, MAINNET_GATE,
@@ -161,8 +161,8 @@ fn ask(r: &mut WalkRig, want: Hash) {
     );
 }
 
-// walk intake judges the block at local_height + 1; the gate is in block units, so tip 866_999 judges block 867_000
-// ZB-2 INC-I-293 (Must) — Decision: a failure means reply_skips_walk on mainnet turns on at a different tip than 866_999 (next block 867_000), so the U-2 relayer rule is active one block early/late versus the documented unit, or it misfires on the walk's own fetch.
+// walk intake judges the block at local_height + 1; the gate is in block units, so tip 881_799 judges block 881_800
+// ZB-2 INC-I-293 (Must) — Decision: a failure means reply_skips_walk on mainnet turns on at a different tip than 881_799 (next block 881_800), so the U-2 relayer rule is active one block early/late versus the documented unit, or it misfires on the walk's own fetch.
 #[test]
 fn zb2_reply_skips_walk_mainnet_tip_plus_one() {
     for (tip, active) in [(TIP_OFF, false), (TIP_EDGE, true), (TIP_ON, true)] {
@@ -188,8 +188,8 @@ fn zb2_reply_skips_walk_mainnet_tip_plus_one() {
     }
 }
 
-// walk intake judges the block at local_height + 1; the gate is in block units, so tip 866_999 judges block 867_000
-// ZB-2 INC-I-293 (Must) — Decision: a failure means the walk-intake body check (fork_walk.rs `gated`) on mainnet turns on at a different tip than 866_999, so a padded walk body is held (or refused and blamed) on the wrong side of the documented boundary.
+// walk intake judges the block at local_height + 1; the gate is in block units, so tip 881_799 judges block 881_800
+// ZB-2 INC-I-293 (Must) — Decision: a failure means the walk-intake body check (fork_walk.rs `gated`) on mainnet turns on at a different tip than 881_799, so a padded walk body is held (or refused and blamed) on the wrong side of the documented boundary.
 #[test]
 fn zb2_walk_intake_gated_check_mainnet_tip_plus_one() {
     for (tip, gated) in [(TIP_OFF, false), (TIP_EDGE, true), (TIP_ON, true)] {
@@ -314,8 +314,8 @@ fn is_first_batch(req: &SyncRequest, f: Hash) -> bool {
         if *start_hash == f && *max_count == 500)
 }
 
-// snap descent judges the local tip itself (no + 1): tip 866_999 is below the gate, tip 867_000 is at it
-// ZB-2 INC-I-293 (Must) — Decision: a failure means mainnet snap sync asks for (or skips) the finality descent proof on the wrong side of tip 867_000, so a node either downloads a snapshot that does not descend from its finalized block or falls back to block sync before the pin.
+// snap descent judges the local tip itself (no + 1): tip 881_799 is below the gate, tip 881_800 is at it
+// ZB-2 INC-I-293 (Must) — Decision: a failure means mainnet snap sync asks for (or skips) the finality descent proof on the wrong side of tip 881_800, so a node either downloads a snapshot that does not descend from its finalized block or falls back to block sync before the pin.
 #[test]
 fn zb2_snap_descent_proof_mainnet_local_tip() {
     let f = crypto::hash::hash(b"zb2-f");

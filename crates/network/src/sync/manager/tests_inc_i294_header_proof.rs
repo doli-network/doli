@@ -1,14 +1,14 @@
 // covers: manager/recovery.rs (classify Rules 1/1b) manager/sync_engine/response.rs (handle_headers_response)
 //! INC-I-294 M-2: below the INC-I-288 gate, a depth-1 rollback of Rules 1/1b needs a
-//! live `HeaderDivergence` for the current tip. Mainnet gate 867_000; below = tip
-//! 866_999 (one peer at 867_000), above = tip 867_000 (one peer at 867_001).
+//! live `HeaderDivergence` for the current tip. Mainnet gate 881_800; below = tip
+//! 881_799 (one peer at 881_800), above = tip 881_800 (one peer at 881_801).
 //
 // OUTPUT CONTRACT: RecoveryCoordinator::classify(&self, &ctx) -> RecoveryAction (O3 only;
 //   &self, no mutation). SyncManager::handle_response(Headers) -> O2 fork.use_height_based_headers,
 //   O2 coordinator evidence (HeaderDivergence), O6 next_request() request.
 // PARTITIONS
-//   gate:     B = tip 866_999 (Rules 1/1b live) | A = tip 867_000 (Rules 1/1b off)
-//   proof:    P0 none | Ps stale (> EVIDENCE_TTL) | Po other tip 866_998 | Pf fresh 866_999
+//   gate:     B = tip 881_799 (Rules 1/1b live) | A = tip 881_800 (Rules 1/1b off)
+//   proof:    P0 none | Ps stale (> EVIDENCE_TTL) | Po other tip 881_798 | Pf fresh 881_799
 //   evidence: E1 2x OrphanGossip, apply 5 s ago | E2 StuckFork, apply 5 s ago
 //             E3 StuckFork, apply >= STALE_TIP_SECS (wedge shape) | E0 none
 //   finality: F+ allows (None) | F- refuses (Some(tip))
@@ -18,16 +18,16 @@
 //   B  E1|E2|E3  Pf        F+  Rule 1/1b          -> ShallowRollback{1}
 //   B  E0        Pf        F+  Rule 3             -> HeaderFirstSync (a proof is not a counter)
 //   B  E1|E2     P0|Pf     F-  on_rollback_refused -> None
-//   B  E3        P0|Pf     F-  on_rollback_refused -> SiblingFetch{866_999} (first attempt)
+//   B  E3        P0|Pf     F-  on_rollback_refused -> SiblingFetch{881_799} (first attempt)
 //   A  E1|E2     P0|Pf     F+  Rule 3             -> HeaderFirstSync
 //   A  E3        P0|Pf     F+  terminal           -> Wedged{NoActionableRung}
 //   A  E1        P0|Pf     F-  Rule 3             -> HeaderFirstSync
 //   A  E3        P0|Pf     F-  terminal           -> Wedged{FinalityConflict}
-// MATRIX (sync engine, tip 866_999)
-//   empty reply, gap 1|3          -> flag true; next request GetHeadersByHeight(866_999)
+// MATRIX (sync engine, tip 881_799)
+//   empty reply, gap 1|3          -> flag true; next request GetHeadersByHeight(881_799)
 //   empty reply, gap 1, counter 0|PARK-2 before -> flag true; counter PARK-1 -> PARK, flag
 //     false, next_request() parks (None, counter reset to 0)
-//   first header breaks (prev != local_hash) -> HeaderDivergence{peer, 866_999} (live)
+//   first header breaks (prev != local_hash) -> HeaderDivergence{peer, 881_799} (live)
 //   header extends local_hash     -> no HeaderDivergence
 //   empty reply                   -> no HeaderDivergence
 //   break after one valid header, or first-header break once expected != local_hash -> none
@@ -49,8 +49,8 @@ use crate::sync::manager::{
     RecoveryPhase, SyncConfig, SyncManager, SyncPhase, SyncPipelineData, SyncState,
 };
 
-const TIP_BELOW: u64 = 866_999;
-const TIP_ABOVE: u64 = 867_000;
+const TIP_BELOW: u64 = 881_799;
+const TIP_ABOVE: u64 = 881_800;
 const HFS: RecoveryAction = RecoveryAction::HeaderFirstSync;
 const BLIND: RecoveryAction = RecoveryAction::ShallowRollback { depth: 1 };
 /// Ten EVIDENCE_TTLs (120 s each).
@@ -58,7 +58,7 @@ const STALE_AGE: Duration = Duration::from_secs(1_200);
 
 fn mainnet_gate() -> u64 {
     let gate = NetworkParams::defaults(Network::Mainnet).inc_i_288_fork_choice_activation_height;
-    assert_eq!(gate, 867_000, "mainnet inc_i_288 pin moved");
+    assert_eq!(gate, 881_800, "mainnet inc_i_288 pin moved");
     gate
 }
 
@@ -128,7 +128,7 @@ fn no_proof_result(ev: Ev) -> RecoveryAction {
     }
 }
 
-// INC-I-294 M-2 (Must) — Decision: a failure means a fresh orphan/stuck-fork counter alone still rolls back a mainnet tip below 867_000 at a one-block gap.
+// INC-I-294 M-2 (Must) — Decision: a failure means a fresh orphan/stuck-fork counter alone still rolls back a mainnet tip below 881_800 at a one-block gap.
 #[test]
 fn inc_i_294_m2_fresh_counters_below_gate_without_header_proof_do_not_roll_back() {
     for ev in ALL_EV {
@@ -354,7 +354,7 @@ fn sync_classify_at(tip: u64, ev: Ev, with_proof: bool) -> RecoveryAction {
     sm.classify_and_dispatch(0).0
 }
 
-// INC-I-294 M-2 (Must) — Decision: a failure means the header-proof change leaks above 867_000, where Rules 1/1b do not exist and any result change is a mainnet behaviour change at the pin.
+// INC-I-294 M-2 (Must) — Decision: a failure means the header-proof change leaks above 881_800, where Rules 1/1b do not exist and any result change is a mainnet behaviour change at the pin.
 #[test]
 fn inc_i_294_m2_above_gate_rules_unchanged() {
     for ev in [Ev::Orphans, Ev::StuckRecent] {
@@ -437,7 +437,7 @@ fn classify_after_replies(replies: impl Fn(Hash) -> Vec<Vec<BlockHeader>>) -> Re
 // INC-I-294 M-2 (Must) — Decision: a failure means the sync engine never turns a sibling header at tip+1 into proof (a true depth-1 fork cannot heal below the gate), or it reports proof for replies that extend our tip or break only deeper.
 #[test]
 fn inc_i_294_m2_sibling_header_at_tip_plus_one_reports_header_divergence() {
-    let other_parent = crypto::hash::hash(b"inc-i-294 peer 866999");
+    let other_parent = crypto::hash::hash(b"inc-i-294 peer 881799");
     let slot = TIP_BELOW as u32 + 1;
 
     let got = classify_after_replies(|_| vec![vec![signed_header(other_parent, slot)]]);

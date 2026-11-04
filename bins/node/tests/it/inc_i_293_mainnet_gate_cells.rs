@@ -2,23 +2,23 @@
 //! The gate is read from `NetworkParams::defaults(Network::Mainnet)` (mainnet
 //! refuses an env override) and is fed to a `SyncManager` through the same three
 //! `SyncConfig` gate fields `Node::new` sets. Each door runs at a synthetic tip of
-//! 866_999 (gate - 1: OFF) and 867_000 (gate: ON); no chain is built.
+//! 881_799 (gate - 1: OFF) and 881_800 (gate: ON); no chain is built.
 //
 // OUTPUT CONTRACT (outputs x paths x heights):
-//   door                                     output                            866_999        867_000
-//   O0 NetworkParams::defaults(Mainnet)      .inc_i_288_..._activation_height  == 867_000 (every cell)
+//   door                                     output                            881_799        881_800
+//   O0 NetworkParams::defaults(Mainnet)      .inc_i_288_..._activation_height  == 881_800 (every cell)
 //   O1 reorg_handler().weighs_from_ancestor  bool (doors, branch_rank, wedge)  false          true
 //   O2 finality sink (K-2 persist)           checkpoints handed to the sink    []             [(tip-2, F)]
 //   O3 last_finalized_height (in memory)     Option<u64>                       Some(tip-2)    Some(tip-2)
 //   O4 classify_and_dispatch, Rule 1         RecoveryAction (2 orphan reports) HeaderFirst*   not ShallowRb
 //   O5 classify_and_dispatch, Rule 1b        RecoveryAction (1 stuck fork)     HeaderFirst*   not ShallowRb
 //   * INC-I-294 M-2: no header proof for the tip, so no depth-1 rollback below the pin;
-//     with a fresh proof for the tip, O4/O5 at 866_999 = ShallowRb{1} (the old rule).
+//     with a fresh proof for the tip, O4/O5 at 881_799 = ShallowRb{1} (the old rule).
 //   O6 LRU dedup (block's own height)        knows_block(A) after LRU_CAP      false          true
 //                                            re-records of child B
 //   PATHS: gate - 1 | gate. Not here: the init.rs finality restore (needs a stored
-//   mainnet chain at 867_000; its operator is pinned by j4_finality_restart_*).
-// INPUT PARTITIONS: compared height = 866_999 (one below the pin) | = 867_000 (the
+//   mainnet chain at 881_800; its operator is pinned by j4_finality_restart_*).
+// INPUT PARTITIONS: compared height = 881_799 (one below the pin) | = 881_800 (the
 //   pin). Rollback evidence: two orphan reports (Rule 1) | one stuck-fork report
 //   (Rule 1b), both with gap 1 and a fresh apply. Finality: F at tip-2 with 1/1
 //   weight. LRU: A recorded once, child B recorded LRU_CAP times.
@@ -28,7 +28,7 @@ use doli_core::{FinalityCheckpoint, Network, NetworkParams};
 use network::{PeerId, RecoveryAction, SyncConfig, SyncManager};
 use std::sync::{Arc, Mutex};
 
-const PIN: u64 = 867_000;
+const PIN: u64 = 881_800;
 const OFF: u64 = PIN - 1;
 /// `ReorgHandler::new()` tracks this many LRU slots.
 const LRU_CAP: usize = 10_000;
@@ -115,48 +115,48 @@ fn lru_after_rerecords(child_h: u64) -> (bool, bool) {
 
 // INC-I-293 ZB-2 PIN — Decision: a failure means someone moved the mainnet pin, so every cell below now tests a height mainnet does not run.
 #[test]
-fn zb2_mainnet_pin_is_867000() {
-    assert_eq!(mainnet_gate(), 867_000);
-    assert_eq!(OFF, 866_999);
+fn zb2_mainnet_pin_matches_cells() {
+    assert_eq!(mainnet_gate(), 881_800);
+    assert_eq!(OFF, 881_799);
 }
 
 // INC-I-293 ZB-2 DOORS-OFF — Decision: a failure means the bond-weighted doors open one block before the mainnet pin.
 #[test]
-fn zb2_doors_weigh_by_count_at_866999() {
+fn zb2_doors_weigh_by_count_below_gate() {
     let on = mainnet_sync().reorg_handler().weighs_from_ancestor(OFF);
-    assert!(!on, "DOORS-OFF: tip 866_999 weighs from the ancestor");
+    assert!(!on, "DOORS-OFF: tip 881_799 weighs from the ancestor");
 }
 
-// INC-I-293 ZB-2 DOORS-ON — Decision: a failure means the mainnet doors still weigh by block count at tip 867_000 (the `>=` became `>` or the pin did not reach SyncConfig).
+// INC-I-293 ZB-2 DOORS-ON — Decision: a failure means the mainnet doors still weigh by block count at tip 881_800 (the `>=` became `>` or the pin did not reach SyncConfig).
 #[test]
-fn zb2_doors_weigh_from_ancestor_at_867000() {
+fn zb2_doors_weigh_from_ancestor_at_gate() {
     let on = mainnet_sync().reorg_handler().weighs_from_ancestor(PIN);
-    assert!(on, "DOORS-ON: tip 867_000 still weighs by block count");
+    assert!(on, "DOORS-ON: tip 881_800 still weighs by block count");
 }
 
 // INC-I-293 ZB-2 FIN-OFF — Decision: a failure means a mainnet node persists a finality checkpoint one block before the pin.
 #[test]
-fn zb2_finality_not_persisted_at_866999() {
+fn zb2_finality_not_persisted_below_gate() {
     let (sunk, fin) = finality_at(OFF);
-    assert_eq!(sunk, vec![], "FIN-OFF: checkpoint persisted at tip 866_999");
+    assert_eq!(sunk, vec![], "FIN-OFF: checkpoint persisted at tip 881_799");
     assert_eq!(fin, Some(OFF - 2), "FIN-OFF: in-memory finality changed");
 }
 
-// INC-I-293 ZB-2 FIN-ON — Decision: a failure means a mainnet node at tip 867_000 does not persist finality, so a restart at the pin forgets it.
+// INC-I-293 ZB-2 FIN-ON — Decision: a failure means a mainnet node at tip 881_800 does not persist finality, so a restart at the pin forgets it.
 #[test]
-fn zb2_finality_persisted_at_867000() {
+fn zb2_finality_persisted_at_gate() {
     let (sunk, fin) = finality_at(PIN);
     let want = vec![(PIN - 2, h("F"))];
     assert_eq!(
         sunk, want,
-        "FIN-ON: checkpoint not persisted at tip 867_000"
+        "FIN-ON: checkpoint not persisted at tip 881_800"
     );
     assert_eq!(fin, Some(PIN - 2), "FIN-ON: in-memory finality changed");
 }
 
 // INC-I-293 ZB-2 BLIND-OFF + INC-I-294 M-2 — Decision: a failure means a mainnet node below the pin still rolls back its tip on counters alone, with no header proof that a peer's chain leaves it.
 #[test]
-fn zb2_blind_rollback_needs_header_proof_at_866999() {
+fn zb2_blind_rollback_needs_header_proof_below_gate() {
     assert_eq!(
         classify_at(OFF, Evidence::Orphans),
         HEADER_FIRST,
@@ -176,28 +176,28 @@ fn zb2_blind_rollback_needs_header_proof_at_866999() {
     }
 }
 
-// INC-I-293 ZB-2 BLIND-ON — Decision: a failure means a mainnet node at tip 867_000 still rolls back without weighing (the INC-I-289 blind door).
+// INC-I-293 ZB-2 BLIND-ON — Decision: a failure means a mainnet node at tip 881_800 still rolls back without weighing (the INC-I-289 blind door).
 #[test]
-fn zb2_blind_rollback_closed_at_867000() {
+fn zb2_blind_rollback_closed_at_gate() {
     for (ev, rule) in [(Evidence::Orphans, "1"), (Evidence::StuckFork, "1b")] {
         let got = classify_at(PIN, ev);
         assert!(
             !matches!(got, RecoveryAction::ShallowRollback { .. }),
-            "BLIND-ON Rule {rule}: tip 867_000 still rolls back blind: {got:?}"
+            "BLIND-ON Rule {rule}: tip 881_800 still rolls back blind: {got:?}"
         );
     }
 }
 
 // INC-I-293 ZB-2 LRU-OFF — Decision: a failure means re-records of one block stop pushing LRU slots before the pin (old eviction behaviour changed below it).
 #[test]
-fn zb2_lru_rerecord_evicts_at_866999() {
+fn zb2_lru_rerecord_evicts_below_gate() {
     let got = lru_after_rerecords(OFF);
     assert_eq!(got, (false, true), "LRU-OFF: (A tracked, B tracked)");
 }
 
-// INC-I-293 ZB-2 LRU-ON — Decision: a failure means re-records of one block at height 867_000 still evict other tracked blocks.
+// INC-I-293 ZB-2 LRU-ON — Decision: a failure means re-records of one block at height 881_800 still evict other tracked blocks.
 #[test]
-fn zb2_lru_rerecord_keeps_slot_at_867000() {
+fn zb2_lru_rerecord_keeps_slot_at_gate() {
     let got = lru_after_rerecords(PIN);
     assert_eq!(got, (true, true), "LRU-ON: (A tracked, B tracked)");
 }
