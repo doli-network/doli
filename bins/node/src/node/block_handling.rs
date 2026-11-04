@@ -193,9 +193,19 @@ impl Node {
                          signaling fork recovery",
                         block_slot, canonical_slot, fork_height
                     );
+                    let tip_prev = self.block_store.get_header(&best_hash).ok().flatten();
                     let mut sync = self.sync_manager.write().await;
                     sync.signal_stuck_fork();
-                    sync.report_header_divergence(source_peer, best_height);
+                    if tip_prev.is_some_and(|t| {
+                        network::sync::sibling_proves_tip_divergence(
+                            fork_height,
+                            best_height,
+                            block.header.prev_hash,
+                            t.prev_hash,
+                        )
+                    }) {
+                        sync.report_header_divergence(source_peer, best_height, best_hash);
+                    }
                     log_apply_dropped(block_slot, &block_hash, "height_occupied");
                 } else {
                     // INC-I-143 F2 (wedge-escape): do NOT drop the sibling

@@ -49,10 +49,10 @@ use crate::sync::manager::{
     RecoveryPhase, SyncConfig, SyncManager, SyncPhase, SyncPipelineData, SyncState,
 };
 
-const TIP_BELOW: u64 = 881_799;
+pub(super) const TIP_BELOW: u64 = 881_799;
 const TIP_ABOVE: u64 = 881_800;
-const HFS: RecoveryAction = RecoveryAction::HeaderFirstSync;
-const BLIND: RecoveryAction = RecoveryAction::ShallowRollback { depth: 1 };
+pub(super) const HFS: RecoveryAction = RecoveryAction::HeaderFirstSync;
+pub(super) const BLIND: RecoveryAction = RecoveryAction::ShallowRollback { depth: 1 };
 /// Ten EVIDENCE_TTLs (120 s each).
 const STALE_AGE: Duration = Duration::from_secs(1_200);
 
@@ -62,7 +62,7 @@ fn mainnet_gate() -> u64 {
     gate
 }
 
-fn mainnet_config() -> SyncConfig {
+pub(super) fn mainnet_config() -> SyncConfig {
     let p = NetworkParams::defaults(Network::Mainnet);
     SyncConfig {
         inc_i_288_fork_choice_activation_height: mainnet_gate(),
@@ -101,6 +101,7 @@ fn ctx(tip: u64, ev: Ev, finality: Option<u64>) -> RecoveryContext {
         last_rollback_time: None,
         in_grace_period: false,
         last_finality_height: finality,
+        local_tip_hash: crypto::Hash::ZERO,
     }
 }
 
@@ -142,7 +143,7 @@ fn inc_i_294_m2_fresh_counters_below_gate_without_header_proof_do_not_roll_back(
 }
 
 /// Tip `local`, one peer at `local + gap`, header download pending on that peer.
-fn mgr_awaiting_headers(local: u64, gap: u64) -> (SyncManager, PeerId) {
+pub(super) fn mgr_awaiting_headers(local: u64, gap: u64) -> (SyncManager, PeerId) {
     let mut m = SyncManager::new(mainnet_config(), Hash::ZERO);
     let local_hash = crypto::hash::hash(b"inc-i-294 local tip");
     m.update_local_tip(local, local_hash, local as u32);
@@ -240,9 +241,14 @@ fn inc_i_294_m2_small_gap_height_flag_respects_the_park_cap() {
 // ---- step 2: tests that need RecoveryEvidence::HeaderDivergence ----
 
 fn proof(tip_height: u64) -> RecoveryEvidence {
+    proof_for(tip_height, Hash::ZERO)
+}
+
+fn proof_for(tip_height: u64, tip_hash: Hash) -> RecoveryEvidence {
     RecoveryEvidence::HeaderDivergence {
         peer: PeerId::random(),
         tip_height,
+        tip_hash,
     }
 }
 
@@ -334,7 +340,8 @@ fn sync_classify_at(tip: u64, ev: Ev, with_proof: bool) -> RecoveryAction {
         ..SyncConfig::default()
     };
     let mut sm = SyncManager::new(config, Hash::ZERO);
-    sm.update_local_tip(tip, crypto::hash::hash(b"tip"), 10);
+    let tip_hash = crypto::hash::hash(b"tip");
+    sm.update_local_tip(tip, tip_hash, 10);
     sm.add_peer(
         PeerId::random(),
         tip + 1,
@@ -349,7 +356,7 @@ fn sync_classify_at(tip: u64, ev: Ev, with_proof: bool) -> RecoveryAction {
         Ev::StuckRecent | Ev::StuckWedge => sm.report_stuck_fork(1),
     }
     if with_proof {
-        sm.recovery.report(proof(tip));
+        sm.recovery.report(proof_for(tip, tip_hash));
     }
     sm.classify_and_dispatch(0).0
 }
@@ -400,7 +407,7 @@ fn inc_i_294_m2_above_gate_rules_unchanged() {
     }
 }
 
-fn signed_header(prev_hash: Hash, slot: u32) -> BlockHeader {
+pub(super) fn signed_header(prev_hash: Hash, slot: u32) -> BlockHeader {
     let kp = KeyPair::from_seed([0x6e; 32]);
     let mut h = BlockHeader {
         version: 1,
@@ -422,9 +429,36 @@ fn signed_header(prev_hash: Hash, slot: u32) -> BlockHeader {
     h
 }
 
-/// Deliver `replies` in order, then classify with two fresh orphan reports.
+/// Dispatch the real tracked header request to `peer` (by height or by hash) and return it.
+pub(super) fn send_tracked_request(
+    m: &mut SyncManager,
+    peer: PeerId,
+    by_height: bool,
+) -> SyncRequest {
+    m.fork.use_height_based_headers = by_height;
+    m.start_sync();
+    let (to, req) = m.next_request().expect("a header request is dispatched");
+    assert_eq!(to, peer, "setup: request goes to the sync peer");
+    let want = if by_height {
+        matches!(req, SyncRequest::GetHeadersByHeight { start_height, .. } if start_height == m.local_height)
+    } else {
+        matches!(req, SyncRequest::GetHeaders { start_hash, .. } if start_hash == m.local_hash)
+    };
+    assert!(want, "setup: unexpected request {req:?}");
+    assert!(
+        m.peers
+            .get(&peer)
+            .is_some_and(|s| s.pending_request.is_some()),
+        "setup: request is tracked"
+    );
+    req
+}
+
+/// Send the tracked GetHeadersByHeight(tip), deliver `replies` in order, then classify
+/// with two fresh orphan reports.
 fn classify_after_replies(replies: impl Fn(Hash) -> Vec<Vec<BlockHeader>>) -> RecoveryAction {
     let (mut m, peer) = mgr_awaiting_headers(TIP_BELOW, 1);
+    send_tracked_request(&mut m, peer, true);
     let local = m.local_hash;
     for headers in replies(local) {
         m.handle_response(peer, SyncResponse::Headers(headers));

@@ -2328,9 +2328,12 @@ claim no longer blocks production; the height-based defer in production still ap
 items (3) and (4) above, an orphan's guessed height and an own block no longer steer recovery.
 
 **Recovery below the gate (INC-I-294).** Below the gate Rules 1/1b stay, but a depth-1 rollback
-needs a live `HeaderDivergence` proof for the current tip height: a header reply whose first header
-does not build on the local tip hash, or a competing block with a better slot at a height the node
-holds (the FORK_GUARD `is_better` arm). Counters alone continue the ladder (header-first sync, or
+needs a live `HeaderDivergence` proof for the current tip, keyed by tip height and tip hash: the
+reply to a tracked `GetHeadersByHeight(local_height)` request whose first header passes header
+validation (version, timestamp, producer signature from its activation height) and does not build on
+the local tip hash, or a competing block with a better slot at the tip height whose parent is the
+local tip's parent (the FORK_GUARD `is_better` arm). An untracked, hash-based or other-height reply
+gives no proof; a proof for another tip hash does not count. Counters alone continue the ladder (header-first sync, or
 the wedge terminal). After an empty header reply at a gap of 3 or less, the next request asks for
 headers by height, once. At classify no rule counts evidence older than `EVIDENCE_TTL` (120 s),
 below and above the gate; before, old entries were pruned only when new evidence arrived. The

@@ -95,7 +95,7 @@ fn classify_at_with(tip: u64, ev: Evidence, proof: bool) -> RecoveryAction {
         Evidence::StuckFork => sm.report_stuck_fork(1),
     }
     if proof {
-        sm.report_header_divergence(PeerId::random(), tip);
+        sm.report_header_divergence(PeerId::random(), tip, h("tip"));
     }
     sm.classify_and_dispatch(0).0
 }

@@ -82,6 +82,7 @@ fn ctx_at_gap(gap: u64) -> RecoveryContext {
         last_rollback_time: None,
         in_grace_period: false,
         last_finality_height: None,
+        local_tip_hash: crypto::Hash::ZERO,
     }
 }
 

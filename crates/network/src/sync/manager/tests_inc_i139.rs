@@ -71,6 +71,7 @@ fn ctx(local_height: u64, network_tip_height: u64, last_applied_secs: u64) -> Re
         last_rollback_time: None,
         in_grace_period: false,
         last_finality_height: None,
+        local_tip_hash: crypto::Hash::ZERO,
     }
 }
 

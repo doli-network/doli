@@ -65,6 +65,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use crypto::Hash;
 use libp2p::PeerId;
 
 /// A signal that a detector reports to the coordinator.
@@ -101,7 +102,11 @@ pub enum RecoveryEvidence {
     StuckFork { gap: u64 },
 
     /// A fetched header/block from `peer` proves its chain does not extend our tip at `tip_height`.
-    HeaderDivergence { peer: PeerId, tip_height: u64 },
+    HeaderDivergence {
+        peer: PeerId,
+        tip_height: u64,
+        tip_hash: Hash,
+    },
 }
 
 /// What the coordinator tells the caller to do.
@@ -206,6 +211,8 @@ pub struct RecoveryContext {
     /// Last finalized block height, if any. The classifier MUST refuse to recommend
     /// a rollback that would unwind a finalized block. INV-SYNC-001 (INC-I-081).
     pub last_finality_height: Option<u64>,
+    /// Hash of our tip at `local_height`.
+    pub local_tip_hash: Hash,
 }
 
 impl RecoveryContext {
@@ -403,7 +410,8 @@ impl RecoveryCoordinator {
         let blind_rollback = ctx.local_height < self.fork_choice_gate;
         // INC-I-294 M-2: a live header proof that a peer's chain leaves our current tip.
         let header_proof = self.live(now).any(|e| {
-            matches!(e, RecoveryEvidence::HeaderDivergence { tip_height, .. } if *tip_height == ctx.local_height)
+            matches!(e, RecoveryEvidence::HeaderDivergence { tip_height, tip_hash, .. }
+                if *tip_height == ctx.local_height && *tip_hash == ctx.local_tip_hash)
         });
 
         // INC-I-204 M3 (REQ-FORK-010): the wedge shape. G3 corroborated that our tip
@@ -660,6 +668,7 @@ mod tests {
             last_rollback_time: None,
             in_grace_period: false,
             last_finality_height: None,
+            local_tip_hash: crypto::Hash::ZERO,
         }
     }
 
@@ -672,6 +681,7 @@ mod tests {
         RecoveryEvidence::HeaderDivergence {
             peer: fake_peer(),
             tip_height,
+            tip_hash: Hash::ZERO,
         }
     }
 
@@ -1150,6 +1160,7 @@ mod tests {
             last_rollback_time: Some(Instant::now()),
             in_grace_period: false,
             last_finality_height: None,
+            local_tip_hash: crypto::Hash::ZERO,
         };
         assert_eq!(
             c.classify(&ctx),
@@ -1276,6 +1287,7 @@ mod tests {
             last_rollback_time: None,
             in_grace_period: false,
             last_finality_height: Some(1001), // target = 1000 < finality (1001) -> REFUSE
+            local_tip_hash: crypto::Hash::ZERO,
         };
 
         let action = coord.classify(&ctx);
@@ -1316,6 +1328,7 @@ mod tests {
             last_rollback_time: None,
             in_grace_period: false,
             last_finality_height: Some(1000), // target = 1000 == finality -> ALLOW
+            local_tip_hash: crypto::Hash::ZERO,
         };
 
         let action = coord.classify(&ctx);
@@ -1352,6 +1365,7 @@ mod tests {
             last_rollback_time: None,
             in_grace_period: false,
             last_finality_height: Some(1005), // target = 1000 < finality (1005) -> REFUSE
+            local_tip_hash: crypto::Hash::ZERO,
         };
 
         let action = coord.classify(&ctx);
@@ -1384,6 +1398,7 @@ mod tests {
             last_rollback_time: None,
             in_grace_period: false,
             last_finality_height: Some(1000), // target = 1009 > finality -> allow
+            local_tip_hash: crypto::Hash::ZERO,
         };
 
         let action = coord.classify(&ctx);
@@ -1414,6 +1429,7 @@ mod tests {
             last_rollback_time: None,
             in_grace_period: false,
             last_finality_height: None,
+            local_tip_hash: crypto::Hash::ZERO,
         };
 
         let action = coord.classify(&ctx);

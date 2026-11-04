@@ -28,6 +28,8 @@ pub struct HeaderChainBreak {
     pub header_slot: u32,
     /// How many headers were validated before the break in this batch.
     pub valid_so_far: u32,
+    /// The break is at the first header and that header passes header validation.
+    pub first_header_valid: bool,
 }
 
 /// Header downloader state
@@ -149,6 +151,7 @@ impl HeaderDownloader {
                     actual: header.prev_hash,
                     header_slot: header.slot,
                     valid_so_far: valid_count,
+                    first_header_valid: valid_count == 0 && self.header_passes(header, height),
                 });
                 break;
             }
@@ -163,16 +166,8 @@ impl HeaderDownloader {
                 continue;
             }
 
-            // Basic header validation
-            if !self.validate_header(header) {
-                warn!("Invalid header {}", hash);
+            if !self.header_passes(header, height) {
                 break;
-            }
-            if height >= self.block_signature_activation_height {
-                if let Err(e) = doli_core::validation::verify_block_signature(header) {
-                    warn!("Invalid header {} at height {}: {}", hash, height, e);
-                    break;
-                }
             }
 
             // Add to validated chain
@@ -203,6 +198,26 @@ impl HeaderDownloader {
     /// Consumes the break info (subsequent calls return None until the next break).
     pub fn take_chain_break(&mut self) -> Option<HeaderChainBreak> {
         self.last_chain_break.take()
+    }
+
+    /// Basic header validation plus the producer signature check from its activation height.
+    fn header_passes(&self, header: &BlockHeader, height: u64) -> bool {
+        if !self.validate_header(header) {
+            warn!("Invalid header {}", header.hash());
+            return false;
+        }
+        if height >= self.block_signature_activation_height {
+            if let Err(e) = doli_core::validation::verify_block_signature(header) {
+                warn!(
+                    "Invalid header {} at height {}: {}",
+                    header.hash(),
+                    height,
+                    e
+                );
+                return false;
+            }
+        }
+        true
     }
 
     /// Validate a single header

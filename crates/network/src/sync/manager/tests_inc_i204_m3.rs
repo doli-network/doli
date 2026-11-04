@@ -273,6 +273,7 @@ pub(super) fn report_header_proof(coord: &mut RecoveryCoordinator, tip_height: u
     coord.report(RecoveryEvidence::HeaderDivergence {
         peer: PeerId::random(),
         tip_height,
+        tip_hash: crypto::Hash::ZERO,
     });
 }
 
@@ -294,6 +295,7 @@ pub(super) fn cell_ctx(cell: Cell) -> RecoveryContext {
         last_rollback_time: None,
         in_grace_period: false,
         last_finality_height: cell.fin.height(),
+        local_tip_hash: crypto::Hash::ZERO,
     }
 }
 
@@ -455,6 +457,7 @@ fn m3_incident_shape_wedged_cohort_must_reach_a_named_non_lossy_terminal() {
             last_rollback_time: None,
             in_grace_period: false,
             last_finality_height: Some(LOCAL_H),
+            local_tip_hash: crypto::Hash::ZERO,
         };
         let action = coord.classify(&ctx);
         coord.record_action(action);
@@ -640,6 +643,7 @@ fn m3_wedged_is_exitable_by_corroboration() {
         last_rollback_time: None,
         in_grace_period: false,
         last_finality_height: Some(LOCAL_H),
+        local_tip_hash: crypto::Hash::ZERO,
     };
     assert!(
         !matches!(coord.classify(&resolved), RecoveryAction::Wedged { .. }),

@@ -1395,9 +1395,9 @@ The fix is node-local: no activation height, safe for a rolling restart.
 
 **Cause:** the recovery coordinator counted evidence older than `EVIDENCE_TTL` (120 s), because it pruned old entries only when new evidence arrived. Below the fork-choice gate (`inc_i_288_fork_choice_activation_height`), Rules 1/1b then ran a depth-1 rollback on counters alone.
 
-**Rule now:** no decision counts evidence older than 120 s. Below the gate, Rules 1/1b run a depth-1 rollback only with a live header proof for the current tip height. Two sources give the proof:
-- a header reply whose first header does not build on the local tip hash (`[HEADER_DEBUG] Chain break: … valid_so_far=0`). After an empty header reply at a gap of 3 or less, the next request asks for headers by height, so that this header can arrive;
-- a competing block with a better (lower) slot at a height the node holds (`[FORK_GUARD] Better block dropped (slot … < …) at h=…`).
+**Rule now:** no decision counts evidence older than 120 s. Below the gate, Rules 1/1b run a depth-1 rollback only with a live header proof for the current tip (height AND hash). A proof recorded for another tip hash does not count. Two sources give the proof:
+- a reply to the node's own height request from its current tip height (`GetHeadersByHeight(local_height)`, so the first header is at tip+1) whose first header passes header validation (version, timestamp, producer signature from its activation height) and does not build on the local tip hash (`[HEADER_DEBUG] Chain break: … valid_so_far=0`). A reply with no tracked request (for example one that arrives after a rollback), a hash-based reply, or a reply to another height gives no proof. After an empty header reply at a gap of 3 or less, the next request asks for headers by height, so that this header can arrive;
+- a competing block with a better (lower) slot at the node's tip height whose parent is the parent of the local tip (`[FORK_GUARD] Better block dropped (slot … < …) at h=…`). The block has already passed the gossip signature check. A competing block at a lower height gives no proof.
 
 Without a proof the ladder continues: header-first sync, or the wedge terminal (competing-tip fetch). The finality guard runs first and is unchanged. At and above the gate Rules 1/1b stay off.
 

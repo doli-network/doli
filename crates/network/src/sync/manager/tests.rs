@@ -5464,6 +5464,7 @@ mod inc_i138_m2_escalation {
             last_rollback_time: None,
             in_grace_period: false,
             last_finality_height: None,
+            local_tip_hash: crypto::Hash::ZERO,
         };
 
         // Precondition: verify classify() returns HeaderFirstSync at gap=28 (the reset trigger).
@@ -5683,6 +5684,7 @@ mod inc_i138_m2_escalation {
             last_rollback_time: None,
             in_grace_period: false,
             last_finality_height: None,
+            local_tip_hash: crypto::Hash::ZERO,
         };
 
         let action = coord.classify(&ctx);
@@ -5741,6 +5743,7 @@ mod inc_i138_m2_escalation {
             last_rollback_time: None,
             in_grace_period: false,
             last_finality_height: None,
+            local_tip_hash: crypto::Hash::ZERO,
         };
         let action = coord.classify(&ctx);
         // large_gap = 600 >= SNAP_SYNC_GAP_MIN=500 → Rule 2 fires SnapSync correctly.
@@ -5782,6 +5785,7 @@ mod inc_i138_m2_escalation {
             last_rollback_time: None,
             in_grace_period: false,
             last_finality_height: None,
+            local_tip_hash: crypto::Hash::ZERO,
         };
         let action = coord.classify(&ctx);
         // Rule 1: minor_fork_evidence(T) && gap(28)<50 && recently_synced(T)
@@ -6263,6 +6267,7 @@ mod inc_i138_m3_evidence_gating {
             last_rollback_time: None,
             in_grace_period: false,
             last_finality_height: None,
+            local_tip_hash: crypto::Hash::ZERO,
         };
 
         let action = coord.classify(&ctx);

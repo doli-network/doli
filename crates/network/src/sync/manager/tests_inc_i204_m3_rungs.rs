@@ -212,6 +212,7 @@ fn rung_rule3_header_first_is_reserved_for_nodes_that_can_actually_extend() {
         last_rollback_time: None,
         in_grace_period: false,
         last_finality_height: Some(LOCAL_H - 10),
+        local_tip_hash: crypto::Hash::ZERO,
     };
     assert_eq!(
         behind.classify(&behind_ctx),

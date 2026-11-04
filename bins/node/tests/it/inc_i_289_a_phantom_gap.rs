@@ -96,9 +96,9 @@ async fn a0_inc_i_289_below_ah_single_peer_claim_needs_header_proof() {
     );
 
     // Arm B: a fresh header proof for D (tip F+1) keeps the old below-AH rule.
-    let (mut r, _d, gap) = phantom_claim().await;
+    let (mut r, d, gap) = phantom_claim().await;
     assert_eq!(gap, 1, "precondition B: the coordinator sees gap=1");
-    (r.node.sync_manager.write().await).report_header_divergence(PeerId::random(), F + 1);
+    (r.node.sync_manager.write().await).report_header_divergence(PeerId::random(), F + 1, d.hash());
     let before = rollbacks(&r);
 
     tick(&mut r).await;

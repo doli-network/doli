@@ -92,6 +92,7 @@ fn ctx_at(local_height: u64, gap: u64, finality: Option<u64>) -> RecoveryContext
         last_rollback_time: None,
         in_grace_period: false,
         last_finality_height: finality,
+        local_tip_hash: crypto::Hash::ZERO,
     }
 }
 

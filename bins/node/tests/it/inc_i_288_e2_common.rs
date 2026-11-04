@@ -138,8 +138,11 @@ pub async fn heal_tick_with(
     }
     let net_after_intake = net_tip(r).await;
     if proof {
-        let tip = r.node.chain_state.read().await.best_height;
-        (r.node.sync_manager.write().await).report_header_divergence(from, tip);
+        let (tip, tip_hash) = {
+            let cs = r.node.chain_state.read().await;
+            (cs.best_height, cs.best_hash)
+        };
+        (r.node.sync_manager.write().await).report_header_divergence(from, tip, tip_hash);
     }
     tick(r).await;
     let mut orphans_cached = Vec::new();

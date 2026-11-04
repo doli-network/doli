@@ -50,6 +50,7 @@ fn proof() -> RecoveryEvidence {
     RecoveryEvidence::HeaderDivergence {
         peer: PeerId::random(),
         tip_height: 10,
+        tip_hash: Hash::ZERO,
     }
 }
 

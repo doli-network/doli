@@ -81,10 +81,13 @@ async fn coordinator_action(
     for o in orphans {
         gossip(r, o).await;
     }
-    let tip = r.node.chain_state.read().await.best_height;
+    let (tip, tip_hash) = {
+        let cs = r.node.chain_state.read().await;
+        (cs.best_height, cs.best_hash)
+    };
     let count = r.node.shallow_rollback_count;
     let mut sync = r.node.sync_manager.write().await;
-    sync.report_header_divergence(PeerId::random(), tip);
+    sync.report_header_divergence(PeerId::random(), tip, tip_hash);
     sync.classify_and_dispatch(count)
 }
 
