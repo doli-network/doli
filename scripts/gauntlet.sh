@@ -160,6 +160,23 @@
 #     INC-I-255, INC-I-236) is STANDALONE ONLY: this runner SKIPs its tokens.
 #     It runs old and HEAD nodes on one ephemeral devnet; run
 #     scripts/gauntlet-gs029.sh directly.
+#   * GS-035 (false rollback on a one-block gap, INC-I-294) is OBSERVATIONAL
+#     and DESCRIBED ONLY: this runner has no injector or check for it yet.
+#     It is a fork-lab scenario on the LOCAL testnet, run on the release
+#     tip and across a mainnet-style activation-height crossing. Injected
+#     faults: (1) a peer status height of tip+1 while the fleet tip is a valid
+#     on-time block; (2) recovery evidence older than its TTL with no new
+#     report; (3) fresh orphan/stuck-fork evidence at a one-block gap with no
+#     sibling header; (4) a true depth-1 fork with a better-slot sibling
+#     delivered by gossip; (5) an operator truncate across an
+#     attestation-minute boundary, then a restart. Pass: liveness - every node
+#     reaches the canonical tip; correctness - no node removes a valid tip
+#     without a header proof, a true depth-1 fork heals, a node one block
+#     behind syncs, the truncated node derives the same producer list at the
+#     next boundary, every [APPLY_START] has an [APPLY_END], and there is no
+#     info-log flood. A future injector stops and truncates a node, so it must
+#     sit behind its own `--gs035` flag WITH GAUNTLET_GS035_CONFIRM=1 (testnet
+#     only), like the other destructive scenarios.
 #
 # Assertions key off STRUCTURED telemetry fields (gap=, rollback_depth=,
 # sync_fails=, state=) and distinct-event phrases — NEVER raw keywords that also
