@@ -3,6 +3,7 @@ mod exited_bond_census;
 mod init;
 mod producer_set_check;
 mod restore;
+mod truncate_restore;
 
 pub(crate) use chain::{recover_chain_state, reindex_canonical_chain, truncate_chain};
 pub(crate) use exited_bond_census::exited_bond_census;

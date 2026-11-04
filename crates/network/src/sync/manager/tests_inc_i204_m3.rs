@@ -47,6 +47,7 @@
 //!       × rollback budget {Fresh, Spent}
 //!       × sibling budget {Fresh, Spent}
 //!       × snap budget {Fresh, Spent}   = 96 cells, every one named and asserted.
+//!     C-6 runs them × header proof {Absent, Present} (INC-I-294 M-2) = 192.
 //!
 //!   MATRIX: O3 × {P1..P5} — every path is the fixpoint of at least one cell, and
 //!   every cell's fixpoint is checked against the named-terminal predicate.
@@ -181,6 +182,24 @@ impl Budget {
     }
 }
 
+/// INC-I-294 M-2: Rules 1/1b roll back only with a live `HeaderDivergence` for our tip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Proof {
+    Absent,
+    Present,
+}
+
+impl Proof {
+    pub(super) const ALL: [Proof; 2] = [Proof::Absent, Proof::Present];
+
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Proof::Absent => "proof=none",
+            Proof::Present => "proof=tip",
+        }
+    }
+}
+
 /// One cell of the C-6 enumeration. Every dimension is an exhaustively-matched
 /// enum, so a new dimension variant cannot be introduced without naming it.
 #[derive(Debug, Clone, Copy)]
@@ -249,6 +268,15 @@ pub(super) fn report_wedge_evidence(coord: &mut RecoveryCoordinator, gap: u64) {
     });
 }
 
+/// Report a fresh header proof that a peer's chain leaves our tip at `tip_height`.
+pub(super) fn report_header_proof(coord: &mut RecoveryCoordinator, tip_height: u64) {
+    coord.report(RecoveryEvidence::HeaderDivergence {
+        peer: PeerId::random(),
+        tip_height,
+        tip_hash: crypto::Hash::ZERO,
+    });
+}
+
 pub(super) fn cell_ctx(cell: Cell) -> RecoveryContext {
     RecoveryContext {
         local_height: LOCAL_H,
@@ -267,6 +295,7 @@ pub(super) fn cell_ctx(cell: Cell) -> RecoveryContext {
         last_rollback_time: None,
         in_grace_period: false,
         last_finality_height: cell.fin.height(),
+        local_tip_hash: crypto::Hash::ZERO,
     }
 }
 
@@ -362,8 +391,11 @@ pub(super) fn fixpoint_verdict(cell: Cell, action: RecoveryAction) -> Result<(),
 /// `periodic.rs` does between ticks: 30s elapses (cooldown clears) and an
 /// executed `ShallowRollback` burns the Node-side budget. The node's condition
 /// itself does NOT improve — that is the wedge being modelled.
-pub(super) fn drive(cell: Cell) -> Vec<RecoveryAction> {
+pub(super) fn drive_with(cell: Cell, proof: Proof) -> Vec<RecoveryAction> {
     let mut coord = cell_coordinator(cell);
+    if proof == Proof::Present {
+        report_header_proof(&mut coord, LOCAL_H);
+    }
     let mut ctx = cell_ctx(cell);
     let mut seq = Vec::with_capacity(TICKS);
     for _ in 0..TICKS {
@@ -376,6 +408,11 @@ pub(super) fn drive(cell: Cell) -> Vec<RecoveryAction> {
         seq.push(action);
     }
     seq
+}
+
+/// `drive_with` and no header proof.
+pub(super) fn drive(cell: Cell) -> Vec<RecoveryAction> {
+    drive_with(cell, Proof::Absent)
 }
 
 /// `Some(action)` when the tail of `seq` has settled on one rung, `None` when it
@@ -420,6 +457,7 @@ fn m3_incident_shape_wedged_cohort_must_reach_a_named_non_lossy_terminal() {
             last_rollback_time: None,
             in_grace_period: false,
             last_finality_height: Some(LOCAL_H),
+            local_tip_hash: crypto::Hash::ZERO,
         };
         let action = coord.classify(&ctx);
         coord.record_action(action);
@@ -499,21 +537,25 @@ fn c6_every_cell_of_the_recovery_state_space_has_a_named_terminating_rung() {
         "C-6 fixture: the enumeration must cover the full cross product"
     );
 
+    let total = cells.len() * Proof::ALL.len();
     let mut failures: Vec<String> = Vec::new();
-    for cell in cells {
-        let seq = drive(cell);
-        match settled(&seq) {
-            None => failures.push(format!(
-                "{} CYCLES: last {FIXPOINT_WINDOW} ticks were {:?}",
-                cell.name(),
-                seq[seq.len() - FIXPOINT_WINDOW..]
-                    .iter()
-                    .map(|a| rung_name(*a))
-                    .collect::<Vec<_>>()
-            )),
-            Some(fixpoint) => {
-                if let Err(why) = fixpoint_verdict(cell, fixpoint) {
-                    failures.push(format!("{} {}", cell.name(), why));
+    for proof in Proof::ALL {
+        for &cell in &cells {
+            let seq = drive_with(cell, proof);
+            match settled(&seq) {
+                None => failures.push(format!(
+                    "{} {} CYCLES: last {FIXPOINT_WINDOW} ticks were {:?}",
+                    cell.name(),
+                    proof.name(),
+                    seq[seq.len() - FIXPOINT_WINDOW..]
+                        .iter()
+                        .map(|a| rung_name(*a))
+                        .collect::<Vec<_>>()
+                )),
+                Some(fixpoint) => {
+                    if let Err(why) = fixpoint_verdict(cell, fixpoint) {
+                        failures.push(format!("{} {} {}", cell.name(), proof.name(), why));
+                    }
                 }
             }
         }
@@ -522,7 +564,7 @@ fn c6_every_cell_of_the_recovery_state_space_has_a_named_terminating_rung() {
     let shown: Vec<&String> = failures.iter().take(12).collect();
     assert!(
         failures.is_empty(),
-        "REQ-FORK-010 (C-6): {} of 96 cells have no named, non-lossy terminating rung. \
+        "REQ-FORK-010 (C-6): {} of {total} cells have no named, non-lossy terminating rung. \
          First {}:\n  {}",
         failures.len(),
         shown.len(),
@@ -540,14 +582,26 @@ fn c6_every_cell_of_the_recovery_state_space_has_a_named_terminating_rung() {
 #[test]
 fn c6_enumeration_is_not_vacuous_every_ladder_rung_is_exercised() {
     let mut hit: Vec<&'static str> = Vec::new();
+    let mut blind: Vec<String> = Vec::new();
     for cell in all_cells() {
-        for action in drive(cell) {
-            let name = rung_name(action);
-            if !hit.contains(&name) {
-                hit.push(name);
+        for proof in Proof::ALL {
+            for action in drive_with(cell, proof) {
+                if proof == Proof::Absent
+                    && matches!(action, RecoveryAction::ShallowRollback { .. })
+                {
+                    blind.push(cell.name());
+                }
+                let name = rung_name(action);
+                if !hit.contains(&name) {
+                    hit.push(name);
+                }
             }
         }
     }
+    assert!(
+        blind.is_empty(),
+        "INC-I-294 M-2: cells without a header proof reached ShallowRollback: {blind:?}"
+    );
     for expected in ["shallow_rollback", "sibling_fetch", "snap_sync"] {
         assert!(
             hit.contains(&expected),
@@ -589,6 +643,7 @@ fn m3_wedged_is_exitable_by_corroboration() {
         last_rollback_time: None,
         in_grace_period: false,
         last_finality_height: Some(LOCAL_H),
+        local_tip_hash: crypto::Hash::ZERO,
     };
     assert!(
         !matches!(coord.classify(&resolved), RecoveryAction::Wedged { .. }),

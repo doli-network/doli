@@ -4,6 +4,7 @@ use anyhow::{anyhow, Result};
 use doli_core::{consensus, Network};
 use tracing::warn;
 
+use super::truncate_restore;
 use crate::cli::expand_tilde_path;
 
 pub(crate) fn reindex_canonical_chain(data_dir: &PathBuf) -> Result<()> {
@@ -41,7 +42,7 @@ pub(crate) fn reindex_canonical_chain(data_dir: &PathBuf) -> Result<()> {
 /// - UTXO set (all unspent outputs)
 /// - producers.bin (registered producers)
 pub(crate) fn truncate_chain(
-    _network: Network,
+    network: Network,
     data_dir: &std::path::Path,
     blocks_to_remove: u64,
     skip_confirm: bool,
@@ -196,6 +197,14 @@ pub(crate) fn truncate_chain(
         rolled_back, current_height, new_tip
     );
 
+    // Step 1b: epoch state, epoch tables and chain commitment of the new tip
+    let epoch_snapshot = state_db
+        .get_undo(new_tip + 1)
+        .and_then(|undo| undo.epoch_state_snapshot);
+    truncate_restore::restore_epoch_state(&state_db, new_tip, epoch_snapshot);
+    truncate_restore::drop_epoch_tables(&state_db, network, new_tip, current_height);
+    truncate_restore::clear_chain_commitment(&state_db);
+
     // Step 2: Delete blocks above new_tip from block store
     println!(
         "Deleting blocks above height {} from block store...",
@@ -208,7 +217,10 @@ pub(crate) fn truncate_chain(
     state_db.prune_undo_above(new_tip);
 
     println!();
-    println!("Truncation complete. Node is at height {}.", new_tip);
+    println!(
+        "Truncation complete. Node is at height {} (hash {}).",
+        new_tip, chain_state.best_hash
+    );
     println!("Start the node normally — it will sync forward from peers.");
 
     Ok(())

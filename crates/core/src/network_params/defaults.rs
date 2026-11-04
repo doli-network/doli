@@ -263,7 +263,10 @@ impl NetworkParams {
                 // on mainnet (decision 2026-09-05, v6.28.0); IMMUTABLE once
                 // crossed (INV-PARAMS-001). Own field, never bundled onto #16.
                 inc_i_204_fork_choice_activation_height: 409_000,
-                inc_i_288_fork_choice_activation_height: u64::MAX, // INC-I-288: not scheduled
+                // INC-I-288 / INC-I-293 node-local fork choice. PINNED 881_800 on
+                // mainnet; fork choice only, no block content. IMMUTABLE once
+                // crossed (INV-PARAMS-001).
+                inc_i_288_fork_choice_activation_height: 881_800,
                 // INC-I-178 M4 attestation-BLS semantics. PINNED 409_000 on
                 // mainnet (decision 2026-09-05, v6.28.0); block CONTENT changes
                 // at this height => SYNCHRONIZED deploy. IMMUTABLE once crossed.

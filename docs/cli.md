@@ -1816,6 +1816,10 @@ doli-node reindex
 # Recover chain state from blocks (rebuild UTXO/producers/state)
 doli-node recover [--yes]
 
+# Remove the top N blocks of a STOPPED node with undo data (max 100). Restores the UTXO set,
+# the producer set, the chain state and the epoch state of the new tip
+doli-node --network NETWORK --data-dir /path/to/data truncate --blocks N [--yes]
+
 # Full repair pipeline (corrupt state with intact blocks):
 #   reindex rebuilds height_index → recover replays blocks → start node
 doli-node --network NETWORK --data-dir /path/to/data reindex

@@ -19,6 +19,7 @@
 //   BEHIND x D1 -> O1 = 0 (test 4)         BEHIND x C1 -> O1 >= 1 (test 4 control)
 //   Gate1  x D1 -> O2 = ShallowRollback{1}, never HeaderFirstSync (test 5)
 //   Gate1  x C1 -> O2 = HeaderFirstSync (test 5 control)
+//   (test 5: both arms carry a fresh header proof for the tip, INC-I-294 M-2)
 // refs: R-2, INC-I-281; INV-SYNC-010 is narrowed, never widened.
 // covers: block_handling fork_cache rollback rollback_memory block_lifecycle peers recovery sync_manager periodic network_events
 // covers: bins/node/src/node/block_handling.rs
@@ -37,7 +38,7 @@ mod inc_i_281_m2_support;
 
 use doli_core::Block;
 use inc_i_281_m2_support::*;
-use network::{RecoveryAction, RecoveryContext};
+use network::{PeerId, RecoveryAction, RecoveryContext};
 
 /// Rollback to F, then the one apply since it: the removed D1 after the hold
 /// window (no sibling known), or the never-removed canonical C1.
@@ -71,7 +72,8 @@ async fn behind_events(r: &mut Rig, orphans: &[Block]) -> usize {
     logs.mentioning("BEHIND not forked")
 }
 
-/// Gossips orphans as coordinator evidence, then asks the coordinator.
+/// Gossips orphans as coordinator evidence, reports a fresh header proof for our
+/// tip (the header round trip this rig does not run), then asks the coordinator.
 async fn coordinator_action(
     r: &mut Rig,
     orphans: &[Block],
@@ -79,12 +81,14 @@ async fn coordinator_action(
     for o in orphans {
         gossip(r, o).await;
     }
+    let (tip, tip_hash) = {
+        let cs = r.node.chain_state.read().await;
+        (cs.best_height, cs.best_hash)
+    };
     let count = r.node.shallow_rollback_count;
-    r.node
-        .sync_manager
-        .write()
-        .await
-        .classify_and_dispatch(count)
+    let mut sync = r.node.sync_manager.write().await;
+    sync.report_header_divergence(PeerId::random(), tip, tip_hash);
+    sync.classify_and_dispatch(count)
 }
 
 // R-2 (Must) — Decision: a failure means re-applying a block the fork-remedy rollback removed still arms the "BEHIND not forked" suppressor, so orphan evidence from the canonical branch is discarded for 300 s on a node that is forked, not behind.

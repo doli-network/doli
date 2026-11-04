@@ -9,6 +9,9 @@ use tracing::{debug, info, warn};
 use doli_core::{Block, BlockHeader};
 
 use crate::protocols::{SyncRequest, SyncResponse};
+use crate::sync::manager::header_proof::{
+    chain_break_proves_tip_divergence, reply_anchored_at_tip,
+};
 use crate::sync::manager::{SyncManager, SyncPhase, SyncPipelineData, SyncState};
 
 impl SyncManager {
@@ -37,18 +40,18 @@ impl SyncManager {
         // None (no tracking info, e.g. after soft retry cleared requests) is NOT stale.
         let skips_walk = self.reply_skips_walk(peer, answered);
         let keep_walk_pending = skips_walk && self.pending_is_walk_fetch(peer);
-        let request_epoch = if let Some(status) = self.peers.get_mut(&peer) {
+        let taken = if let Some(status) = self.peers.get_mut(&peer) {
             if let Some(req_id) = status.pending_request.take_if(|_| !keep_walk_pending) {
-                self.pipeline
-                    .pending_requests
-                    .remove(&req_id)
-                    .map(|r| r.epoch)
+                self.pipeline.pending_requests.remove(&req_id)
             } else {
                 None
             }
         } else {
             None
         };
+        let request_epoch = taken.as_ref().map(|r| r.epoch);
+        let anchored_at_tip =
+            reply_anchored_at_tip(taken.as_ref().map(|r| &r.request), self.local_height);
 
         let is_stale_epoch = matches!(request_epoch, Some(e) if e != self.pipeline.sync_epoch);
 
@@ -76,7 +79,7 @@ impl SyncManager {
                     self.handle_snap_descent_headers(peer, headers);
                     return vec![];
                 }
-                self.handle_headers_response(peer, headers);
+                self.handle_headers_response(peer, headers, anchored_at_tip);
                 vec![]
             }
             SyncResponse::Bodies(bodies) => {
@@ -253,7 +256,12 @@ impl SyncManager {
     }
 
     /// Handle headers response
-    fn handle_headers_response(&mut self, peer: PeerId, headers: Vec<BlockHeader>) {
+    fn handle_headers_response(
+        &mut self,
+        peer: PeerId,
+        headers: Vec<BlockHeader>,
+        anchored_at_tip: bool,
+    ) {
         if headers.is_empty() {
             debug!("Received empty headers response from {}", peer);
 
@@ -342,6 +350,10 @@ impl SyncManager {
                          gossip timing, not a fork. Waiting for gossip delivery.",
                         peer, gap, self.fork.consecutive_empty_headers
                     );
+                    // INC-I-294: ask by height next, so a sibling at tip+1 can prove divergence.
+                    if self.fork.consecutive_empty_headers < super::PARK_EMPTY_HEADERS {
+                        self.fork.use_height_based_headers = true;
+                    }
                     self.set_state(SyncState::Idle, "small_gap_wait_gossip");
                     return;
                 }
@@ -453,6 +465,15 @@ impl SyncManager {
         // D2 (INC-I-090): record chain break info for diagnostic emission
         if let Some(cb) = self.pipeline.header_downloader.take_chain_break() {
             use crate::sync::manager::types::ChainBreakInfo;
+            // INC-I-294: the peer's first header does not extend our tip.
+            if chain_break_proves_tip_divergence(&cb, self.local_hash, anchored_at_tip) {
+                self.recovery
+                    .report(super::super::recovery::RecoveryEvidence::HeaderDivergence {
+                        peer,
+                        tip_height: self.local_height,
+                        tip_hash: self.local_hash,
+                    });
+            }
             if self.fork.chain_breaks.len() >= 32 {
                 self.fork.chain_breaks.pop_front();
             }

@@ -1268,7 +1268,7 @@ cp -r data_dir/checkpoints/h{HEIGHT}-{TS}/blocks data_dir/blocks
 
 ### 4.6b. Finality Lock After a Restart (INC-I-289 K-2, M-1, M-2)
 
-**Background:** at and above `inc_i_288_fork_choice_activation_height` (mainnet not scheduled) a finalized block is kept across a restart, a reorg and a snap install, and fork choice weighs each branch by the bond of its verified supporters with the epoch table of the common ancestor. Below that height the `[FINALITY]`, `FORK_TABLE`, `Refusing snapshot` and `Descent proof` lines do not appear; the `FINALITY:` and `[WEDGE_ESCAPE]` lines can, because they predate INC-I-289. Rules: `specs/protocol.md` §5.5.
+**Background:** at and above `inc_i_288_fork_choice_activation_height` (mainnet 881,800; testnet 366,891; devnet 0) a finalized block is kept across a restart, a reorg and a snap install, and fork choice weighs each branch by the bond of its verified supporters with the epoch table of the common ancestor. Below that height the `[FINALITY]`, `FORK_TABLE`, `Refusing snapshot` and `Descent proof` lines do not appear; the `FINALITY:` and `[WEDGE_ESCAPE]` lines can, because they predate INC-I-289. Rules: `specs/protocol.md` §5.5.
 
 **Log lines** (`…` = a value; the text is otherwise verbatim):
 
@@ -1388,6 +1388,27 @@ Exit code 2 means the URL or file could not be read. Read the lines:
 The fix is node-local: no activation height, safe for a rolling restart.
 
 **Snap anchor answers.** A snap-synced node stores its anchor block header-only. Since INC-I-281 it answers "not found" when a peer asks for that block by height, by hash or in a `GetBodies` batch, and the peer asks another node (debug log: `sync serve: withholding header-only block …`). The `getBlockByHeight` RPC still returns the stored header with an empty transaction list at the anchor height. This is expected and is not corruption.
+
+### 4.9. A One-Block Gap Does Not Remove a Valid Tip (INC-I-294)
+
+**Symptom (old builds):** a node at the network tip sees a gap of 1 from one peer's height claim and rolls back its own valid tip block. Then it applies the same block again, or the gap comes back at the next 30 s status refresh.
+
+**Cause:** the recovery coordinator counted evidence older than `EVIDENCE_TTL` (120 s), because it pruned old entries only when new evidence arrived. Below the fork-choice gate (`inc_i_288_fork_choice_activation_height`), Rules 1/1b then ran a depth-1 rollback on counters alone.
+
+**Rule now:** no decision counts evidence older than 120 s. Below the gate, Rules 1/1b run a depth-1 rollback only with a live header proof for the current tip (height AND hash). A proof recorded for another tip hash does not count. Two sources give the proof:
+- a reply to the node's own height request from its current tip height (`GetHeadersByHeight(local_height)`, so the first header is at tip+1) whose first header passes header validation (version, timestamp, producer signature from its activation height) and does not build on the local tip hash (`[HEADER_DEBUG] Chain break: … valid_so_far=0`). A reply with no tracked request (for example one that arrives after a rollback), a hash-based reply, or a reply to another height gives no proof. After an empty header reply at a gap of 3 or less, the next request asks for headers by height, so that this header can arrive;
+- a competing block with a better (lower) slot at the node's tip height whose parent is the parent of the local tip (`[FORK_GUARD] Better block dropped (slot … < …) at h=…`). The block has already passed the gossip signature check. A competing block at a lower height gives no proof.
+
+Without a proof the ladder continues: header-first sync, or the wedge terminal (competing-tip fetch). The finality guard runs first and is unchanged. At and above the gate Rules 1/1b stay off.
+
+| Line | Meaning |
+|------|---------|
+| `[COORDINATOR] action=… grace=… ev=[orphan:2 age=5s..40s, header_proof:1 age=3s, expired:3]` | One recovery decision, logged only when the action is not `None`. `ev=[…]` gives the live evidence by kind (`empty_headers`, `orphan`, `apply_fail`, `stale_tip`, `stuck_fork`, `header_proof`), count and age, then the count of expired entries still held. |
+| `[ROLLBACK] Initiating: authority=coordinator_approved …`, then `[FORK] ROLLBACK_DONE h=…` | The coordinator rollback ran. Below the gate, the `[COORDINATOR]` line before it shows `header_proof`. |
+| `[NET_TIP] src=status\|peer_removed\|orphan_guess peer=<id\|-> height=<new> prev=<old>` | The network tip height changed, with its source and peer. Logged only when the value changes. |
+| `[APPLY_END] slot=… hash=… status=dropped reason=…` | A block that logged `[APPLY_START]` was not applied. Reasons: `unauthenticated`, the classify text, `height_occupied`, `wedge_escape`, `orphan_chased`, `orphan_not_chased`, `cache_refused`, `fork_recovery_started`, `reorg`, `cached_for_reorg`, `genesis_mismatch`, `held_removed`, `rejected`, `error`. The reorg-candidate exit logs `reason=reorg` also when the reorg ran. |
+
+**What to do:** on a fixed build, a coordinator rollback below the gate without `header_proof`, or an `[APPLY_START]` without an `[APPLY_END]`, must not occur. Report it with the 2 minutes of log before the line. The fix is node-local: no activation height, safe for a rolling restart.
 
 ---
 
@@ -1707,6 +1728,15 @@ When a node falls out of sync or produces a fork:
 3. **Genesis mismatch peers** — get 1-hour silent cooldown (won't attempt sync from them).
 
 Code: `bins/node/src/node/rollback.rs` (rollback), `crates/network/src/sync/manager.rs` (snap sync)
+
+### 7.1b. Operator Truncate (`doli-node truncate --blocks N`)
+
+Use it to remove wrong blocks at the tip of a STOPPED node. It reads the undo records, newest first, and restores the UTXO set, the producer set and the chain state of the new tip. Since INC-I-294 it also restores the epoch state from the undo record at `new_tip + 1`, as the live rollback does. It deletes the stored epoch table of each dropped epoch boundary and clears the chain commitment (the next integrity scan computes it again). The node then holds the state of a node that never applied the dropped blocks. Last, it deletes the blocks and the undo records above the new tip.
+
+- Bound: `UNDO_KEEP_DEPTH` (100 blocks). A deeper truncate is refused; the error points to `recover` (`docs/disaster-recovery.md`).
+- `WARNING: no epoch state snapshot in undo at height …`: the undo record has no epoch snapshot, or it does not decode. The command keeps the stored epoch state and completes. It never rebuilds epoch state from blocks.
+- Lines to check: `epoch state restored for tip … from undo at height …`, `epoch tables dropped: …`, `Truncation complete. Node is at height … (hash …).`
+- Start the node normally. It syncs forward from peers.
 
 ### 7.2. State Root Divergence (Snap Sync Failure)
 

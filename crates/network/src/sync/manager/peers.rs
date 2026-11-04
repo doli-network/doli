@@ -107,7 +107,7 @@ impl SyncManager {
                 "Network tip height updated from peer status: {} -> {}",
                 self.network.network_tip_height, height
             );
-            self.network.network_tip_height = height;
+            self.set_network_tip(height, "status", Some(&peer));
         }
         if slot > self.network.network_tip_slot {
             debug!(
@@ -139,7 +139,7 @@ impl SyncManager {
 
         // Also update network tip from peer status (same as add_peer)
         if height > self.network.network_tip_height {
-            self.network.network_tip_height = height;
+            self.set_network_tip(height, "status", Some(&peer));
         }
         if slot > self.network.network_tip_slot {
             self.network.network_tip_slot = slot;
@@ -152,6 +152,15 @@ impl SyncManager {
         let state_ok = matches!(self.state, SyncState::Idle | SyncState::Synchronized);
         if state_ok && self.should_sync() {
             self.start_sync();
+        }
+    }
+
+    /// Writes `network_tip_height`; a changed value logs one `[NET_TIP]` INFO line.
+    fn set_network_tip(&mut self, new: u64, src: &'static str, peer: Option<&PeerId>) {
+        let prev = std::mem::replace(&mut self.network.network_tip_height, new);
+        if new != prev {
+            let peer = peer.map_or_else(|| "-".to_string(), |p| p.to_string());
+            info!("[NET_TIP] src={src} peer={peer} height={new} prev={prev}");
         }
     }
 
@@ -181,7 +190,11 @@ impl SyncManager {
             .max()
             .unwrap_or(0);
         let peer_max_slot = self.peers.values().map(|p| p.best_slot).max().unwrap_or(0);
-        self.network.network_tip_height = peer_max_height.max(self.local_height);
+        self.set_network_tip(
+            peer_max_height.max(self.local_height),
+            "peer_removed",
+            Some(peer),
+        );
         self.network.network_tip_slot = peer_max_slot.max(self.local_slot);
 
         // Track when we lost all peers (for peer loss timeout)
@@ -588,7 +601,7 @@ impl SyncManager {
         if block_height > self.network.network_tip_height
             && self.local_height < self.config.inc_i_288_fork_choice_activation_height
         {
-            self.network.network_tip_height = block_height;
+            self.set_network_tip(block_height, "orphan_guess", None);
         }
         if block_slot > self.network.network_tip_slot {
             self.network.network_tip_slot = block_slot;

@@ -11,6 +11,7 @@ mod branch_verdict;
 mod cleanup;
 pub mod force_reorg;
 mod fork_walk;
+mod header_proof;
 mod peers;
 mod production_gate;
 pub mod recovery;
@@ -60,6 +61,16 @@ mod tests_inc_i237_tip_race;
 #[cfg(test)]
 mod tests_inc_i289_m1_snap_descent;
 #[cfg(test)]
+mod tests_inc_i293_mainnet_gate_cells;
+#[cfg(test)]
+mod tests_inc_i294_header_proof;
+#[cfg(test)]
+mod tests_inc_i294_m4_evidence_summary;
+#[cfg(test)]
+mod tests_inc_i294_m4_net_tip_log;
+#[cfg(test)]
+mod tests_inc_i294_proof_auth;
+#[cfg(test)]
 mod tests_m3_state_session;
 #[cfg(test)]
 mod tests_m5_quorum_anchor;
@@ -70,6 +81,7 @@ pub use types::{
     SyncPipelineData, SyncState, VerifiedSnapshot,
 };
 // Re-export recovery coordinator types used by Node layer
+pub use header_proof::sibling_proves_tip_divergence;
 pub use recovery::{RecoveryAction, RecoveryContext, RecoveryEvidence, WedgeReason};
 // INC-I-204 M4.1: the operator escape directive, consumed by the Node layer.
 pub use force_reorg::{ForceReorgPoll, FORCE_REORG_MAX_HEIGHT_SPAN, FORCE_REORG_TTL_SECS};

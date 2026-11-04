@@ -116,6 +116,17 @@ pub struct HealObs {
 /// The heal: peers report `peer_tips` (height, block); `orphans` arrive by gossip
 /// from the last of them, parents unknown; then one periodic tick runs.
 pub async fn heal_tick(r: &mut Rig, peer_tips: &[(u64, Block)], orphans: &[Block]) -> HealObs {
+    heal_tick_with(r, peer_tips, orphans, false).await
+}
+
+/// `heal_tick`; with `proof`, the orphan sender's header proof for our current tip
+/// (the header round trip this rig does not run) is reported before the tick.
+pub async fn heal_tick_with(
+    r: &mut Rig,
+    peer_tips: &[(u64, Block)],
+    orphans: &[Block],
+    proof: bool,
+) -> HealObs {
     let old_tip = r.node.chain_state.read().await.best_hash;
     let mut from = PeerId::random();
     for (h, b) in peer_tips {
@@ -126,6 +137,13 @@ pub async fn heal_tick(r: &mut Rig, peer_tips: &[(u64, Block)], orphans: &[Block
         deliver(r, b, from).await;
     }
     let net_after_intake = net_tip(r).await;
+    if proof {
+        let (tip, tip_hash) = {
+            let cs = r.node.chain_state.read().await;
+            (cs.best_height, cs.best_hash)
+        };
+        (r.node.sync_manager.write().await).report_header_divergence(from, tip, tip_hash);
+    }
     tick(r).await;
     let mut orphans_cached = Vec::new();
     for b in orphans {

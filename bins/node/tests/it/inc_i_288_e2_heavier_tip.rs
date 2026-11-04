@@ -107,7 +107,8 @@ async fn e2_a_inc_i_288_control_lighter_tip_still_walks_down() {
     let mut r = rig(&[211, 213, 215], &[210, 212, 214, 216]).await;
     let (c2, c3, d4) = (r.ours[1].clone(), r.ours[2].clone(), r.theirs[3].clone());
     let orphans = r.theirs[2..].to_vec();
-    let o = heal_tick(&mut r, &[(F + 3, c3.clone()), (F + 4, d4)], &orphans).await;
+    // INC-I-294 M-2: a depth-1 walk-down below the gate needs a header proof for C3.
+    let o = heal_tick_with(&mut r, &[(F + 3, c3.clone()), (F + 4, d4)], &orphans, true).await;
 
     let (srb, depth) = o.rollbacks_before;
     assert_eq!(

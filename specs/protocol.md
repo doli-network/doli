@@ -2135,7 +2135,7 @@ This prevents Sybil attacks where an attacker creates many low-weight blocks.
 
 **Fork choice from the activation height (INC-I-288, INC-I-289).** Every rule in this paragraph
 and in the four that follow is node-local fork choice. Each is on at and above
-`inc_i_288_fork_choice_activation_height` (mainnet `u64::MAX`, not scheduled; testnet 366,891;
+`inc_i_288_fork_choice_activation_height` (mainnet 881,800; testnet 366,891;
 devnet 0) and unchanged below it. A site is on when the height it compares is `>=` the gate;
 that height is the local tip height, except: the FORK_GUARD arm compares the fork block's
 height, the own-block progress rule and the LRU re-record compare the block's height, the
@@ -2326,6 +2326,19 @@ bound; only when none is does the whole snap attempt fall back to block sync.
 claim (Rules 1/1b) is removed: it weighed nothing. A Syncing state started by a peer's height
 claim no longer blocks production; the height-based defer in production still applies. With
 items (3) and (4) above, an orphan's guessed height and an own block no longer steer recovery.
+
+**Recovery below the gate (INC-I-294).** Below the gate Rules 1/1b stay, but a depth-1 rollback
+needs a live `HeaderDivergence` proof for the current tip, keyed by tip height and tip hash: the
+reply to a tracked `GetHeadersByHeight(local_height)` request whose first header passes header
+validation (version, timestamp, producer signature from its activation height) and does not build on
+the local tip hash, or a competing block with a better slot at the tip height whose parent is the
+local tip's parent (the FORK_GUARD `is_better` arm). An untracked, hash-based or other-height reply
+gives no proof; a proof for another tip hash does not count. Counters alone continue the ladder (header-first sync, or
+the wedge terminal). After an empty header reply at a gap of 3 or less, the next request asks for
+headers by height, once. At classify no rule counts evidence older than `EVIDENCE_TTL` (120 s),
+below and above the gate; before, old entries were pruned only when new evidence arrived. The
+finality guard runs first and is unchanged. Node-local: no block content, validity or wire change;
+no activation height.
 
 **Not gated.** These changes are the same on every network from install: (a) INC-I-292: after a
 reorg lands in Normal mode the node runs the existing drain on the new tip's cached children
@@ -2810,7 +2823,7 @@ The staleness threshold of 6 slots (60s at SLOT_DURATION=10s) tolerates clock sk
 
 **Outbound sync-request governor (INV-SYNC-009, INC-I-120, Layer 1).** The gossip path (above) had flood control but the adjacent *sync* request/response path had inbound serving caps and ZERO outbound rate governance. A natural fork therefore self-amplified into a ~40 req/s busy-retry loop (3.5M req/node/day) → fleet-wide resource collapse. Every outbound sync request funnels through the single `NetworkCommand::RequestSync` chokepoint, which now applies a per-peer + global token-bucket governor (`max_sync_requests_per_second`, default 10/peer, 60/s global; reuses `crates/network/src/rate_limit.rs`). When a bucket is empty the request is **dropped** (not queued) — the sync state machine re-derives it on the next tick at a governed rate. Only retry-storm classes are governed (`GetHeaders`, `GetBodies`, `GetBlockByHeight`); recovery/canonical-critical classes (`GetStateSnapshot`, `GetStateRoot`, `GetHeadersByHeight`, `GetBlockByHash` orphan-chase, `DirectAttestation`) bypass the governor entirely via `SyncRequest::is_rate_governed` (guardrail G1, from INC-I-049 — never throttle canonical-block delivery or fork-recovery). Complementary fix: a `"busy"` sync response now applies cooperative backoff (blacklist peer + go Idle) instead of immediately re-issuing `start_sync()`, which was the self-amplification trigger.
 
-**Sustained stuck-fork recovery (INV-FORK-001, INC-I-120, Layer 2).** A node genuinely forked on a small gap never satisfies the RecoveryCoordinator's `recently_synced()` precondition for `ShallowRollback` (its tip is stale by definition), so it previously looped `HeaderFirstSync` forever against peers that don't recognize its tip. `cleanup.rs` now re-raises a guarded stuck-fork signal (guardrail G3: ≥300s no apply AND small gap AND ≥3 consecutive empty-header replies = local tip ∉ peer-majority chain), and `periodic.rs` wires the consumed signal to the coordinator as `RecoveryEvidence::StuckFork`, which escalates to a finality-guarded `ShallowRollback` (honors INV-SYNC-001/004/008: never roll back below finality). This completes the unfinished half of INC-I-090 (detector built, action never wired).
+**Sustained stuck-fork recovery (INV-FORK-001, INC-I-120, Layer 2).** A node genuinely forked on a small gap never satisfies the RecoveryCoordinator's `recently_synced()` precondition for `ShallowRollback` (its tip is stale by definition), so it previously looped `HeaderFirstSync` forever against peers that don't recognize its tip. `cleanup.rs` now re-raises a guarded stuck-fork signal (guardrail G3: ≥300s no apply AND small gap AND ≥3 consecutive empty-header replies = local tip ∉ peer-majority chain), and `periodic.rs` wires the consumed signal to the coordinator as `RecoveryEvidence::StuckFork`, which escalates to a finality-guarded `ShallowRollback` (honors INV-SYNC-001/004/008: never roll back below finality). This completes the unfinished half of INC-I-090 (detector built, action never wired). Since INC-I-294 this rollback below the fork-choice gate also needs a live header proof (§5.5); at and above the gate Rules 1/1b are off (INC-I-289).
 
 **Finality-wedged sibling fetch + snap-anchor integrity (INC-I-143).** Two gaps in the recovery layer above are closed. (1) *SiblingFetch (D4):* when a `StuckFork` coincides with `finality == local_tip`, the depth-1 rollback target falls below finality and the INV-SYNC-008 guard correctly refuses it — the coordinator previously returned `None` and re-refused every tick (454-refusal livelock). It now emits `RecoveryAction::SiblingFetch { height: local_tip }`, which sends `GetBlockByHeight{local_tip}` to up to 3 top peers (the recovery-critical class, ungoverned) to pull the competing sibling onto the wedged node; the sibling is re-evaluated by node-local fork choice via `plan_reorg`. Bounded to `SIBLING_FETCH_MAX(3)` consecutive attempts (any other concrete action resets the budget), then falls through to standard escalation. The finality guard's strict `<` is UNCHANGED. (2) *Snap-anchor admission (D1/D2):* `handle_snap_snapshot` now refuses a snapshot whose served `response_root` ≠ the quorum-agreed root, AND refuses an anchor whose `(block_hash, block_height)` pair is not corroborated by a STATUS quorum of connected peers — deriving the install height from quorum evidence rather than a single peer's uncorroborated current tip. Either refusal increments `snap.integrity_refusals` and falls back to an alternate peer (then header-first). Pre-fix, an accepted root mismatch and a single-peer height claim spliced a forked anchor at a −1 offset with a 45-block hole (candidate `INV-SYNC-011` extension).
 
@@ -2868,7 +2881,7 @@ Devnet (local development) → Testnet (public testing) → Mainnet (production)
 | Equivocation slashing (`inc_i_255_slashing_activation_height`, §3.10.1) | 806,859 | 330,849 | 0 | Devnet only (`DOLI_INC_I_255_SLASHING_ACTIVATION_HEIGHT`) |
 | Unbonding lock (`inc_i_257_unbonding_activation_height`, §3.13.1) | 806,859 | 330,849 | 0 | Devnet only (`DOLI_INC_I_257_UNBONDING_ACTIVATION_HEIGHT`) |
 | Producer authorization (`inc_i_182_producer_auth_activation_height`, §3.13.2) | 806,859 | 330,849 | 0 | Devnet only (`DOLI_INC_I_182_PRODUCER_AUTH_ACTIVATION_HEIGHT`) |
-| INC-I-288/INC-I-289 fork choice: rollback memory, bond weight from the common ancestor with its epoch table, persistent finality, snap descent proof, no blind rollback (`inc_i_288_fork_choice_activation_height`, §5.5) | `u64::MAX` (not scheduled) | 366,891 | 0 | Non-mainnet (`DOLI_INC_I_288_FORK_CHOICE_ACTIVATION_HEIGHT`) |
+| INC-I-288/INC-I-289 fork choice: rollback memory, bond weight from the common ancestor with its epoch table, persistent finality, snap descent proof, no blind rollback (`inc_i_288_fork_choice_activation_height`, §5.5) | 881,800 | 366,891 | 0 | Non-mainnet (`DOLI_INC_I_288_FORK_CHOICE_ACTIVATION_HEIGHT`) |
 | Data Directory | `~/.doli/mainnet/` | `~/.doli/testnet/` | `~/.doli/devnet/` | - |
 | Config File | `.env` in data dir | `.env` in data dir | `.env` in data dir | - |
 

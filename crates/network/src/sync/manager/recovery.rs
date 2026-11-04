@@ -65,6 +65,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use crypto::Hash;
 use libp2p::PeerId;
 
 /// A signal that a detector reports to the coordinator.
@@ -99,6 +100,13 @@ pub enum RecoveryEvidence {
     /// satisfy Rule 1's `recently_synced()` precondition and loops
     /// `HeaderFirstSync` forever against peers that don't recognize its tip.
     StuckFork { gap: u64 },
+
+    /// A fetched header/block from `peer` proves its chain does not extend our tip at `tip_height`.
+    HeaderDivergence {
+        peer: PeerId,
+        tip_height: u64,
+        tip_hash: Hash,
+    },
 }
 
 /// What the coordinator tells the caller to do.
@@ -203,6 +211,8 @@ pub struct RecoveryContext {
     /// Last finalized block height, if any. The classifier MUST refuse to recommend
     /// a rollback that would unwind a finalized block. INV-SYNC-001 (INC-I-081).
     pub last_finality_height: Option<u64>,
+    /// Hash of our tip at `local_height`.
+    pub local_tip_hash: Hash,
 }
 
 impl RecoveryContext {
@@ -307,6 +317,11 @@ const EVIDENCE_TTL: Duration = Duration::from_secs(120);
 /// Minimum time between same-action repeats.
 const ACTION_COOLDOWN: Duration = Duration::from_secs(30);
 
+/// The evidence age boundary shared by `live` and `evidence_summary`.
+fn is_live(at: Instant, now: Instant) -> bool {
+    now.duration_since(at) <= EVIDENCE_TTL
+}
+
 impl RecoveryCoordinator {
     /// Create an empty coordinator with no evidence and no prior action.
     pub fn new() -> Self {
@@ -355,8 +370,9 @@ impl RecoveryCoordinator {
         // After a rollback, if we applied any block, we reconnected to
         // canonical. Further orphan accumulation means we're behind, not
         // forked — don't rollback again.
-        if ctx.applied_since_rollback() && !self.evidence.is_empty() {
-            let has_orphan_or_empty = self.evidence.iter().any(|(_, e)| {
+        let now = Instant::now();
+        if ctx.applied_since_rollback() {
+            let has_orphan_or_empty = self.live(now).any(|e| {
                 matches!(
                     e,
                     RecoveryEvidence::OrphanGossip { .. } | RecoveryEvidence::EmptyHeaders { .. }
@@ -375,17 +391,15 @@ impl RecoveryCoordinator {
             }
         }
 
-        let empty_count = self.count(|e| matches!(e, RecoveryEvidence::EmptyHeaders { .. }));
-        let orphan_count = self.count(|e| matches!(e, RecoveryEvidence::OrphanGossip { .. }));
-        let apply_fails = self.count(|e| matches!(e, RecoveryEvidence::ApplyFailure { .. }));
+        let empty_count = self.count(now, |e| matches!(e, RecoveryEvidence::EmptyHeaders { .. }));
+        let orphan_count = self.count(now, |e| matches!(e, RecoveryEvidence::OrphanGossip { .. }));
+        let apply_fails = self.count(now, |e| matches!(e, RecoveryEvidence::ApplyFailure { .. }));
         let stale_tip = self
-            .evidence
-            .iter()
-            .any(|(_, e)| matches!(e, RecoveryEvidence::StaleTip { .. }));
+            .live(now)
+            .any(|e| matches!(e, RecoveryEvidence::StaleTip { .. }));
         let stuck_fork = self
-            .evidence
-            .iter()
-            .any(|(_, e)| matches!(e, RecoveryEvidence::StuckFork { .. }));
+            .live(now)
+            .any(|e| matches!(e, RecoveryEvidence::StuckFork { .. }));
 
         let gap = ctx.gap();
         let minor_fork_evidence = empty_count >= thresholds::MIN_MINOR_FORK_EVIDENCE
@@ -394,6 +408,11 @@ impl RecoveryCoordinator {
         let rollback_budget = ctx.shallow_rollback_count < thresholds::SHALLOW_ROLLBACK_MAX;
         // INC-I-289: the depth-1 rollback of Rules 1/1b weighs nothing.
         let blind_rollback = ctx.local_height < self.fork_choice_gate;
+        // INC-I-294 M-2: a live header proof that a peer's chain leaves our current tip.
+        let header_proof = self.live(now).any(|e| {
+            matches!(e, RecoveryEvidence::HeaderDivergence { tip_height, tip_hash, .. }
+                if *tip_height == ctx.local_height && *tip_hash == ctx.local_tip_hash)
+        });
 
         // INC-I-204 M3 (REQ-FORK-010): the wedge shape. G3 corroborated that our tip
         // is off the peer-majority chain AND nothing has applied since. A fork is not
@@ -419,7 +438,10 @@ impl RecoveryCoordinator {
             if rollback_refused {
                 return self.on_rollback_refused(ctx, wedged_shape);
             }
-            return RecoveryAction::ShallowRollback { depth: 1 };
+            // Without a header proof the ladder continues below.
+            if header_proof {
+                return RecoveryAction::ShallowRollback { depth: 1 };
+            }
         }
 
         // --- Rule 1b (INC-I-120 / RC-2): stuck fork, no recent apply ---
@@ -431,7 +453,9 @@ impl RecoveryCoordinator {
             if rollback_refused {
                 return self.on_rollback_refused(ctx, wedged_shape);
             }
-            return RecoveryAction::ShallowRollback { depth: 1 };
+            if header_proof {
+                return RecoveryAction::ShallowRollback { depth: 1 };
+            }
         }
 
         // --- Rule 2: snap sync — for BEHIND-ness, never for a fork (LB-5) ---
@@ -555,8 +579,53 @@ impl RecoveryCoordinator {
         }
     }
 
-    fn count(&self, pred: impl Fn(&RecoveryEvidence) -> bool) -> u32 {
-        self.evidence.iter().filter(|(_, e)| pred(e)).count() as u32
+    /// Evidence not yet past EVIDENCE_TTL at `now` (the same boundary `prune` uses).
+    fn live(&self, now: Instant) -> impl Iterator<Item = &RecoveryEvidence> + '_ {
+        self.evidence
+            .iter()
+            .filter(move |(t, _)| is_live(*t, now))
+            .map(|(_, e)| e)
+    }
+
+    /// Live evidence per kind (`kind:N age=As..Bs`) then `expired:N`, for the `[COORDINATOR]` line.
+    pub(crate) fn evidence_summary(&self, now: Instant) -> String {
+        use RecoveryEvidence as E;
+        let (mut kinds, mut live) = (Vec::<(&str, usize, u64, u64)>::new(), 0);
+        for (t, e) in self.evidence.iter().filter(|(t, _)| is_live(*t, now)) {
+            let name = match e {
+                E::EmptyHeaders { .. } => "empty_headers",
+                E::OrphanGossip { .. } => "orphan",
+                E::ApplyFailure { .. } => "apply_fail",
+                E::StaleTip { .. } => "stale_tip",
+                E::StuckFork { .. } => "stuck_fork",
+                E::HeaderDivergence { .. } => "header_proof",
+            };
+            let age = now.duration_since(*t).as_secs();
+            live += 1;
+            match kinds.iter_mut().find(|k| k.0 == name) {
+                Some(k) => *k = (name, k.1 + 1, k.2.min(age), k.3.max(age)),
+                None => kinds.push((name, 1, age, age)),
+            }
+        }
+        let mut items: Vec<String> = kinds
+            .iter()
+            .map(|&(name, n, lo, hi)| match lo == hi {
+                true => format!("{name}:{n} age={lo}s"),
+                false => format!("{name}:{n} age={lo}s..{hi}s"),
+            })
+            .collect();
+        items.push(format!("expired:{}", self.evidence.len() - live));
+        format!("ev=[{}]", items.join(", "))
+    }
+
+    fn count(&self, now: Instant, pred: impl Fn(&RecoveryEvidence) -> bool) -> u32 {
+        self.live(now).filter(|e| pred(e)).count() as u32
+    }
+
+    /// Test-only: record `evidence` at `at` without pruning.
+    #[cfg(test)]
+    pub(crate) fn report_at(&mut self, at: Instant, evidence: RecoveryEvidence) {
+        self.evidence.push_back((at, evidence));
     }
 
     /// Test-only: count current evidence entries.
@@ -599,11 +668,21 @@ mod tests {
             last_rollback_time: None,
             in_grace_period: false,
             last_finality_height: None,
+            local_tip_hash: crypto::Hash::ZERO,
         }
     }
 
     fn fake_peer() -> PeerId {
         PeerId::random()
+    }
+
+    /// A fresh header proof for `tip_height`; Rules 1/1b roll back only with one.
+    fn header_proof(tip_height: u64) -> RecoveryEvidence {
+        RecoveryEvidence::HeaderDivergence {
+            peer: fake_peer(),
+            tip_height,
+            tip_hash: Hash::ZERO,
+        }
     }
 
     // --- INC-I-120 StuckFork rollback tests (Layer 2 / RC-2) ------------------
@@ -644,6 +723,7 @@ mod tests {
     fn stuck_fork_triggers_shallow_rollback_when_tip_is_stale() {
         let mut c = RecoveryCoordinator::new();
         c.report(RecoveryEvidence::StuckFork { gap: 5 });
+        c.report(header_proof(1000));
         let mut ctx = base_ctx();
         ctx.network_tip_height = 1005; // gap = 5
         ctx.last_applied_secs = 350; // > 300 → NOT recently synced
@@ -681,6 +761,7 @@ mod tests {
     fn stuck_fork_respects_rollback_budget() {
         let mut c = RecoveryCoordinator::new();
         c.report(RecoveryEvidence::StuckFork { gap: 5 });
+        c.report(header_proof(1000));
         let mut ctx = base_ctx();
         ctx.network_tip_height = 1005;
         ctx.last_applied_secs = 350;
@@ -811,6 +892,7 @@ mod tests {
         for _ in 0..3 {
             c.report(RecoveryEvidence::OrphanGossip { slot: 1, gap: 3 });
         }
+        c.report(header_proof(1000));
         let mut ctx = base_ctx();
         ctx.network_tip_height = 1003;
         // Most recent rollback was to 999; we're now at 1000 → applied since.
@@ -825,6 +907,7 @@ mod tests {
         for _ in 0..3 {
             c.report(RecoveryEvidence::OrphanGossip { slot: 1, gap: 3 });
         }
+        c.report(header_proof(1000));
         let mut ctx = base_ctx();
         ctx.network_tip_height = 1003;
         // Most recent rollback was to 1000 and we are still at 1000.
@@ -843,6 +926,7 @@ mod tests {
         for _ in 0..3 {
             c.report(RecoveryEvidence::OrphanGossip { slot: 1, gap: 3 });
         }
+        c.report(header_proof(1000));
         let mut ctx = base_ctx();
         ctx.network_tip_height = 1003;
         assert_eq!(
@@ -863,6 +947,7 @@ mod tests {
                 gap: 2,
             });
         }
+        c.report(header_proof(1000));
         let mut ctx = base_ctx();
         ctx.network_tip_height = 1002;
         assert_eq!(
@@ -886,6 +971,7 @@ mod tests {
                 gap: 2,
             });
         }
+        c.report(header_proof(1000));
         let mut ctx = base_ctx();
         ctx.network_tip_height = 1002; // gap=2 (<MINOR_FORK_GAP_MAX=50); last_applied_secs=5 → recently_synced()
         assert_eq!(
@@ -904,6 +990,7 @@ mod tests {
             peer: fake_peer(),
             gap: 2,
         });
+        c.report(header_proof(1000));
         let mut ctx = base_ctx();
         ctx.network_tip_height = 1002; // gap=2; 1 event < threshold=2
         assert_ne!(
@@ -1073,6 +1160,7 @@ mod tests {
             last_rollback_time: Some(Instant::now()),
             in_grace_period: false,
             last_finality_height: None,
+            local_tip_hash: crypto::Hash::ZERO,
         };
         assert_eq!(
             c.classify(&ctx),
@@ -1127,6 +1215,7 @@ mod tests {
         for slot in [100, 101, 102] {
             c.report(RecoveryEvidence::OrphanGossip { slot, gap: 3 });
         }
+        c.report(header_proof(1005));
         // Stale rollback (6min ago) should NOT suppress — Gate 1 inactive
         let ctx = RecoveryContext {
             local_height: 1005,
@@ -1168,6 +1257,7 @@ mod tests {
     //     P2a: target == finality (local=1001, finality=1000, depth=1 -> target=1000 == 1000)
     //     P3a: target well above finality (local=1010, finality=1000, depth=1 -> target=1009 > 1000)
     //     P4a: finality=None (local=100, depth=1 -> target=99, no check)
+    //     E1: evidence age > EVIDENCE_TTL (unpruned) + gap=1 + fresh tip  => not ShallowRollback (INC-I-294); empty window => HeaderFirstSync (control)
     //   MATRIX: 1 output (O1) x 5 partitions = 5 cells
     //     P1a: O1=RecoveryAction::None (asserted in classify_refuses_shallow_rollback_below_finality)
     //     P1b: O1=RecoveryAction::None (asserted in test_finality_guard_refuses_rollback_below_finality)
@@ -1197,6 +1287,7 @@ mod tests {
             last_rollback_time: None,
             in_grace_period: false,
             last_finality_height: Some(1001), // target = 1000 < finality (1001) -> REFUSE
+            local_tip_hash: crypto::Hash::ZERO,
         };
 
         let action = coord.classify(&ctx);
@@ -1222,6 +1313,7 @@ mod tests {
         for slot in 100..103 {
             coord.report(RecoveryEvidence::OrphanGossip { slot, gap: 1 });
         }
+        coord.report(header_proof(1001));
 
         // local_height=1001, depth=1 -> target=1000, finality=1000
         // target == finality: rolling back TO the finalized block is LEGAL.
@@ -1236,6 +1328,7 @@ mod tests {
             last_rollback_time: None,
             in_grace_period: false,
             last_finality_height: Some(1000), // target = 1000 == finality -> ALLOW
+            local_tip_hash: crypto::Hash::ZERO,
         };
 
         let action = coord.classify(&ctx);
@@ -1272,6 +1365,7 @@ mod tests {
             last_rollback_time: None,
             in_grace_period: false,
             last_finality_height: Some(1005), // target = 1000 < finality (1005) -> REFUSE
+            local_tip_hash: crypto::Hash::ZERO,
         };
 
         let action = coord.classify(&ctx);
@@ -1291,6 +1385,7 @@ mod tests {
         for slot in 100..103 {
             coord.report(RecoveryEvidence::OrphanGossip { slot, gap: 1 });
         }
+        coord.report(header_proof(1010));
 
         let ctx = RecoveryContext {
             local_height: 1010,
@@ -1303,6 +1398,7 @@ mod tests {
             last_rollback_time: None,
             in_grace_period: false,
             last_finality_height: Some(1000), // target = 1009 > finality -> allow
+            local_tip_hash: crypto::Hash::ZERO,
         };
 
         let action = coord.classify(&ctx);
@@ -1320,6 +1416,7 @@ mod tests {
         for slot in 100..103 {
             coord.report(RecoveryEvidence::OrphanGossip { slot, gap: 1 });
         }
+        coord.report(header_proof(100));
 
         let ctx = RecoveryContext {
             local_height: 100,
@@ -1332,6 +1429,7 @@ mod tests {
             last_rollback_time: None,
             in_grace_period: false,
             last_finality_height: None,
+            local_tip_hash: crypto::Hash::ZERO,
         };
 
         let action = coord.classify(&ctx);
@@ -1340,5 +1438,62 @@ mod tests {
             "ShallowRollback should fire when no finality is set (current behavior), got {:?}",
             action
         );
+    }
+
+    // --- INC-I-294 reproduction ----------------------------------------------
+    //
+    // A node at height H holds a valid, recently applied tip (last apply 20 s
+    // ago, finality two blocks below). Its evidence window still holds two
+    // OrphanGossip entries that are far older than EVIDENCE_TTL: nothing has
+    // called `report()` since, so nothing pruned them. One peer status then
+    // advertises H+1 (gap = 1); no header or sibling for H+1 was ever fetched.
+    //
+    // The module contract (header, "Evidence decays") says evidence older than
+    // EVIDENCE_TTL must not trigger an action. The correct outcome is anything
+    // except a depth-1 rollback of the node's own tip.
+    #[test]
+    fn inc_i_294_expired_orphan_evidence_does_not_roll_back_a_fresh_tip_on_one_block_gap() {
+        let mut coord = RecoveryCoordinator::new();
+        let expired = Instant::now()
+            .checked_sub(EVIDENCE_TTL * 10)
+            .expect("monotonic clock is older than ten evidence lifetimes");
+        coord.evidence.push_back((
+            expired,
+            RecoveryEvidence::OrphanGossip { slot: 2000, gap: 1 },
+        ));
+        coord.evidence.push_back((
+            expired,
+            RecoveryEvidence::OrphanGossip { slot: 2001, gap: 1 },
+        ));
+
+        let mut ctx = base_ctx();
+        ctx.local_height = 1000; // valid tip H
+        ctx.network_tip_height = 1001; // one peer status says H+1
+        ctx.last_applied_secs = 20; // tip applied 20 s ago (recently synced)
+        ctx.last_finality_height = Some(998); // finality at H-2
+        ctx.shallow_rollback_count = 0;
+
+        let action = coord.classify(&ctx);
+        assert!(
+            !matches!(action, RecoveryAction::ShallowRollback { .. }),
+            "INC-I-294: evidence older than EVIDENCE_TTL ({}s) plus a one-block status gap \
+             approved a depth-1 rollback of a valid tip: got {:?}",
+            EVIDENCE_TTL.as_secs(),
+            action
+        );
+    }
+
+    // INC-I-294 control: the same tip and the same one-block status gap with an
+    // EMPTY evidence window. Passes on this tree; it shows that the old evidence
+    // entries above are a required input of the depth-1 approval.
+    #[test]
+    fn inc_i_294_control_one_block_gap_without_evidence_is_header_first() {
+        let coord = RecoveryCoordinator::new();
+        let mut ctx = base_ctx();
+        ctx.local_height = 1000;
+        ctx.network_tip_height = 1001;
+        ctx.last_applied_secs = 20;
+        ctx.last_finality_height = Some(998);
+        assert_eq!(coord.classify(&ctx), RecoveryAction::HeaderFirstSync);
     }
 }

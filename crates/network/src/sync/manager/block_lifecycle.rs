@@ -670,6 +670,7 @@ impl SyncManager {
             last_rollback_time: self.fork.last_rollback_time,
             in_grace_period,
             last_finality_height: self.reorg_handler.last_finality_height(),
+            local_tip_hash: self.local_hash,
         };
         // INC-I-281: Gate 1 opens only on applies of non-removed hashes.
         let gate_ctx = RecoveryContext {
@@ -682,7 +683,7 @@ impl SyncManager {
         if action != RecoveryAction::None {
             info!(
                 "[COORDINATOR] action={:?} gap={} last_applied={}s peers={} \
-                 shallow_rb={} last_rb_h={:?} snap_attempts={} grace={}",
+                 shallow_rb={} last_rb_h={:?} snap_attempts={} grace={} {}",
                 action,
                 ctx.gap(),
                 ctx.last_applied_secs,
@@ -691,6 +692,7 @@ impl SyncManager {
                 ctx.last_rollback_local_height,
                 ctx.snap_attempts,
                 ctx.in_grace_period,
+                self.recovery.evidence_summary(Instant::now()),
             );
         }
         self.recovery.record_action(action);
@@ -736,6 +738,21 @@ impl SyncManager {
     pub fn report_stuck_fork(&mut self, gap: u64) {
         self.recovery
             .report(super::recovery::RecoveryEvidence::StuckFork { gap });
+    }
+
+    /// Report that `peer` served a block proving its chain leaves our tip `tip_hash` at `tip_height`.
+    pub fn report_header_divergence(
+        &mut self,
+        peer: libp2p::PeerId,
+        tip_height: u64,
+        tip_hash: Hash,
+    ) {
+        self.recovery
+            .report(super::recovery::RecoveryEvidence::HeaderDivergence {
+                peer,
+                tip_height,
+                tip_hash,
+            });
     }
 
     pub fn reset_sync_for_rollback(&mut self) {

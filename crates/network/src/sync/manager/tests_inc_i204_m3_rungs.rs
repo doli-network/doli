@@ -42,8 +42,8 @@ use crate::sync::manager::recovery::{
     thresholds, RecoveryAction, RecoveryContext, RecoveryCoordinator, RecoveryEvidence, WedgeReason,
 };
 use crate::sync::manager::tests_inc_i204_m3::{
-    cell_coordinator, cell_ctx, drive, is_lossy, rung_name, settled, Budget, Cell, FinalityPos,
-    GapBand, COHORT_PEERS, LOCAL_H,
+    cell_coordinator, cell_ctx, drive, drive_with, is_lossy, rung_name, settled, Budget, Cell,
+    FinalityPos, GapBand, Proof, COHORT_PEERS, LOCAL_H,
 };
 
 // ===========================================================================
@@ -62,12 +62,12 @@ fn rung_rule1_shallow_rollback_exit_must_not_fall_into_the_lossy_rung() {
         sibling: Budget::Fresh,
         snap: Budget::Fresh,
     };
-    let seq = drive(cell);
+    let seq = drive_with(cell, Proof::Present);
 
     assert!(
         seq.iter()
             .any(|a| matches!(a, RecoveryAction::ShallowRollback { .. })),
-        "fixture: Rule 1/1b must be reachable at {} with the guard permitting it",
+        "fixture: Rule 1/1b must be reachable at {} with the guard permitting it and a header proof",
         cell.name()
     );
 
@@ -212,6 +212,7 @@ fn rung_rule3_header_first_is_reserved_for_nodes_that_can_actually_extend() {
         last_rollback_time: None,
         in_grace_period: false,
         last_finality_height: Some(LOCAL_H - 10),
+        local_tip_hash: crypto::Hash::ZERO,
     };
     assert_eq!(
         behind.classify(&behind_ctx),

@@ -2918,7 +2918,7 @@ NOTE: UpdateService, PendingUpdate, and spawn_update_service() are NOT in this c
 - add_producer(count, bonds, fund_amount) — generate keypair, write wallet, fund from rotating genesis wallet via CLI, poll balance, register via CLI, create data directory, spawn node process, save PID
 
 ### Operations (bins/node/src/operations/)
-- truncate_chain(network, data_dir, blocks_to_remove, skip_confirm) — undo-based rollback (2000-block window limit); iterates from current tip down applying undo records; restores ProducerSet from undo snapshot; prunes blocks and undo data above new_tip
+- truncate_chain(network, data_dir, blocks_to_remove, skip_confirm) — undo-based rollback (`UNDO_KEEP_DEPTH` = 100-block window limit); iterates from current tip down applying undo records; restores ProducerSet from undo snapshot; restores the epoch state of new_tip from undo(new_tip+1) (missing/undecodable snapshot: warns, keeps the stored one), drops the epoch tables of dropped boundaries and clears the chain commitment (INC-I-294 M-3, `operations/truncate_restore.rs`); prunes blocks and undo data above new_tip
 - recover_chain_state(network, data_dir, skip_confirm) — full chain replay: scan heights 1..MAX to find tip, rebuild canonical index, replay all blocks applying UTXOs and tx types, process unbonding, merge hardcoded genesis producers for Mainnet (consensus-critical)
 - reindex_canonical_chain(data_dir) — open BlockStore, rebuild_canonical_index(), prints resulting tip hash and height
 - backfill_from_archive(network, data_dir, archive_dir, skip_confirm) — imports only missing blocks; does NOT rebuild state; detects genesis_hash from existing blocks in store (scans heights 1..10000; handles relaunched networks)
