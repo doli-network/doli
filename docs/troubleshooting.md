@@ -686,6 +686,18 @@ materially higher tip defers production instead of minting. Real fresh-genesis
 bootstrap is unaffected by construction: there every peer reports height 0, so
 the guard never fires and no delay is introduced.
 
+This height deferral applies below next height 10 or below the fork-choice
+activation height (the gate). From next height 10 and at or above the gate,
+peer height stops a build only through a one-shot hold that ends at the first
+header reply or after 30 s. The node gets a new hold only after it drops to
+zero peers and reconnects.
+
+| Level | Log line | Meaning |
+|-------|----------|---------|
+| INFO | `[FIRST_REPLY] build hold started: local=<h> best_peer=<h>` | A peer reports more than 5 blocks above the local tip. The producer waits for a header reply. |
+| INFO | `[FIRST_REPLY] build hold released: header reply` | A header reply came. The hold is over. |
+| INFO | `[FIRST_REPLY] build hold released: bound reached` | 30 s passed with no header reply. The hold is over. The producer builds on its branch. |
+
 - Pre-existing fossils are **not** repaired by the upgrade. Clear one by
   stopping the node, wiping `data/` and letting it snap-sync again (block 1
   then correctly reads `ABSENT`/snap-pruned). **Before any wipe, confirm

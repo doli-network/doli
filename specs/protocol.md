@@ -2324,8 +2324,14 @@ bound; only when none is does the whole snap attempt fall back to block sync.
 
 **Recovery and production (INC-I-289).** The coordinator's blind depth-1 rollback on a height
 claim (Rules 1/1b) is removed: it weighed nothing. A Syncing state started by a peer's height
-claim no longer blocks production; the height-based defer in production still applies. With
+claim no longer blocks production, in any sync phase; a resync in progress still does. With
 items (3) and (4) above, an orphan's guessed height and an own block no longer steer recovery.
+
+**Production and peer height.** From next height 10 and at or above the gate, peer height stops a
+build only through a one-shot latch that ends at the first header reply or after 30 s. Below the
+gate or below next height 10, the peer-height deferral applies: a gap above 5 blocks below the gate,
+a gap above 3 blocks below next height 10. A built block is always sent. Only a block on the node's
+own branch stops its slot.
 
 **Recovery below the gate (INC-I-294).** Below the gate Rules 1/1b stay, but a depth-1 rollback
 needs a live `HeaderDivergence` proof for the current tip, keyed by tip height and tip hash: the

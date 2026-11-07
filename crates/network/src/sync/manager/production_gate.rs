@@ -174,20 +174,20 @@ impl SyncManager {
         // the node can't produce because its chain is "behind finality" but
         // can't catch up because sync resets repeatedly.
         //
-        // Same reasoning as Check 5 removal (INC-I-026): with deterministic
-        // scheduler + FORK_GUARD + fork_id, a behind node producing costs
-        // 1 wasted slot (block silently discarded). The deadlock risk
-        // exceeds that cost. BlockedSyncing state already gates legitimate
-        // sync-in-progress cases.
+        // Same reasoning as Check 5 removal (INC-I-026): a block from a behind
+        // node goes to the receivers' fork handling, described at Check 5.
+        // The deadlock risk exceeds its cost. BlockedSyncing gates a sync in
+        // progress only below the fork-choice gate; at or above it, only
+        // ResyncInProgress returns BlockedSyncing.
 
         // Check 5: Behind-tip guard — REMOVED (INC-I-026).
         //
-        // With deterministic scheduler + FORK_GUARD + fork_id, a block
-        // produced by a behind node is silently discarded by all peers.
-        // No fork, no divergence — just 1 wasted slot. Blocking production
-        // causes permanent deadlocks when nodes fall behind for any reason
-        // (restart, gossip delay, network partition). The deadlock risk
-        // vastly exceeds the cost of an ignored block.
+        // A receiver retains a behind-tip block as a sibling and weighs it for
+        // a reorg; below the gate, a better-slot one is dropped and signals
+        // fork recovery. Blocking production causes permanent deadlocks when
+        // nodes fall behind for any reason (restart, gossip delay, network
+        // partition). The deadlock risk
+        // vastly exceeds the cost of a block that loses that weighing.
 
         // Log all numeric decision inputs that led to AUTHORIZED.
         // When production is DENIED, log_production_denial() captures the reason.

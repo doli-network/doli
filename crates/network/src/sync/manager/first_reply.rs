@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use tracing::info;
 
-use super::SyncManager;
+use super::{SyncManager, SyncPhase, SyncState};
 
 /// A peer more than this many blocks above the local tip starts the hold.
 const TALLER_GAP: u64 = 5;
@@ -55,5 +55,15 @@ impl SyncManager {
             return false;
         }
         true
+    }
+
+    /// Test seam: sets `SyncState::Syncing` with `phase`, nothing else.
+    #[doc(hidden)]
+    pub fn force_sync_phase_for_test(&mut self, phase: SyncPhase) {
+        let state = SyncState::Syncing {
+            phase,
+            started_at: Instant::now(),
+        };
+        self.set_state(state, "force_sync_phase_for_test");
     }
 }

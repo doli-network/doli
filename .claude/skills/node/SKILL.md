@@ -104,14 +104,16 @@ Block → recovery_mode/snap_height/duplicate guards
 production_timer/escape-hatch → try_produce_block()
   → is_production_allowed() gate → hardfork_schedule.should_stop_producing() gate
   → last_produced_slot fast-path → handle_production_authorization() [SyncManager.can_produce()]
-  → behind-network-height guard → resolve_bootstrap_eligibility() OR resolve_epoch_eligibility()
+  → slot_block_on_my_branch() [only a block on my branch stops the slot]
+  → peer_height_gate() [next height <10: gap >3; tip below fork-choice gate: gap >5; else first-reply latch only]
+  → resolve_bootstrap_eligibility() OR resolve_epoch_eligibility()
   → is_producer_eligible_ms() window check → rank-1 offline-guard → propagation-delay wait
   → build_block_content(): epoch-reward coinbase (at epoch start, aborts slot on
       IncompleteEpochStoreError), genesis VDF Registration TX, mempool select+validate,
       attestation bitfield encode [base(epoch_producer_list) | extra sorted]
   → drain_pending_events() [abort if chain advanced] → compute_block_vdf()
   → post-VDF stale-parent/dup-slot re-check → apply_block(Light) [BLOCK_POISON rollback+purge on fail]
-  → broadcast (unless BEHIND_TIP_SUPPRESS) → attest_own_block() → flush_finalized_to_archive()
+  → broadcast (always) → flush_finalized_to_archive()
 ```
 
 **Epoch boundary (height % blocks_per_epoch == 0):**
@@ -332,7 +334,7 @@ undo.epoch_state_snapshot: always present, deserialize → self.epoch_state
 
 **Chainspec security** — Mainnet/Testnet always use embedded (compiled-in) chainspec; disk files/`--chainspec` silently ignored. Devnet honors disk/CLI.
 
-**Production gates (layered, in order)** — (1) `is_production_allowed()` pending-update grace, (2) `hardfork_schedule.should_stop_producing()`, (3) `SyncManager.can_produce()` (5 sub-checks), (4) `should_defer_epoch_production()` post-restart grace, (5) `resolve_bootstrap_eligibility()` stability+peer checks.
+**Production gates (layered, in order)** — (1) `is_production_allowed()` pending-update grace, (2) `hardfork_schedule.should_stop_producing()`, (3) `SyncManager.can_produce()` (5 sub-checks; sync phase blocks only below the fork-choice gate), (4) `slot_block_on_my_branch()`, (5) `peer_height_gate()`, (6) `should_defer_epoch_production()` post-restart grace, (7) `resolve_bootstrap_eligibility()` stability+peer checks.
 
 **Supply conservation (INC-I-064)** — UTXO spend/create failures now propagate as errors (not silently swallowed); Replay mode tolerates historical mismatches.
 

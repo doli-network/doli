@@ -185,7 +185,7 @@ async fn three_taller_peers(r: &Rig, height: u64) -> PeerId {
 }
 
 /// One peer level with this node; the network tip alone carries the gap.
-async fn level_peer_with_tip_at(r: &Rig, height: u64) -> PeerId {
+pub(super) async fn level_peer_with_tip_at(r: &Rig, height: u64) -> PeerId {
     let slot = current_slot(&r.node);
     let mut sm = r.node.sync_manager.write().await;
     let peer = PeerId::random();
@@ -194,7 +194,7 @@ async fn level_peer_with_tip_at(r: &Rig, height: u64) -> PeerId {
     peer
 }
 
-async fn reply(r: &Rig, peer: PeerId) {
+pub(super) async fn reply(r: &Rig, peer: PeerId) {
     let mut sm = r.node.sync_manager.write().await;
     sm.handle_response(peer, SyncResponse::Headers(vec![]));
 }
@@ -215,7 +215,7 @@ pub(super) async fn assert_peer_gap(r: &Rig, gap: u64, partition: &str) {
 }
 
 /// Polls the production entry point; returns whether the tip advanced.
-async fn drive(r: &mut Rig, budget: Duration) -> bool {
+pub(super) async fn drive(r: &mut Rig, budget: Duration) -> bool {
     let deadline = Instant::now() + budget;
     while Instant::now() < deadline {
         r.node

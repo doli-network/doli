@@ -291,4 +291,6 @@ mod production_asks_chosen_branch;
 mod production_asks_peer_height_gate;
 mod production_asks_slot_block;
 mod production_asks_slot_predicate;
+mod production_asks_stop_census;
+mod production_asks_sync_phase;
 mod tied_fork_finality;

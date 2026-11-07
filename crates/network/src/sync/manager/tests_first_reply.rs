@@ -28,6 +28,8 @@
 //   SEC churn each tick 60 s    -> 30 true ticks, then false, same armed_at
 //   SEC rising status 60 s      -> 30 true ticks, then false, same armed_at
 //   SEC best_height = u64::MAX  -> same bound, no panic; local u64::MAX -> no hold
+//   can_produce x (5 phases) x (gate below, at, above local) -> BlockedSyncing below,
+//     Authorized at and above; each row first shows Authorized with no phase
 //   O6: tracing-subscriber is already a dev-dependency, so the lines are captured here.
 //     The message text is free, so the release by a reply counts against a control
 //     manager that takes the same replies with no armed hold.
@@ -42,6 +44,7 @@ use tracing_subscriber::layer::{Context, SubscriberExt};
 use tracing_subscriber::Layer;
 
 use super::types::{PendingRequest, SyncRequestId};
+use super::ProductionAuthorization;
 use crate::protocols::{SyncRequest, SyncResponse};
 use crate::sync::manager::{SyncConfig, SyncManager, SyncPhase, SyncPipelineData, SyncState};
 
@@ -489,4 +492,48 @@ fn tick_without_hold_logs_nothing() {
     let t0 = Instant::now();
     let lines = info_lines(|| assert!(!m.first_reply_holds(t0)));
     assert_eq!(lines, Vec::<String>::new(), "peer not taller: no line");
+}
+
+// REQ-PASK-006 — Decision: a failure means a sync phase stops a build at or above the gate, or a sync below the gate no longer stops one.
+#[test]
+fn can_produce_by_sync_phase_and_gate() {
+    let phases = [
+        SyncPhase::DownloadingHeaders,
+        SyncPhase::DownloadingBodies,
+        SyncPhase::ProcessingBlocks,
+        SyncPhase::SnapCollecting,
+        SyncPhase::SnapDownloading,
+    ];
+    let gates = [
+        (0, ProductionAuthorization::Authorized),
+        (LOCAL, ProductionAuthorization::Authorized),
+        (LOCAL + 1, ProductionAuthorization::BlockedSyncing),
+    ];
+    for phase in phases {
+        for (gate, expected) in gates.clone() {
+            let row = format!("{phase:?} gate {gate}");
+            let config = SyncConfig {
+                inc_i_288_fork_choice_activation_height: gate,
+                ..SyncConfig::default()
+            };
+            let mut m = SyncManager::new(config, Hash::ZERO);
+            m.update_local_tip(LOCAL, crypto::hash::hash(b"local tip"), LOCAL as u32);
+            peer_at(&mut m, LOCAL);
+            peer_at(&mut m, LOCAL);
+            assert_eq!(
+                m.can_produce(LOCAL as u32),
+                ProductionAuthorization::Authorized,
+                "{row}: fixture: no phase, no stop"
+            );
+
+            let state = SyncState::Syncing {
+                phase: phase.clone(),
+                started_at: Instant::now(),
+            };
+            m.set_state(state, "test");
+            assert!(m.state().is_syncing(), "{row}: fixture: syncing");
+
+            assert_eq!(m.can_produce(LOCAL as u32), expected, "{row}");
+        }
+    }
 }
