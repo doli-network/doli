@@ -9,6 +9,7 @@
 mod block_lifecycle;
 mod branch_verdict;
 mod cleanup;
+mod first_reply;
 pub mod force_reorg;
 mod fork_walk;
 mod header_proof;
@@ -24,6 +25,8 @@ mod types;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_first_reply;
 #[cfg(test)]
 mod tests_inc_i090_d1;
 #[cfg(test)]
@@ -189,6 +192,7 @@ pub struct SyncManager {
     peers_lost_at: Option<Instant>,
     /// Seconds to wait after losing all peers before resuming production.
     peer_loss_timeout_secs: u64,
+    first_reply: first_reply::FirstReplyLatch,
 
     // === SNAP SYNC STATE (sub-struct) ===
     /// Snap sync configuration and runtime state
@@ -312,6 +316,7 @@ impl SyncManager {
             },
             peers_lost_at: None,
             peer_loss_timeout_secs: 30,
+            first_reply: Default::default(),
             // Snap sync state (sub-struct)
             snap: SnapSyncState::new(),
             snap_descent: None,

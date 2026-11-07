@@ -63,6 +63,9 @@ pub use init::{cleanup_orphan_utxo_store, recover_body_gaps};
 mod periodic;
 mod producer_merge;
 mod production;
+// Re-exported for integration tests (lib target only).
+#[allow(unused_imports)]
+pub use production::{peer_height_gate, slot_block_on_my_branch, PeerHeightDecision};
 mod reorg_refusals;
 mod reorg_restore;
 mod reorg_schedule;

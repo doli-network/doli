@@ -25,6 +25,7 @@ mod retention;
 mod swarm_events;
 mod swarm_loop;
 mod sync_requests;
+mod test_seam;
 mod types;
 mod verdict;
 

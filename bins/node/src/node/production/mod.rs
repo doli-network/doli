@@ -2,6 +2,7 @@ use super::*;
 
 mod assembly;
 mod gates;
+pub use gates::{peer_height_gate, slot_block_on_my_branch, PeerHeightDecision};
 mod poison;
 mod scheduling;
 mod signing;
@@ -134,27 +135,21 @@ impl Node {
             );
         }
 
-        // EARLY BLOCK EXISTENCE CHECK — gossip-aware
-        // Check BOTH block_store (disk) AND seen_blocks_for_slot (gossip).
-        // The gossip set catches blocks that arrived via gossip but haven't been
-        // applied to disk yet — critical for rank 1 to avoid producing a competing
-        // block when rank 0 already produced.
-        if self.block_store.has_block_for_slot(current_slot as u64)
-            || self.seen_blocks_for_slot.contains(&current_slot)
-        {
-            debug!(
-                "Block already exists for slot {} - skipping production",
-                current_slot
-            );
-            return Ok(());
-        }
-
         // Get chain state
         let state = self.chain_state.read().await;
         let prev_hash = state.best_hash;
         let prev_slot = state.best_slot;
         let height = state.best_height + 1;
         drop(state);
+
+        // A block in this slot whose parent is on my branch stops the build; a block on another branch does not.
+        if slot_block_on_my_branch(&self.block_store, current_slot, &prev_hash) {
+            debug!(
+                "Block already exists for slot {} - skipping production",
+                current_slot
+            );
+            return Ok(());
+        }
 
         // Can't produce if slot hasn't advanced
         if current_slot <= prev_slot {
@@ -183,41 +178,36 @@ impl Node {
         // permanent deadlock where joining nodes could never produce because
         // the slot-height gap always exceeded max_gap in sparse chains.
         //
-        // Thresholds:
-        // - Height < 10: max 3 blocks behind (tight - prevent orphan forks)
-        // - Height 10+:  max 5 blocks behind (allow propagation delay)
-        // =========================================================================
-        let network_tip_height = {
-            let sync = self.sync_manager.read().await;
-            sync.best_peer_height()
-        };
-
-        let network_height_ahead = network_tip_height > height.saturating_sub(1);
-
-        // INC-I-149: height 1 is INCLUDED here, not excluded. A producer starting
-        // on an empty data dir sits at best_height=0 -> height=1, which is exactly
-        // the "node at height 0" the comment above describes. Excluding it let such
-        // a node mint its own block 1 while peers reported a tip ~84k blocks ahead,
-        // leaving a permanent fossil orphan below the snap-sync horizon.
+        // Thresholds (`peer_height_gate`):
+        // - Next height < 10: max 3 blocks behind (tight - prevent orphan forks)
+        // - Below the fork-choice gate: max 5 blocks behind
+        // - At or above the gate: only the bounded first-reply latch defers
         //
-        // Real fresh genesis is unaffected BY CONSTRUCTION: there every peer is at
-        // height 0, so network_tip_height is 0 and network_height_ahead is false.
-        // No timer, no grace period, no new state.
-        if network_height_ahead {
-            let blocks_behind = network_tip_height.saturating_sub(height.saturating_sub(1));
-            let max_behind: u64 = if height < 10 {
-                3 // Tight during early chain - prevent orphan forks
-            } else {
-                5 // Normal operation - allow some propagation delay
-            };
-
-            if blocks_behind > max_behind {
-                debug!(
-                    "Behind network by {} blocks (next_height={}, network_tip={}) - deferring production",
-                    blocks_behind, height, network_tip_height
-                );
-                return Ok(());
-            }
+        // INC-I-149: next height 1 is included, so an empty data dir does not mint
+        // its own block 1 while peers are far ahead. On a real fresh genesis every
+        // peer is at height 0, so the gap is 0.
+        // =========================================================================
+        let (network_tip_height, gate) = {
+            let sync = self.sync_manager.read().await;
+            (sync.best_peer_height(), sync.fork_choice_gate())
+        };
+        let latch_holds = height >= 10
+            && height.saturating_sub(1) >= gate
+            && self
+                .sync_manager
+                .write()
+                .await
+                .first_reply_holds(std::time::Instant::now());
+        if peer_height_gate(height, network_tip_height, gate, latch_holds)
+            == PeerHeightDecision::Defer
+        {
+            debug!(
+                "Behind network by {} blocks (next_height={}, network_tip={}) - deferring production",
+                network_tip_height.saturating_sub(height.saturating_sub(1)),
+                height,
+                network_tip_height
+            );
+            return Ok(());
         }
 
         // Get active producers with bond counts derived from UTXO set.
@@ -554,11 +544,12 @@ impl Node {
         //
         // The VDF takes ~700ms during which the event loop is blocked. Other
         // producers' blocks may have arrived and been queued. We must check:
-        // 1. No block exists for our current slot (same-slot duplicate)
+        // 1. No block for our current slot on my branch (same-slot duplicate)
         // 2. Chain tip hasn't advanced (stale parent detection)
         //
         // Without check #2, we'd build on a stale parent and create a fork.
-        if self.block_store.has_block_for_slot(current_slot as u64) {
+        let tip = self.chain_state.read().await.best_hash;
+        if slot_block_on_my_branch(&self.block_store, current_slot, &tip) {
             debug!(
                 "Block appeared during VDF computation for slot {} - aborting production",
                 current_slot
@@ -631,21 +622,6 @@ impl Node {
 
         // Mark that we produced for this slot
         self.last_produced_slot = Some(current_slot as u64);
-
-        // Skip broadcast if behind tip by >=2. Peers will drop via FORK_GUARD
-        // anyway, and the gossipped fork block contaminates other nodes that
-        // might apply it before the canonical block arrives.
-        // Safety valve: only suppress if we have >=3 peers (avoids the h=3851
-        // deadlock from INC-I-026 where the gate blocked a solo bootstrapper).
-        let net_tip = self.sync_manager.read().await.best_peer_height();
-        let peer_count = self.sync_manager.read().await.peer_count();
-        if net_tip >= height + 2 && peer_count >= 3 {
-            warn!(
-                "[BEHIND_TIP_SUPPRESS] NOT broadcasting h={} slot={} (net_tip={}, behind by {}) — block built but held",
-                height, current_slot, net_tip, net_tip - height
-            );
-            return Ok(());
-        }
 
         // Broadcast the block to the network
         // This is only done for blocks we produce ourselves - received blocks

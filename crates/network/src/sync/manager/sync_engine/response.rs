@@ -75,6 +75,7 @@ impl SyncManager {
                     );
                     return vec![];
                 }
+                self.first_reply.spend("header reply");
                 if self.snap_descent_owns(peer) {
                     self.handle_snap_descent_headers(peer, headers);
                     return vec![];

@@ -1,5 +1,53 @@
 use super::*;
 
+/// Whether peer height stops a build of `next_height`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerHeightDecision {
+    Defer,
+    Proceed,
+}
+
+/// `gate` is the fork-choice activation height; `latch_holds` is the first-reply latch.
+pub fn peer_height_gate(
+    next_height: u64,
+    best_peer_height: u64,
+    gate: u64,
+    latch_holds: bool,
+) -> PeerHeightDecision {
+    let tip = next_height.saturating_sub(1);
+    let gap = best_peer_height.saturating_sub(tip);
+    let defer = if next_height < 10 {
+        gap > 3
+    } else if tip < gate {
+        gap > 5
+    } else {
+        latch_holds
+    };
+    if defer {
+        PeerHeightDecision::Defer
+    } else {
+        PeerHeightDecision::Proceed
+    }
+}
+
+/// True iff the block stored for `slot` has a parent on this node's branch; any store error is false.
+pub fn slot_block_on_my_branch(store: &BlockStore, slot: u32, my_tip: &Hash) -> bool {
+    let Ok(Some(hash)) = store.get_hash_by_slot(slot) else {
+        return false;
+    };
+    let Ok(Some(header)) = store.get_header(&hash) else {
+        return false;
+    };
+    let parent = header.prev_hash;
+    if parent == *my_tip {
+        return true;
+    }
+    let Ok(Some(height)) = store.get_height_by_hash(&parent) else {
+        return false;
+    };
+    matches!(store.get_hash_by_height(height), Ok(Some(h)) if h == parent)
+}
+
 impl Node {
     // =========================================================================
     // PRODUCTION GATE CHECK - Single source of truth for production safety
