@@ -535,7 +535,7 @@ fn has_block_for_slot_has_no_caller_in_production() {
     );
 }
 
-// REQ-PASK-006 — Decision: a failure means a sync phase or a peer count became an input of the peer rule, so peers can again stop a build through it.
+// REQ-PASK-006 — Decision: expected behaviour is that the peer rule takes no sync phase and no peer count as input.
 #[test]
 fn peer_height_gate_takes_no_phase_and_no_peer_count() {
     let source = code_only(&read_repo(GATES));

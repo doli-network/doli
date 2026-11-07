@@ -272,7 +272,7 @@ pub(super) async fn assert_minted(r: &Rig, partition: &str) {
     assert_eq!(cs.best_hash, built.hash(), "{partition}: O2 best_hash");
 }
 
-// REQ-PASK-001 — Decision: a failure means peers on a refused branch can still stop a build on the branch this node selected, so that branch cannot grow.
+// REQ-PASK-001 — Decision: expected behaviour is that a producer builds at its slot on the branch it selected while peers on another branch report a greater height.
 #[tokio::test]
 async fn producer_keeps_building_on_chosen_branch() {
     if !in_child_with_gate("producer_keeps_building_on_chosen_branch", ABOVE_GATE) {
@@ -454,7 +454,7 @@ fn assert_sent_once(sent: &[Hash], built: Hash, partition: &str) {
     );
 }
 
-// REQ-PASK-004 — Decision: a failure means a built block stays local when three peers report a height two above it, so peers on another branch silence this node's branch.
+// REQ-PASK-004 — Decision: expected behaviour is that a built block is sent when three peers report a height two above it.
 #[tokio::test]
 async fn built_block_is_sent_with_three_peers_two_above() {
     if !in_child_with_gate("built_block_is_sent_with_three_peers_two_above", ABOVE_GATE) {

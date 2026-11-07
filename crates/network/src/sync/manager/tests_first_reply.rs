@@ -248,7 +248,7 @@ fn snap_descent_reply_ends_hold() {
     assert_eq!(latch(&m), (true, Some(t0)), "both header routes spend");
 }
 
-// REQ-PASK-003 — Decision: a failure means a peer that never replies stops this node's builds past the bound, which is the stall this fix removes.
+// REQ-PASK-003 — Decision: expected behaviour is that a peer with no reply holds a build decision only up to the bound.
 #[test]
 fn thirty_seconds_elapsed_ends_hold_and_spends() {
     let mut m = mgr();
@@ -293,7 +293,7 @@ fn reconnect_after_losing_all_peers_holds_again() {
     assert_eq!(latch(&m), (false, Some(t1)), "new session: armed anew");
 }
 
-// REQ-PASK-003 — Decision: a failure means one peer that reconnects can stop this node's builds again, which hands a stop back to a peer.
+// REQ-PASK-003 — Decision: expected behaviour is that a reconnect of one of two peers gives no hold.
 #[test]
 fn churn_of_one_of_two_peers_gives_no_hold() {
     let mut m = mgr();
@@ -339,7 +339,7 @@ fn not_taller_then_taller_holds() {
     );
 }
 
-// REQ-PASK-SEC-001 — Decision: a failure means a peer that reconnects on each tick keeps this node from building, which is a stop any peer can drive.
+// REQ-PASK-SEC-001 — Decision: expected behaviour is that a reconnect does not restart the bound on the hold.
 #[test]
 fn churn_never_extends_hold() {
     let mut m = mgr();
@@ -356,7 +356,7 @@ fn churn_never_extends_hold() {
     assert_eq!(latch(&m), (true, Some(t0)), "spent, armed once");
 }
 
-// REQ-PASK-SEC-001 — Decision: a failure means a peer that keeps claiming a higher height keeps this node from building past the bound.
+// REQ-PASK-SEC-001 — Decision: expected behaviour is that a repeated height claim does not extend the hold past the bound.
 #[test]
 fn rising_status_never_extends_hold() {
     let mut m = mgr();
@@ -376,7 +376,7 @@ fn rising_status_never_extends_hold() {
     assert_eq!(latch(&m), (true, Some(t0)), "spent, armed once");
 }
 
-// REQ-PASK-SEC-002 — Decision: a failure means one forged status height panics the node or removes the bound on the hold.
+// REQ-PASK-SEC-002 — Decision: expected behaviour is that a status height of u64::MAX keeps the bound on the hold and causes no panic.
 #[test]
 fn peer_height_u64_max_is_bounded() {
     let mut m = mgr();

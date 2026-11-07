@@ -93,7 +93,7 @@ fn peer_height_gate_matches_old_rule_below_gate() {
     );
 }
 
-// REQ-PASK-001 — Decision: a failure means peer height can still stop a build above the gate, or the latch cannot, so a refused branch still decides what this node builds.
+// REQ-PASK-001 — Decision: expected behaviour is that above the gate only the bounded first-reply latch defers a build.
 #[test]
 fn peer_height_gate_above_gate_only_latch_defers() {
     let (mut defers, mut proceeds) = (0u32, 0u32);
