@@ -1,5 +1,35 @@
 use super::*;
 
+/// Whether peer height stops a build of `next_height`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerHeightDecision {
+    Defer,
+    Proceed,
+}
+
+/// `gate` is the fork-choice activation height; `latch_holds` is the first-reply latch.
+pub fn peer_height_gate(
+    next_height: u64,
+    best_peer_height: u64,
+    gate: u64,
+    latch_holds: bool,
+) -> PeerHeightDecision {
+    let tip = next_height.saturating_sub(1);
+    let gap = best_peer_height.saturating_sub(tip);
+    let defer = if next_height < 10 {
+        gap > 3
+    } else if tip < gate {
+        gap > 5
+    } else {
+        latch_holds
+    };
+    if defer {
+        PeerHeightDecision::Defer
+    } else {
+        PeerHeightDecision::Proceed
+    }
+}
+
 impl Node {
     // =========================================================================
     // PRODUCTION GATE CHECK - Single source of truth for production safety

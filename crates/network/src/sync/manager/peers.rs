@@ -79,6 +79,7 @@ impl SyncManager {
         // to request fresh status from all peers immediately (not wait 30s).
         if self.peers.is_empty() {
             self.needs_mass_status_refresh = true;
+            self.first_reply = Default::default();
         }
         self.peers_lost_at = None;
 

@@ -287,4 +287,6 @@ mod m3_state_session_serve;
 mod m4_backend_parity;
 mod m4_chunked_install;
 mod m4_streaming_install;
+mod production_asks_chosen_branch;
+mod production_asks_peer_height_gate;
 mod tied_fork_finality;
