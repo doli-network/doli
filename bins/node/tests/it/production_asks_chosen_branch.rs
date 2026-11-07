@@ -10,8 +10,13 @@
 //   O3: return — Ok(()) on every path; it cannot tell a mint from a defer, so it is
 //       asserted inside `drive` on every poll
 //   O4: block_store[tip+1] — Some(block with parent = old tip, by this key) iff minted
-//   O1, O5: none. O6: network is None in this rig; the send is Milestone M1.2
+//   O1, O5: none.
+//   O6: network command channel — I J K: one BroadcastBlock with the built block's hash;
+//       A..H keep network None, so they have no channel to read
+//   O7: archive receiver — I J K: the pending entry at finality arrives. apply_block
+//       flushes too when archive_tx is set, so O7 does not isolate the call after the send
 // PATHS: P1 proceed (mint) | P2 deferred by the old peer rule | P3 held by the latch
+//   P4 minted and sent | P5 minted and not sent
 // INPUT PARTITIONS:
 //   A: next >= 10, gate 0, gap > 5, latch spent   -> P1 (v6.46.0: P2, the bug)
 //   B: next >= 10, gate 0, gap = 5, no reply      -> P1 on both (non-vacuity control)
@@ -21,10 +26,19 @@
 //   F: next = 9, gate 0, gap = 3                  -> P1 on both
 //   G: next >= 10, below gate, gap = 6, latch spent -> P2 on both
 //   H: next >= 10, below gate, gap = 5            -> P1 on both
+//   I: next >= 10, gate 0, 3 peers, gap = 3 (peer best = next + 2), latch spent
+//      -> P4 (v6.46.0: P5, the bug)
+//   J: next >= 10, gate 0, 3 peers, gap = 20, latch spent -> P4 (d313250f: P5; v6.46.0: P2, no mint)
+//   K: next >= 10, gate 0, 2 peers, gap = 3, latch spent  -> P4 on both (non-vacuity control)
+//   L: source text from the mint mark to the archive flush -> the send, and no early exit
 // MATRIX: {last_produced_slot, tip, block_store} x {A..H}: A B D F H by `assert_minted`,
 //   C E G by `assert_not_minted`; O3 in `drive` for all. Each no-mint arm first shows
 //   can_produce == Authorized, and pairs with a mint arm that changes one input:
 //   C<->D reply, E<->F gap, G<->H gap, A<->B gap.
+//   {last_produced_slot, tip, block_store, O6, O7} x {I, J, K}: by `assert_minted`, then
+//   `assert_archive_flushed`, then `assert_sent_once`. I<->K changes the peer count.
+//   L: `no_return_between_mint_mark_and_archive_flush` reads the source, not the outputs,
+//   for the O7 path.
 // RIG: one producer, so this key is scheduled for every slot. Base blocks go through
 //   apply_block on devnet params, then the node takes the testnet shape, because no
 //   mint happens at devnet's 1 s slots (`producer_mints_with_small_peer_gap` showed it).
@@ -41,11 +55,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crypto::{Hash, KeyPair};
 use doli_core::consensus::ConsensusParams;
 use doli_core::validation::ValidationMode;
+use doli_core::FinalityCheckpoint;
 use doli_core::Network;
 use doli_node::node::Node;
 use network::protocols::SyncResponse;
-use network::{PeerId, ProductionAuthorization};
+use network::{NetworkCommand, NetworkService, PeerId, ProductionAuthorization};
+use storage::archiver::ArchiveBlock;
 use tempfile::TempDir;
+use tokio::sync::mpsc;
 
 use super::inc_i_289_common::{block, AH_ENV, BELOW_AH};
 
@@ -55,6 +72,7 @@ const NO_MINT_BUDGET: Duration = Duration::from_secs(12);
 const MINT_BUDGET: Duration = Duration::from_secs(25);
 const TIP_ABOVE_TEN: u64 = 12;
 const TIP_NEXT_NINE: u64 = 8;
+const FINAL_HEIGHT: u64 = 1;
 const ABOVE_GATE: u64 = 0;
 const CHILD_ENV: &str = "PRODUCTION_ASKS_CHILD";
 
@@ -148,6 +166,16 @@ async fn taller_peers(r: &Rig, height: u64) -> PeerId {
     let (first, second) = (PeerId::random(), PeerId::random());
     sm.add_peer(first, height, other, slot);
     sm.add_peer(second, height, other, slot);
+    first
+}
+
+/// Three peers report `height` on a hash this node does not hold.
+async fn three_taller_peers(r: &Rig, height: u64) -> PeerId {
+    let first = taller_peers(r, height).await;
+    let slot = current_slot(&r.node);
+    let other = crypto::hash::hash(b"other branch tip");
+    let mut sm = r.node.sync_manager.write().await;
+    sm.add_peer(PeerId::random(), height, other, slot);
     first
 }
 
@@ -347,4 +375,163 @@ async fn below_gate_keeps_old_peer_rule() {
     let minted = drive(&mut near, MINT_BUDGET).await;
     assert!(minted, "H: below the gate a gap of 5 must mint");
     assert_minted(&near, "H").await;
+}
+
+struct Watch {
+    commands: mpsc::Receiver<NetworkCommand>,
+    archived: mpsc::Receiver<ArchiveBlock>,
+}
+
+/// After `rig_at`, so the base chain stays off both channels.
+async fn watch_outputs(r: &mut Rig) -> Watch {
+    let (service, commands) = NetworkService::for_test();
+    r.node.network = Some(service);
+    let (archive_tx, archived) = mpsc::channel(8);
+    r.node.archive_tx = Some(archive_tx);
+    let base = r
+        .node
+        .block_store
+        .get_block_by_height(FINAL_HEIGHT)
+        .expect("block_store read")
+        .expect("fixture: base block");
+    r.node.pending_archive.push_back(ArchiveBlock {
+        height: FINAL_HEIGHT,
+        hash: base.hash(),
+        data: Vec::new(),
+    });
+    r.node
+        .sync_manager
+        .write()
+        .await
+        .restore_finality(FinalityCheckpoint {
+            block_hash: base.hash(),
+            height: FINAL_HEIGHT,
+            slot: base.header.slot,
+            attestation_weight: 1,
+            total_weight: 1,
+        });
+    Watch { commands, archived }
+}
+
+/// Every BroadcastBlock on the channel; other commands are skipped.
+fn sent_blocks(w: &mut Watch) -> Vec<Hash> {
+    let mut sent = Vec::new();
+    while let Ok(command) = w.commands.try_recv() {
+        if let NetworkCommand::BroadcastBlock(block) = command {
+            sent.push(block.hash());
+        }
+    }
+    sent
+}
+
+fn built_hash(r: &Rig) -> Hash {
+    r.node
+        .block_store
+        .get_block_by_height(r.tip + 1)
+        .expect("block_store read")
+        .expect("O4: built block")
+        .hash()
+}
+
+fn assert_archive_flushed(w: &mut Watch, partition: &str) {
+    let entry = w
+        .archived
+        .try_recv()
+        .unwrap_or_else(|e| panic!("{partition}: O7 no archive flush on this path: {e}"));
+    assert_eq!(entry.height, FINAL_HEIGHT, "{partition}: O7 archive entry");
+}
+
+fn assert_sent_once(sent: &[Hash], built: Hash, partition: &str) {
+    assert_eq!(
+        sent,
+        [built].as_slice(),
+        "{partition}: O6 a built block must reach the network channel once"
+    );
+}
+
+// REQ-PASK-004 — Decision: a failure means a built block stays local when three peers report a height two above it, so peers on another branch silence this node's branch.
+#[tokio::test]
+async fn built_block_is_sent_with_three_peers_two_above() {
+    if !in_child_with_gate("built_block_is_sent_with_three_peers_two_above", ABOVE_GATE) {
+        return;
+    }
+    let mut r = rig_at(TIP_ABOVE_TEN).await;
+    let mut w = watch_outputs(&mut r).await;
+    let peer = three_taller_peers(&r, TIP_ABOVE_TEN + 3).await;
+    reply(&r, peer).await;
+    assert_peer_gap(&r, 3, "I").await;
+    assert_gate_authorizes(&r, "I").await;
+
+    assert!(drive(&mut r, MINT_BUDGET).await, "I: no mint at a gap of 3");
+
+    assert_minted(&r, "I").await;
+    assert_archive_flushed(&mut w, "I");
+    let sent = sent_blocks(&mut w);
+    println!("PROBE built_block_sent={}", sent.len());
+    assert_sent_once(&sent, built_hash(&r), "I");
+}
+
+// REQ-PASK-004 — Decision: a failure means a built block stays local when peers are far above, so the send still depends on peer height at a large gap.
+#[tokio::test]
+async fn built_block_is_sent_with_peers_far_above() {
+    if !in_child_with_gate("built_block_is_sent_with_peers_far_above", ABOVE_GATE) {
+        return;
+    }
+    let mut r = rig_at(TIP_ABOVE_TEN).await;
+    let mut w = watch_outputs(&mut r).await;
+    let peer = three_taller_peers(&r, TIP_ABOVE_TEN + 20).await;
+    reply(&r, peer).await;
+    assert_peer_gap(&r, 20, "J").await;
+    assert_gate_authorizes(&r, "J").await;
+
+    assert!(
+        drive(&mut r, MINT_BUDGET).await,
+        "J: no mint at a gap of 20"
+    );
+
+    assert_minted(&r, "J").await;
+    assert_archive_flushed(&mut w, "J");
+    let sent = sent_blocks(&mut w);
+    assert_sent_once(&sent, built_hash(&r), "J");
+}
+
+// REQ-PASK-004 — Decision: a failure means this rig cannot observe a send, so a missing send in the three-peer tests proves nothing.
+#[tokio::test]
+async fn built_block_is_sent_with_two_peers_above() {
+    if !in_child_with_gate("built_block_is_sent_with_two_peers_above", ABOVE_GATE) {
+        return;
+    }
+    let mut r = rig_at(TIP_ABOVE_TEN).await;
+    let mut w = watch_outputs(&mut r).await;
+    let peer = taller_peers(&r, TIP_ABOVE_TEN + 3).await;
+    reply(&r, peer).await;
+    assert_peer_gap(&r, 3, "K").await;
+    assert_gate_authorizes(&r, "K").await;
+
+    assert!(drive(&mut r, MINT_BUDGET).await, "K: no mint at a gap of 3");
+
+    assert_minted(&r, "K").await;
+    assert_archive_flushed(&mut w, "K");
+    let sent = sent_blocks(&mut w);
+    assert_sent_once(&sent, built_hash(&r), "K");
+}
+
+// REQ-PASK-004 — Decision: a failure means an early exit can skip the send or the archive flush after a build.
+#[test]
+fn no_return_between_mint_mark_and_archive_flush() {
+    let src = include_str!("../../src/node/production/mod.rs");
+    let (_, after_mark) = src
+        .split_once("self.last_produced_slot = Some(current_slot as u64);")
+        .expect("fixture: mint mark in production/mod.rs");
+    let (slice, _) = after_mark
+        .split_once("self.flush_finalized_to_archive()")
+        .expect("fixture: archive flush after the mint mark");
+    assert!(
+        slice.contains("broadcast_block"),
+        "L: the slice must hold the send"
+    );
+    assert!(
+        !slice.contains("return"),
+        "L: a built block must reach both the send and the archive flush"
+    );
 }
