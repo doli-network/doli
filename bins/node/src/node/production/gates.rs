@@ -30,6 +30,24 @@ pub fn peer_height_gate(
     }
 }
 
+/// True iff the block stored for `slot` has a parent on this node's branch; any store error is false.
+pub fn slot_block_on_my_branch(store: &BlockStore, slot: u32, my_tip: &Hash) -> bool {
+    let Ok(Some(hash)) = store.get_hash_by_slot(slot) else {
+        return false;
+    };
+    let Ok(Some(header)) = store.get_header(&hash) else {
+        return false;
+    };
+    let parent = header.prev_hash;
+    if parent == *my_tip {
+        return true;
+    }
+    let Ok(Some(height)) = store.get_height_by_hash(&parent) else {
+        return false;
+    };
+    matches!(store.get_hash_by_height(height), Ok(Some(h)) if h == parent)
+}
+
 impl Node {
     // =========================================================================
     // PRODUCTION GATE CHECK - Single source of truth for production safety

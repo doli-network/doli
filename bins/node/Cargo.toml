@@ -55,6 +55,7 @@ futures.workspace = true
 libp2p.workspace = true
 wallet = { workspace = true }
 doli-cli = { path = "../cli" }
+rocksdb.workspace = true
 
 [package.metadata.deb]
 name = "doli"

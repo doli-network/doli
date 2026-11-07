@@ -66,19 +66,24 @@ use tokio::sync::mpsc;
 
 use super::inc_i_289_common::{block, AH_ENV, BELOW_AH};
 
-const POLL: Duration = Duration::from_millis(100);
+pub(super) const POLL: Duration = Duration::from_millis(100);
 /// Longer than one 10 s slot, so the window holds a slot boundary and a mint window.
-const NO_MINT_BUDGET: Duration = Duration::from_secs(12);
-const MINT_BUDGET: Duration = Duration::from_secs(25);
-const TIP_ABOVE_TEN: u64 = 12;
+pub(super) const NO_MINT_BUDGET: Duration = Duration::from_secs(12);
+pub(super) const MINT_BUDGET: Duration = Duration::from_secs(25);
+pub(super) const TIP_ABOVE_TEN: u64 = 12;
 const TIP_NEXT_NINE: u64 = 8;
 const FINAL_HEIGHT: u64 = 1;
-const ABOVE_GATE: u64 = 0;
+pub(super) const ABOVE_GATE: u64 = 0;
 const CHILD_ENV: &str = "PRODUCTION_ASKS_CHILD";
 
 /// Parent: re-exec `test` alone with the gate at `gate`, relay its probe line and
 /// fail with its assertion text; returns false. Child: returns true.
 fn in_child_with_gate(test: &str, gate: u64) -> bool {
+    in_child_of("production_asks_chosen_branch", test, gate)
+}
+
+/// `in_child_with_gate` for a test in the test module `module`.
+pub(super) fn in_child_of(module: &str, test: &str, gate: u64) -> bool {
     if std::env::var_os(CHILD_ENV).is_some() {
         for net in [Network::Devnet, Network::Testnet] {
             let got = net.params().inc_i_288_fork_choice_activation_height;
@@ -86,7 +91,7 @@ fn in_child_with_gate(test: &str, gate: u64) -> bool {
         }
         return true;
     }
-    let name = format!("production_asks_chosen_branch::{test}");
+    let name = format!("{module}::{test}");
     let out = std::process::Command::new(std::env::current_exe().unwrap())
         .args([name.as_str(), "--exact", "--test-threads=1", "--nocapture"])
         .env(CHILD_ENV, "1")
@@ -114,16 +119,16 @@ fn in_child_with_gate(test: &str, gate: u64) -> bool {
     false
 }
 
-struct Rig {
-    node: Node,
-    key: KeyPair,
-    tip: u64,
-    tip_hash: Hash,
+pub(super) struct Rig {
+    pub(super) node: Node,
+    pub(super) key: KeyPair,
+    pub(super) tip: u64,
+    pub(super) tip_hash: Hash,
     _tmp: TempDir,
 }
 
 /// One producer; base chain h=1..=tip applied through `apply_block`.
-async fn rig_at(tip: u64) -> Rig {
+pub(super) async fn rig_at(tip: u64) -> Rig {
     let tmp = TempDir::new().unwrap();
     let key = KeyPair::generate();
     let mut node = Node::new_for_test(tmp.path().to_path_buf(), vec![key.clone()])
@@ -150,7 +155,7 @@ async fn rig_at(tip: u64) -> Rig {
     }
 }
 
-fn current_slot(node: &Node) -> u32 {
+pub(super) fn current_slot(node: &Node) -> u32 {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -159,7 +164,7 @@ fn current_slot(node: &Node) -> u32 {
 }
 
 /// Two peers report `height` on a hash this node does not hold.
-async fn taller_peers(r: &Rig, height: u64) -> PeerId {
+pub(super) async fn taller_peers(r: &Rig, height: u64) -> PeerId {
     let slot = current_slot(&r.node);
     let other = crypto::hash::hash(b"other branch tip");
     let mut sm = r.node.sync_manager.write().await;
@@ -194,7 +199,7 @@ async fn reply(r: &Rig, peer: PeerId) {
     sm.handle_response(peer, SyncResponse::Headers(vec![]));
 }
 
-async fn assert_gate_authorizes(r: &Rig, partition: &str) {
+pub(super) async fn assert_gate_authorizes(r: &Rig, partition: &str) {
     let slot = current_slot(&r.node);
     let auth = r.node.sync_manager.write().await.can_produce(slot);
     assert_eq!(
@@ -204,7 +209,7 @@ async fn assert_gate_authorizes(r: &Rig, partition: &str) {
     );
 }
 
-async fn assert_peer_gap(r: &Rig, gap: u64, partition: &str) {
+pub(super) async fn assert_peer_gap(r: &Rig, gap: u64, partition: &str) {
     let best = r.node.sync_manager.read().await.best_peer_height();
     assert_eq!(best, r.tip + gap, "{partition}: precondition: peer gap");
 }
@@ -225,7 +230,7 @@ async fn drive(r: &mut Rig, budget: Duration) -> bool {
     false
 }
 
-async fn assert_not_minted(r: &Rig, partition: &str) {
+pub(super) async fn assert_not_minted(r: &Rig, partition: &str) {
     assert_eq!(
         r.node.last_produced_slot, None,
         "{partition}: O2 last_produced_slot"
@@ -240,7 +245,7 @@ async fn assert_not_minted(r: &Rig, partition: &str) {
     );
 }
 
-async fn assert_minted(r: &Rig, partition: &str) {
+pub(super) async fn assert_minted(r: &Rig, partition: &str) {
     let next = r.tip + 1;
     let built = r
         .node

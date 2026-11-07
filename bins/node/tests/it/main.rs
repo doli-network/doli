@@ -289,4 +289,6 @@ mod m4_chunked_install;
 mod m4_streaming_install;
 mod production_asks_chosen_branch;
 mod production_asks_peer_height_gate;
+mod production_asks_slot_block;
+mod production_asks_slot_predicate;
 mod tied_fork_finality;

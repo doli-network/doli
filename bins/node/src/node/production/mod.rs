@@ -2,7 +2,7 @@ use super::*;
 
 mod assembly;
 mod gates;
-pub use gates::{peer_height_gate, PeerHeightDecision};
+pub use gates::{peer_height_gate, slot_block_on_my_branch, PeerHeightDecision};
 mod poison;
 mod scheduling;
 mod signing;
@@ -135,27 +135,21 @@ impl Node {
             );
         }
 
-        // EARLY BLOCK EXISTENCE CHECK — gossip-aware
-        // Check BOTH block_store (disk) AND seen_blocks_for_slot (gossip).
-        // The gossip set catches blocks that arrived via gossip but haven't been
-        // applied to disk yet — critical for rank 1 to avoid producing a competing
-        // block when rank 0 already produced.
-        if self.block_store.has_block_for_slot(current_slot as u64)
-            || self.seen_blocks_for_slot.contains(&current_slot)
-        {
-            debug!(
-                "Block already exists for slot {} - skipping production",
-                current_slot
-            );
-            return Ok(());
-        }
-
         // Get chain state
         let state = self.chain_state.read().await;
         let prev_hash = state.best_hash;
         let prev_slot = state.best_slot;
         let height = state.best_height + 1;
         drop(state);
+
+        // A block in this slot whose parent is on my branch stops the build; a block on another branch does not.
+        if slot_block_on_my_branch(&self.block_store, current_slot, &prev_hash) {
+            debug!(
+                "Block already exists for slot {} - skipping production",
+                current_slot
+            );
+            return Ok(());
+        }
 
         // Can't produce if slot hasn't advanced
         if current_slot <= prev_slot {
@@ -550,11 +544,12 @@ impl Node {
         //
         // The VDF takes ~700ms during which the event loop is blocked. Other
         // producers' blocks may have arrived and been queued. We must check:
-        // 1. No block exists for our current slot (same-slot duplicate)
+        // 1. No block for our current slot on my branch (same-slot duplicate)
         // 2. Chain tip hasn't advanced (stale parent detection)
         //
         // Without check #2, we'd build on a stale parent and create a fork.
-        if self.block_store.has_block_for_slot(current_slot as u64) {
+        let tip = self.chain_state.read().await.best_hash;
+        if slot_block_on_my_branch(&self.block_store, current_slot, &tip) {
             debug!(
                 "Block appeared during VDF computation for slot {} - aborting production",
                 current_slot
