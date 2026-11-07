@@ -28,3 +28,4 @@ deletes them. Verified with `git grep` over `bins/*/src` and `crates/*/src`
 | index_gets | crates/mempool/src/zero_flow_mined.rs | test-infra | per-instance read-only test seam for INC-I-237 M12.2; the only pub accessors left on `MinedCheck` (the cache writer `record` is pub(crate) since M12.3) |
 | cached_len | crates/mempool/src/zero_flow_mined.rs | test-infra | per-instance read-only test seam for INC-I-237 M12.2; the only pub accessors left on `MinedCheck` (the cache writer `record` is pub(crate) since M12.3) |
 | is_cached | crates/mempool/src/zero_flow_mined.rs | test-infra | per-instance read-only test seam for INC-I-237 M12.2; the only pub accessors left on `MinedCheck` (the cache writer `record` is pub(crate) since M12.3) |
+| for_test | crates/network/src/service/test_seam.rs | test-infra | test seam; no swarm; no production caller by design |
