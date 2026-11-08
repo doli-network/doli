@@ -457,6 +457,7 @@ pub struct Node {
 
     /// Test-only offset added to the wall clock by `wall_now_secs()`; always 0 in production.
     pub(crate) clock_offset_secs: i64,
+    pub(crate) clock_hold: clock_hold::ClockHold,
 }
 
 /// INC-I-055: Number of health samples to track in the rolling window.

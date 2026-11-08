@@ -32,3 +32,5 @@ deletes them. Verified with `git grep` over `bins/*/src` and `crates/*/src`
 | force_sync_phase_for_test | crates/network/src/sync/manager/first_reply.rs | test-infra | test seam; sets one sync phase through the state setter; no production caller by design |
 | set_clock_offset_for_test | bins/node/src/node/clock_hold/mod.rs | test-infra | test seam; moves the node's validation wall clock so clock-hold tests can place a block ahead of it; no production caller by design |
 | body_refused_for_test | bins/node/src/node/body_retry/mod.rs | test-infra | test seam; reads the private body-retry refusal state for clock-hold tests; no production caller by design |
+| clock_hold_len | bins/node/src/node/clock_hold/mod.rs | test-infra | test seam; reads the clock-hold size for tests; no production caller by design |
+| clock_held | bins/node/src/node/clock_hold/mod.rs | test-infra | test seam; reads clock-hold membership by hash for tests; no production caller by design |

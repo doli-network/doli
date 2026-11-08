@@ -20,6 +20,12 @@ impl Node {
                     held.hash(),
                     held.header.slot
                 );
+                let hash = held.hash();
+                let supplier = self.intake_supplier(&hash).or_else(|| {
+                    let key = content_key(&held);
+                    self.body_retry.supplier_of(&hash, &key).map(|s| s.0)
+                });
+                self.try_hold(held, supplier).await;
                 return result;
             }
             let height = Some(next);

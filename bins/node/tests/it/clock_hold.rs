@@ -1,19 +1,29 @@
 //! A peer block whose only fault is a timestamp ahead of the receiver's clock.
 //!
 // OUTPUT CONTRACT: fn Node::handle_new_block(&mut self, Block, PeerId) -> Result<()>
+//   and fn Node::run_periodic_tasks(&mut self) -> Result<()> (the hold release)
 //   O1 return (Ok on every path); O2 chain tip (best_hash, best_height);
 //   O3 bls_ingress_scorer score of the sender; O4 sender refusal for that hash
-//   (body_retry failed set, read through Node::body_refused_for_test)
+//   (body_retry failed set, read through Node::body_refused_for_test);
+//   O5 hold map: Node::clock_hold_len, Node::clock_held(&hash)
 // PATHS: P1 fails TimestampTooFuture only | P2 fails a body commitment (merkle)
 //   | P3 same block, same sender, again once the node clock reaches its time
+//   | P4 held, then ticks after its time | P5 held, invalid at its time (slot/time mismatch)
+//   | P6 33 in-band ahead blocks | P7 same block from two peers
+//   | P8 two blocks at one slot | P9 ahead and beyond the band (wall slot + 2)
 // MATRIX
 //   P1 x O1,O2,O3 -> Ok, tip unchanged, score 0
 //   P2 x O1,O2,O3 -> Ok, tip unchanged, score -100
 //   P1 x O4 -> sender not refused; P1 then P3 x O1,O2 -> Ok, tip == block
+//   P4 x O2,O3 -> tip == block within 2 ticks, score 0
+//   P5 x O2,O3 -> tip unchanged, score -100 after release
+//   P6 x O5 -> len 32, first gone, last held | P7 x O5 -> len 1
+//   P8 x O5 -> len 2, both held | P9 x O2,O3,O5 -> tip unchanged, score 0, len 0
 // INPUT PARTITIONS:
-//   node clock: block time - 2 s (ahead) | block time (current)
+//   node clock: block time - 2 s (ahead) | -1 s (due) | block time | -12 s (out of band)
 //   block: valid signed tip-extending | wrong merkle root, re-signed
-//   sender: one peer for both copies | distinct peer per test
+//     | timestamp one slot past its slot, signed | same-slot variant (header vdf bytes)
+//   sender: one peer for both copies | distinct peer per test | two peers, one block
 // covers: clock_hold, sites, body_retry, mod, init, validation_checks, periodic, block_handling
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -156,10 +166,22 @@ async fn deliver(r: &mut Rig, b: &Block, from: PeerId) {
         .expect("handle_new_block returns Ok");
 }
 
+async fn tick(r: &mut Rig) {
+    r.node
+        .run_periodic_tasks()
+        .await
+        .expect("run_periodic_tasks returns Ok");
+}
+
 /// Node clock 2 s behind the block time: only the future-time rule fails.
 async fn ahead_by_two(r: &mut Rig, b: &Block) {
+    ahead_by(r, b, 2).await;
+}
+
+/// Node clock `secs` behind the block time; the block fails the future-time rule.
+async fn ahead_by(r: &mut Rig, b: &Block, secs: u64) {
     let t = b.header.timestamp;
-    set_clock(&mut r.node, t - 2).await;
+    set_clock(&mut r.node, t - secs).await;
     let v = r
         .node
         .validate_block_for_apply(b, BASE + 1, ValidationMode::Full)
@@ -167,7 +189,7 @@ async fn ahead_by_two(r: &mut Rig, b: &Block) {
     assert_eq!(
         v,
         Err(ValidationError::TimestampTooFuture(t)),
-        "PRECONDITION: at clock T-2 the block fails the future-time rule only"
+        "PRECONDITION: at clock T-{secs} the block fails the future-time rule"
     );
 }
 
@@ -257,4 +279,191 @@ async fn ahead_block_from_same_sender_applies_once_its_time_comes() {
         (b.hash(), BASE + 1),
         "the same sender's copy applies once the clock reaches the block time"
     );
+}
+
+/// `next_block` with a timestamp one slot later than its slot, re-signed by its producer.
+fn slot_mismatch_block(r: &Rig) -> Block {
+    let mut b = next_block(r, true);
+    let by = leader(&r.keys, b.header.slot).clone();
+    b.header.timestamp += SLOT_SECS;
+    sign_header(&mut b.header, &by);
+    b
+}
+
+// REQ-CLOCK-003 — Decision: a failure means a block that was only ahead of our clock is never applied by the node itself once its time comes, so nodes with slower clocks stay on another tip.
+#[tokio::test]
+async fn held_block_applies_within_two_ticks_of_its_time() {
+    let mut r = rig().await;
+    let b = next_block(&r, true);
+    ahead_by_two(&mut r, &b).await;
+    let p = PeerId::random();
+    deliver(&mut r, &b, p).await;
+
+    tick(&mut r).await;
+    tick(&mut r).await;
+    assert_eq!(
+        tip(&r).await,
+        (r.base_tip, BASE),
+        "CONTROL: two ticks while the block is still ahead do not move the tip"
+    );
+
+    set_clock(&mut r.node, b.header.timestamp - 1).await;
+    let mut n: i32 = -1;
+    for i in 1..=2 {
+        tick(&mut r).await;
+        if tip(&r).await.0 == b.hash() {
+            n = i;
+            break;
+        }
+    }
+
+    println!("CLOCK_PROBE applied_after_ticks={}", n);
+    assert_eq!(
+        tip(&r).await,
+        (b.hash(), BASE + 1),
+        "a held block applies within 2 ticks once the clock reaches its time"
+    );
+    assert_eq!(
+        score(&r, &p),
+        0,
+        "the sender of the held block keeps score 0"
+    );
+}
+
+// REQ-CLOCK-002 — Decision: a failure means a held block skips full validation at release, or its sender escapes today's penalty for a block that is invalid at its time.
+#[tokio::test]
+async fn held_block_invalid_at_its_time_is_rejected() {
+    let mut r = rig().await;
+    let b = slot_mismatch_block(&r);
+    set_clock(&mut r.node, b.header.timestamp).await;
+    let v = r
+        .node
+        .validate_block_for_apply(&b, BASE + 1, ValidationMode::Full)
+        .await;
+    assert!(
+        matches!(v, Err(ValidationError::InvalidSlot { .. })),
+        "PRECONDITION: at its time the block fails the slot-from-time rule, not the future-time rule; got {v:?}"
+    );
+    ahead_by_two(&mut r, &b).await;
+    let q = PeerId::random();
+    deliver(&mut r, &b, q).await;
+
+    set_clock(&mut r.node, b.header.timestamp - 1).await;
+    tick(&mut r).await;
+    tick(&mut r).await;
+
+    assert_eq!(
+        tip(&r).await,
+        (r.base_tip, BASE),
+        "a held block that is invalid at its time is not applied"
+    );
+    assert_eq!(
+        score(&r, &q),
+        -100,
+        "the sender of a held block that is invalid at its time gets today's -100"
+    );
+}
+
+/// `next_block`'s slot, height and parent, produced and signed by a fresh key.
+fn block_by_fresh_key(r: &Rig) -> Block {
+    let slot = next_block(r, true).header.slot;
+    make_block(r, BASE + 1, slot, r.base_tip, &KeyPair::generate(), true)
+}
+
+// REQ-CLOCK-SEC-003 — Decision: a failure means the hold grows past 32 entries or drops the newest instead of the oldest, so a flood of ahead blocks costs unbounded memory or evicts the live block.
+#[tokio::test]
+async fn hold_drops_oldest_past_cap() {
+    let mut r = rig().await;
+    let blocks: Vec<Block> = (0..33).map(|_| block_by_fresh_key(&r)).collect();
+    let hashes: std::collections::HashSet<Hash> = blocks.iter().map(Block::hash).collect();
+    assert_eq!(hashes.len(), 33, "PRECONDITION: 33 distinct hashes");
+    ahead_by(&mut r, &blocks[0], 5).await;
+
+    for b in &blocks {
+        deliver(&mut r, b, PeerId::random()).await;
+    }
+
+    assert_eq!(
+        r.node.clock_hold_len(),
+        32,
+        "the hold keeps at most 32 entries"
+    );
+    assert!(
+        !r.node.clock_held(&blocks[0].hash()),
+        "the first inserted entry is dropped past the cap"
+    );
+    assert!(
+        r.node.clock_held(&blocks[32].hash()),
+        "the last inserted entry is held"
+    );
+}
+
+// REQ-CLOCK-002 — Decision: a failure means one block delivered by several peers takes several hold entries, so honest gossip fan-out fills the cap.
+#[tokio::test]
+async fn same_block_twice_holds_one_entry() {
+    let mut r = rig().await;
+    let b = next_block(&r, true);
+    ahead_by_two(&mut r, &b).await;
+
+    deliver(&mut r, &b, PeerId::random()).await;
+    deliver(&mut r, &b, PeerId::random()).await;
+
+    assert_eq!(
+        r.node.clock_hold_len(),
+        1,
+        "one block from two peers is one entry"
+    );
+    assert!(
+        r.node.clock_held(&b.hash()),
+        "the block is held by its hash"
+    );
+}
+
+/// Same producer, same slot: the equivocation detector records a proof but does not stop intake.
+// REQ-CLOCK-002 — Decision: a failure means a second block at one slot overwrites the first, so the hold picks a side instead of leaving it to fork choice.
+#[tokio::test]
+async fn two_blocks_one_slot_hold_two_entries() {
+    let mut r = rig().await;
+    let b1 = next_block(&r, true);
+    let mut b2 = b1.clone();
+    b2.header.vdf_output.value[0] = 1;
+    sign_header(&mut b2.header, leader(&r.keys, b1.header.slot));
+    assert_ne!(b1.hash(), b2.hash(), "PRECONDITION: two hashes at one slot");
+    ahead_by_two(&mut r, &b1).await;
+
+    deliver(&mut r, &b1, PeerId::random()).await;
+    deliver(&mut r, &b2, PeerId::random()).await;
+
+    assert_eq!(
+        r.node.clock_hold_len(),
+        2,
+        "two blocks at one slot are two entries"
+    );
+    assert!(r.node.clock_held(&b1.hash()), "the first block is held");
+    assert!(r.node.clock_held(&b2.hash()), "the second block is held");
+}
+
+// REQ-CLOCK-SEC-002 — Decision: a failure means blocks far ahead of the wall slot are held, so the hold accepts slots the gossip band refuses.
+#[tokio::test]
+async fn block_beyond_band_is_not_held() {
+    let mut r = rig().await;
+    let b = next_block(&r, true);
+    ahead_by(&mut r, &b, SLOT_SECS + 2).await;
+    assert_eq!(
+        u64::from(b.header.slot),
+        r.node.wall_now_secs() / SLOT_SECS + 2,
+        "PRECONDITION: the block is two slots past the node wall slot"
+    );
+    let p = PeerId::random();
+
+    deliver(&mut r, &b, p).await;
+
+    assert_eq!(
+        tip(&r).await,
+        (r.base_tip, BASE),
+        "the block is not applied"
+    );
+    assert_eq!(r.node.clock_hold_len(), 0, "nothing is held");
+    assert!(!r.node.clock_held(&b.hash()), "the block is not held");
+    assert_eq!(score(&r, &p), 0, "the sender keeps score 0");
 }

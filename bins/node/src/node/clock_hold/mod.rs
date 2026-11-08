@@ -1,7 +1,14 @@
+use crypto::Hash;
+use doli_core::consensus::{MAX_DRIFT, MAX_FUTURE_SLOTS};
 use doli_core::validation::ValidationError;
 use doli_core::Block;
+use network::PeerId;
+use tracing::{debug, warn};
 
 use super::Node;
+
+mod hold;
+pub(crate) use hold::ClockHold;
 
 #[cfg(test)]
 mod tests;
@@ -39,5 +46,59 @@ impl Node {
                 Some(height),
             )
             && block.size() <= doli_core::consensus::max_block_size(height)
+    }
+
+    /// Holds a not-yet block when it is in the slot band, authenticated, and its supplier is known.
+    pub(crate) async fn try_hold(&mut self, block: Block, supplier: Option<PeerId>) {
+        let Some(supplier) = supplier else {
+            debug!(
+                "[BLOCK] NOT_YET {:.16}: no supplier, not held",
+                block.hash()
+            );
+            return;
+        };
+        let wall_slot = self.params.timestamp_to_slot(self.wall_now_secs()) as u64;
+        if u64::from(block.header.slot) > wall_slot + MAX_FUTURE_SLOTS {
+            debug!(
+                "[BLOCK] NOT_YET {:.16}: beyond the slot band, not held",
+                block.hash()
+            );
+            return;
+        }
+        let best_height = self.chain_state.read().await.best_height;
+        if !self.gossip_block_authenticated(&block, best_height) {
+            return;
+        }
+        debug!(
+            "[BLOCK] HELD {:.16} slot {}",
+            block.hash(),
+            block.header.slot
+        );
+        self.clock_hold.insert(block, supplier);
+    }
+
+    /// Re-submits every held block whose time has come through `handle_new_block`.
+    pub(crate) async fn release_clock_hold(&mut self) {
+        let limit = self.wall_now_secs().saturating_add(MAX_DRIFT);
+        for (block, supplier) in self.clock_hold.take_due(limit) {
+            let hash = block.hash();
+            if let Err(e) = self.handle_new_block(block, supplier).await {
+                warn!("[BLOCK] held block {:.16} failed at its time: {}", hash, e);
+            }
+        }
+    }
+
+    /// Number of blocks in the clock hold; test seam.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub fn clock_hold_len(&self) -> usize {
+        self.clock_hold.len()
+    }
+
+    /// True when `hash` is in the clock hold; test seam.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub fn clock_held(&self, hash: &Hash) -> bool {
+        self.clock_hold.contains(hash)
     }
 }

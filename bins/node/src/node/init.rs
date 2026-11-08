@@ -1217,6 +1217,7 @@ impl Node {
             maintainer_quorum: Default::default(),
             update_recheck: None,
             clock_offset_secs: 0,
+            clock_hold: Default::default(),
         };
 
         // M4 [F3]: a session always begins from an empty staging family, and
@@ -1488,6 +1489,7 @@ impl Node {
             maintainer_quorum: Default::default(),
             update_recheck: None,
             clock_offset_secs: 0,
+            clock_hold: Default::default(),
         })
     }
 
@@ -1711,6 +1713,7 @@ impl Node {
             maintainer_quorum: Default::default(),
             update_recheck: None,
             clock_offset_secs: 0,
+            clock_hold: Default::default(),
         })
     }
 }
