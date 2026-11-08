@@ -48,33 +48,42 @@ impl Node {
             && block.size() <= doli_core::consensus::max_block_size(height)
     }
 
-    /// Holds a not-yet block when it is in the slot band, authenticated, and its supplier is known.
-    pub(crate) async fn try_hold(&mut self, block: Block, supplier: Option<PeerId>) {
+    /// Holds a not-yet block when its timestamp is in its slot, the slot is in the band, it is
+    /// authenticated, and its supplier is known. Returns true when the block is held.
+    pub(crate) async fn try_hold(&mut self, block: &Block, supplier: Option<PeerId>) -> bool {
         let Some(supplier) = supplier else {
             debug!(
                 "[BLOCK] NOT_YET {:.16}: no supplier, not held",
                 block.hash()
             );
-            return;
+            return false;
         };
+        if self.params.timestamp_to_slot(block.header.timestamp) != block.header.slot {
+            debug!(
+                "[BLOCK] NOT_YET {:.16}: timestamp outside its slot, not held",
+                block.hash()
+            );
+            return false;
+        }
         let wall_slot = self.params.timestamp_to_slot(self.wall_now_secs()) as u64;
         if u64::from(block.header.slot) > wall_slot + MAX_FUTURE_SLOTS {
             debug!(
                 "[BLOCK] NOT_YET {:.16}: beyond the slot band, not held",
                 block.hash()
             );
-            return;
+            return false;
         }
         let best_height = self.chain_state.read().await.best_height;
-        if !self.gossip_block_authenticated(&block, best_height) {
-            return;
+        if !self.gossip_block_authenticated(block, best_height) {
+            return false;
         }
         debug!(
             "[BLOCK] HELD {:.16} slot {}",
             block.hash(),
             block.header.slot
         );
-        self.clock_hold.insert(block, supplier);
+        self.clock_hold.insert(block.clone(), supplier);
+        true
     }
 
     /// Re-submits every held block whose time has come through `handle_new_block`.

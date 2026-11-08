@@ -4,7 +4,7 @@ use super::*;
 
 impl Node {
     /// Applies a peer or cached body on the tip; a failure is a body failure of
-    /// its supplier (the intake peer, else the recorded one).
+    /// its supplier (the intake peer, else the recorded one), unless the block is held.
     pub(in crate::node) async fn apply_peer_body(
         &mut self,
         block: Block,
@@ -15,18 +15,18 @@ impl Node {
         if let Err(e) = &result {
             let next = self.chain_state.read().await.best_height.saturating_add(1);
             if self.not_yet_block(e, &held, next) {
-                info!(
-                    "[BLOCK] NOT_YET {:.16} slot {}: ahead of local clock, sender not penalised",
-                    held.hash(),
-                    held.header.slot
-                );
                 let hash = held.hash();
                 let supplier = self.intake_supplier(&hash).or_else(|| {
                     let key = content_key(&held);
                     self.body_retry.supplier_of(&hash, &key).map(|s| s.0)
                 });
-                self.try_hold(held, supplier).await;
-                return result;
+                if self.try_hold(&held, supplier).await {
+                    info!(
+                        "[BLOCK] NOT_YET {:.16} slot {}: ahead of local clock, sender not penalised",
+                        hash, held.header.slot
+                    );
+                    return result;
+                }
             }
             let height = Some(next);
             let ah = self.inc_i_178_attestation_bls_activation_height;

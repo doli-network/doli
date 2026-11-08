@@ -8,21 +8,25 @@
 //   O5 hold map: Node::clock_hold_len, Node::clock_held(&hash)
 // PATHS: P1 fails TimestampTooFuture only | P2 fails a body commitment (merkle)
 //   | P3 same block, same sender, again once the node clock reaches its time
-//   | P4 held, then ticks after its time | P5 held, invalid at its time (slot/time mismatch)
+//   | P4 held, then ticks after its time | P5 ahead, timestamp one slot past its slot
 //   | P6 33 in-band ahead blocks | P7 same block from two peers
 //   | P8 two blocks at one slot | P9 ahead and beyond the band (wall slot + 2)
+//   | P10 in-band slot, timestamp far past its slot | P11 held block, then 32 and 33 P10 blocks
 // MATRIX
 //   P1 x O1,O2,O3 -> Ok, tip unchanged, score 0
 //   P2 x O1,O2,O3 -> Ok, tip unchanged, score -100
 //   P1 x O4 -> sender not refused; P1 then P3 x O1,O2 -> Ok, tip == block
 //   P4 x O2,O3 -> tip == block within 2 ticks, score 0
-//   P5 x O2,O3 -> tip unchanged, score -100 after release
+//   P5 x O2,O3 -> tip unchanged, score -100
 //   P6 x O5 -> len 32, first gone, last held | P7 x O5 -> len 1
-//   P8 x O5 -> len 2, both held | P9 x O2,O3,O5 -> tip unchanged, score 0, len 0
+//   P8 x O5 -> len 2, both held | P9 x O2,O3,O5 -> tip unchanged, score -100, len 0
+//   P10 x O3,O5 -> not held, len 0, score -100
+//   P11 x O5 -> valid block held, len 1 after 32 and 33; P11 x O2 -> tip == block within 2 ticks
 // INPUT PARTITIONS:
 //   node clock: block time - 2 s (ahead) | -1 s (due) | block time | -12 s (out of band)
 //   block: valid signed tip-extending | wrong merkle root, re-signed
 //     | timestamp one slot past its slot, signed | same-slot variant (header vdf bytes)
+//     | timestamp 5000 slots past its slot, signed by the leader or a fresh key
 //   sender: one peer for both copies | distinct peer per test | two peers, one block
 // covers: clock_hold, sites, body_retry, mod, init, validation_checks, periodic, block_handling
 
@@ -330,7 +334,7 @@ async fn held_block_applies_within_two_ticks_of_its_time() {
     );
 }
 
-// REQ-CLOCK-002 — Decision: a failure means a held block skips full validation at release, or its sender escapes today's penalty for a block that is invalid at its time.
+// REQ-CLOCK-002 — Decision: a failure means a block whose timestamp is outside its slot is applied, or its sender escapes today's penalty.
 #[tokio::test]
 async fn held_block_invalid_at_its_time_is_rejected() {
     let mut r = rig().await;
@@ -465,5 +469,98 @@ async fn block_beyond_band_is_not_held() {
     );
     assert_eq!(r.node.clock_hold_len(), 0, "nothing is held");
     assert!(!r.node.clock_held(&b.hash()), "the block is not held");
-    assert_eq!(score(&r, &p), 0, "the sender keeps score 0");
+    assert_eq!(
+        score(&r, &p),
+        -100,
+        "a block the hold refuses keeps the previous handling"
+    );
+}
+
+/// `next_block`'s slot and parent with a timestamp 5000 slots later, signed by `by`.
+fn far_time_block(r: &Rig, by: &KeyPair) -> Block {
+    let mut b = next_block(r, true);
+    b.header.timestamp += 5000 * SLOT_SECS;
+    b.header.producer = *by.public_key();
+    sign_header(&mut b.header, by);
+    b
+}
+
+/// Node clock 2 s before the slot time of `b`; `b` fails the future-time rule.
+async fn clock_before_slot(r: &mut Rig, b: &Block) {
+    let slot_time = u64::from(b.header.slot) * SLOT_SECS;
+    set_clock(&mut r.node, slot_time - 2).await;
+    let v = r
+        .node
+        .validate_block_for_apply(b, BASE + 1, ValidationMode::Full)
+        .await;
+    assert_eq!(
+        v,
+        Err(ValidationError::TimestampTooFuture(b.header.timestamp)),
+        "PRECONDITION: the block fails the future-time rule"
+    );
+}
+
+// REQ-CLOCK-SEC-004 — Decision: a failure means a block whose timestamp is outside its own slot is held, so it never leaves the hold and takes a place under the cap.
+#[tokio::test]
+async fn block_with_time_outside_its_slot_is_not_held() {
+    let mut r = rig().await;
+    let by = leader(&r.keys, next_block(&r, true).header.slot).clone();
+    let b = far_time_block(&r, &by);
+    clock_before_slot(&mut r, &b).await;
+    assert!(
+        u64::from(b.header.slot) <= r.node.wall_now_secs() / SLOT_SECS + 1,
+        "PRECONDITION: the slot is in the band"
+    );
+    let p = PeerId::random();
+
+    deliver(&mut r, &b, p).await;
+
+    assert!(!r.node.clock_held(&b.hash()), "the block is not held");
+    assert_eq!(r.node.clock_hold_len(), 0, "nothing is held");
+    assert_eq!(
+        score(&r, &p),
+        -100,
+        "the sender gets the invalid-block score"
+    );
+}
+
+// REQ-CLOCK-SEC-004 — Decision: a failure means blocks whose timestamp is outside their slot push a valid held block out of the hold, so it never applies at its time.
+#[tokio::test]
+async fn held_block_stays_after_blocks_with_time_outside_their_slot() {
+    let mut r = rig().await;
+    let b = next_block(&r, true);
+    ahead_by_two(&mut r, &b).await;
+    deliver(&mut r, &b, PeerId::random()).await;
+    assert!(
+        r.node.clock_held(&b.hash()),
+        "PRECONDITION: the block is held"
+    );
+
+    let others: Vec<Block> = (0..33)
+        .map(|_| far_time_block(&r, &KeyPair::generate()))
+        .collect();
+    for (i, o) in others.iter().enumerate() {
+        deliver(&mut r, o, PeerId::random()).await;
+        if i == 31 || i == 32 {
+            assert!(
+                r.node.clock_held(&b.hash()),
+                "the valid block is held after {} other blocks",
+                i + 1
+            );
+            assert_eq!(r.node.clock_hold_len(), 1, "only the valid block is held");
+        }
+    }
+
+    set_clock(&mut r.node, b.header.timestamp - 1).await;
+    for _ in 0..2 {
+        tick(&mut r).await;
+        if tip(&r).await.0 == b.hash() {
+            break;
+        }
+    }
+    assert_eq!(
+        tip(&r).await,
+        (b.hash(), BASE + 1),
+        "the held block applies within 2 ticks of its time"
+    );
 }
