@@ -12,8 +12,17 @@ impl Node {
     ) -> Result<()> {
         let held = block.clone();
         let result = self.apply_block(block, mode).await;
-        if result.is_err() {
-            let height = Some(self.chain_state.read().await.best_height.saturating_add(1));
+        if let Err(e) = &result {
+            let next = self.chain_state.read().await.best_height.saturating_add(1);
+            if self.not_yet_block(e, &held, next) {
+                info!(
+                    "[BLOCK] NOT_YET {:.16} slot {}: ahead of local clock, sender not penalised",
+                    held.hash(),
+                    held.header.slot
+                );
+                return result;
+            }
+            let height = Some(next);
             let ah = self.inc_i_178_attestation_bls_activation_height;
             let kind = if held.body_matches_header(ah, height) {
                 Fault::Failed

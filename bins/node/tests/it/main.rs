@@ -28,6 +28,7 @@ mod b3_m2_slashed_registration_parity;
 mod b3_m3_residue_check_cleanup;
 mod bls_rotation_convergence;
 mod bls_rotation_convergence_child;
+mod clock_hold;
 mod inc_i_178_m0_attestation_lock;
 mod inc_i_178_m0_block_identity;
 mod inc_i_178_m0_common;

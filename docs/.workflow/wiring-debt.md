@@ -30,3 +30,5 @@ deletes them. Verified with `git grep` over `bins/*/src` and `crates/*/src`
 | is_cached | crates/mempool/src/zero_flow_mined.rs | test-infra | per-instance read-only test seam for INC-I-237 M12.2; the only pub accessors left on `MinedCheck` (the cache writer `record` is pub(crate) since M12.3) |
 | for_test | crates/network/src/service/test_seam.rs | test-infra | test seam; no swarm; no production caller by design |
 | force_sync_phase_for_test | crates/network/src/sync/manager/first_reply.rs | test-infra | test seam; sets one sync phase through the state setter; no production caller by design |
+| set_clock_offset_for_test | bins/node/src/node/clock_hold/mod.rs | test-infra | test seam; moves the node's validation wall clock so clock-hold tests can place a block ahead of it; no production caller by design |
+| body_refused_for_test | bins/node/src/node/body_retry/mod.rs | test-infra | test seam; reads the private body-retry refusal state for clock-hold tests; no production caller by design |

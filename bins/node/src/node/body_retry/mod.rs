@@ -265,6 +265,13 @@ impl Node {
         Some((hash, content_key(block), peer, block.header.slot))
     }
 
+    /// True when `peer`'s copy of `hash` is refused now; test seam.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub fn body_refused_for_test(&self, hash: &Hash, peer: &PeerId) -> bool {
+        self.body_retry.refuses(hash, peer, Instant::now())
+    }
+
     /// A failed copy of a fork block: evict it, record its supplier in the
     /// scorer, and ask a different peer for the body by hash. A junk copy is
     /// fetched again only when no copy is held and no ask is open.
