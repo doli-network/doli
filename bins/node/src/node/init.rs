@@ -1216,6 +1216,7 @@ impl Node {
             origin_tx_bucket: super::rpc_broadcast::new_origin_tx_bucket(),
             maintainer_quorum: Default::default(),
             update_recheck: None,
+            clock_offset_secs: 0,
         };
 
         // M4 [F3]: a session always begins from an empty staging family, and
@@ -1486,6 +1487,7 @@ impl Node {
             origin_tx_bucket: super::rpc_broadcast::new_origin_tx_bucket(),
             maintainer_quorum: Default::default(),
             update_recheck: None,
+            clock_offset_secs: 0,
         })
     }
 
@@ -1708,6 +1710,7 @@ impl Node {
             origin_tx_bucket: super::rpc_broadcast::new_origin_tx_bucket(),
             maintainer_quorum: Default::default(),
             update_recheck: None,
+            clock_offset_secs: 0,
         })
     }
 }

@@ -72,10 +72,7 @@ impl Node {
         // Bond weights from epoch-locked snapshot (single source of truth).
         let weighted = self.bond_weights_for_scheduling(active).await;
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let now = self.wall_now_secs();
 
         // Build bootstrap producer list from GSet (same source as production side).
         // Must be sorted by pubkey for deterministic fallback rank order.
@@ -233,10 +230,7 @@ impl Node {
         mode: ValidationMode,
     ) -> Result<(), validation::ValidationError> {
         let state = self.chain_state.read().await;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let now = self.wall_now_secs();
 
         // Build weighted producer list using epoch-locked bond snapshot.
         // The snapshot is computed once at each epoch boundary and stays
