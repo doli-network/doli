@@ -219,6 +219,7 @@ impl Node {
 
     /// Run periodic tasks
     pub async fn run_periodic_tasks(&mut self) -> Result<()> {
+        self.release_clock_hold().await;
         // INC-I-204 M4.1 / REQ-FORK-012: the audited operator wedge escape. A
         // no-op unless an operator armed `forceReorgTo` on this node.
         self.try_consume_force_reorg().await;

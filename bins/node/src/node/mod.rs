@@ -21,6 +21,7 @@ mod bootstrap_redial_tests;
 mod branch_rank;
 mod branch_support;
 pub mod checkpoint_health;
+mod clock_hold;
 mod epoch_tables;
 mod event_loop;
 mod floor_window;
@@ -453,6 +454,10 @@ pub struct Node {
 
     /// Wakes the update service after the quorum replaces the trust root.
     pub(crate) update_recheck: Option<Arc<tokio::sync::Notify>>,
+
+    /// Test-only offset added to the wall clock by `wall_now_secs()`; always 0 in production.
+    pub(crate) clock_offset_secs: i64,
+    pub(crate) clock_hold: clock_hold::ClockHold,
 }
 
 /// INC-I-055: Number of health samples to track in the rolling window.
