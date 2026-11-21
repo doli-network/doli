@@ -1777,10 +1777,19 @@ listen_addr = "0.0.0.0:8500"
 
 ### Authentication
 
-No built-in authentication. Use:
-- Firewall rules
-- Reverse proxy with auth (nginx, caddy)
-- VPN for remote access
+Public methods need no authentication. The 14 admin methods (`ADMIN_METHODS` in
+`crates/rpc/src/server.rs`) need `Authorization: Bearer <token>` from every address,
+loopback and private networks included. A missing or wrong token returns `-32008`.
+
+The node resolves its admin token at start:
+1. env `DOLI_RPC_ADMIN_TOKEN`, if at least 32 chars after trim;
+2. else config `rpc.admin_token`, if at least 32 chars after trim;
+3. else the file `<data_dir>/rpc-admin.token` (mode 0600, 64 lowercase hex chars):
+   reused when valid, otherwise created.
+
+A shorter env or config token is ignored with an error log. If the file cannot be
+written, the node refuses every admin method. For remote access, also use firewall
+rules, a VPN, or a reverse proxy.
 
 ### CORS
 
@@ -2357,7 +2366,7 @@ curl -X POST http://127.0.0.1:8500 \
 
 Arm a single-shot, audited reorganization onto the branch tip named by the operator. This is the replacement for the unaudited poison-rollback bypass (LB-4) and is the only supported way out of a `tip == finality` wedge that does not destroy history.
 
-**Admin-gated.** `forceReorgTo` is in `ADMIN_METHODS` and requires the bearer token (loopback and RFC-1918 callers are auto-trusted, as for `pauseProduction`).
+**Operator token required from every address.** `forceReorgTo` is in `ADMIN_METHODS` and in `OPERATOR_TOKEN_METHODS` (`crates/rpc/src/server.rs`). Like every admin method, every call must carry `Authorization: Bearer <token>`, where the token is the node's admin token (see §15 Authentication: env `DOLI_RPC_ADMIN_TOKEN`, config, or `<data_dir>/rpc-admin.token`). A missing or wrong token returns `-32008` (`Unauthorized: admin token required`).
 
 The call does not perform a reorg. It arms a directive that the node evaluates on its next periodic tick. The directive is:
 

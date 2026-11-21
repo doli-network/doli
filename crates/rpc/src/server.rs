@@ -51,6 +51,10 @@ pub const ADMIN_METHODS: &[&str] = &[
     "forceReorgTo",
 ];
 
+/// Admin methods with extra operator rules beyond the bearer token (which every
+/// admin method needs from every address). Each entry must also be in `ADMIN_METHODS`.
+pub const OPERATOR_TOKEN_METHODS: &[&str] = &["forceReorgTo"];
+
 /// RPC server configuration
 #[derive(Clone, Debug)]
 pub struct RpcServerConfig {
@@ -60,11 +64,12 @@ pub struct RpcServerConfig {
     pub enable_cors: bool,
     /// Allowed origins (if CORS enabled). Empty = deny all cross-origin.
     pub allowed_origins: Vec<String>,
-    /// Bearer token for admin methods. None = admin methods disabled when RPC is network-accessible.
+    /// Bearer token for admin methods (from every address). None or shorter than
+    /// `MIN_ADMIN_TOKEN_LEN` = every admin method refused.
     pub admin_token: Option<String>,
     /// ISSUE-174 #1: IPs of trusted reverse proxies (e.g., Nginx). When the immediate
     /// TCP peer is one of these, `X-Real-IP` / `X-Forwarded-For` is parsed to obtain
-    /// the actual client IP for the admin-network trust check. Empty (default) =
+    /// the actual client IP for admin-auth logging. Empty (default) =
     /// header parsing disabled, peer IP is used directly.
     pub trusted_proxies: Vec<std::net::IpAddr>,
 }
@@ -178,17 +183,8 @@ struct RpcSharedState {
     trusted_proxies: Vec<std::net::IpAddr>,
 }
 
-/// Check whether a request is authorized for an admin method.
-///
-/// Rules:
-/// - Request from loopback or private IP: admin methods allowed without token
-/// - Public IP + no token configured: admin methods DENIED
-/// - Public IP + token configured: require `Authorization: Bearer <token>`
-///
-/// ISSUE-174 #1: When the immediate TCP peer is in `trusted_proxies`, the
-/// `X-Real-IP` / `X-Forwarded-For` headers are resolved to the real client IP
-/// before the trust-network check. This closes the historical bypass where
-/// Nginx (or any reverse proxy) made every request appear as 127.0.0.1.
+/// Admin methods need `Authorization: Bearer <token>` from every address; with no
+/// usable token configured every admin call is refused. Public methods pass.
 fn check_admin_auth(
     shared: &RpcSharedState,
     headers: &HeaderMap,
@@ -199,46 +195,32 @@ fn check_admin_auth(
         return Ok(());
     }
 
-    // Resolve the effective client IP. If the TCP peer is one of our configured
-    // trusted reverse proxies, the proxy MUST set X-Real-IP / X-Forwarded-For
-    // and we use that. Otherwise headers are ignored — an attacker cannot forge
-    // their way to a trusted IP by setting their own X-Forwarded-For.
     let effective_ip = resolve_client_ip(client_addr.ip(), headers, &shared.trusted_proxies);
 
-    // Trusted networks: loopback (127.x) and private (RFC 1918).
-    // All operator servers communicate over private IPs — these are trusted.
-    // Public IPs require token auth to prevent external abuse.
-    if is_trusted_network(effective_ip) {
-        return Ok(());
-    }
-
-    // Network-accessible: require token
-    match &shared.admin_token {
-        None => {
+    let expected = match shared.admin_token.as_deref() {
+        Some(t) if crate::admin_token::is_usable_admin_token(t) => t,
+        _ => {
             warn!(
-                "Admin method '{}' rejected: no admin_token configured for network-accessible RPC",
-                method
+                "Admin method '{}' from {} rejected: no usable admin_token configured",
+                method, effective_ip
+            );
+            return Err(RpcError::unauthorized());
+        }
+    };
+
+    let provided = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+
+    match provided {
+        Some(token) if constant_time_eq(token.as_bytes(), expected.as_bytes()) => Ok(()),
+        _ => {
+            warn!(
+                "Admin method '{}' from {} rejected: invalid or missing bearer token",
+                method, effective_ip
             );
             Err(RpcError::unauthorized())
-        }
-        Some(expected) => {
-            let provided = headers
-                .get(header::AUTHORIZATION)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.strip_prefix("Bearer "));
-
-            match provided {
-                // AUDIT-RPC3-001: Use constant-time comparison to prevent
-                // timing side-channel attacks on the admin bearer token.
-                Some(token) if constant_time_eq(token.as_bytes(), expected.as_bytes()) => Ok(()),
-                _ => {
-                    warn!(
-                        "Admin method '{}' rejected: invalid or missing bearer token",
-                        method
-                    );
-                    Err(RpcError::unauthorized())
-                }
-            }
         }
     }
 }
@@ -255,15 +237,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-/// Check if an IP is in a trusted network (loopback or RFC 1918 private).
-fn is_trusted_network(ip: std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private(),
-        std::net::IpAddr::V6(v6) => v6.is_loopback(),
-    }
-}
-
-/// Resolve the effective client IP for trust-check purposes.
+/// Resolve the effective client IP for admin-auth logging.
 ///
 /// If `peer_ip` is in `trusted_proxies`, look at `X-Real-IP` first (single IP),
 /// then the LEFTMOST entry of `X-Forwarded-For` (canonical original-client position).
@@ -371,85 +345,10 @@ async fn handle_batch_rpc(
 }
 
 #[cfg(test)]
-mod proxy_tests {
-    use super::*;
-    use axum::http::HeaderValue;
-    use std::net::{IpAddr, Ipv4Addr};
+mod proxy_tests;
 
-    fn ip(s: &str) -> IpAddr {
-        s.parse().unwrap()
-    }
-
-    fn headers_xff(val: &'static str) -> HeaderMap {
-        let mut h = HeaderMap::new();
-        h.insert("x-forwarded-for", HeaderValue::from_static(val));
-        h
-    }
-    fn headers_xrip(val: &'static str) -> HeaderMap {
-        let mut h = HeaderMap::new();
-        h.insert("x-real-ip", HeaderValue::from_static(val));
-        h
-    }
-
-    #[test]
-    fn no_trusted_proxies_returns_peer_ip_even_with_forged_header() {
-        // ISSUE-174 #1 regression: an attacker cannot reach a "trusted" IP just by
-        // setting X-Forwarded-For unless the operator opted in to header parsing.
-        let peer = ip("203.0.113.42");
-        let headers = headers_xff("127.0.0.1");
-        assert_eq!(resolve_client_ip(peer, &headers, &[]), peer);
-    }
-
-    #[test]
-    fn peer_not_in_trusted_proxies_returns_peer_ip() {
-        // Random public peer claims to be Nginx — must be ignored.
-        let peer = ip("203.0.113.42");
-        let headers = headers_xrip("127.0.0.1");
-        let trusted = vec![ip("127.0.0.1")];
-        assert_eq!(resolve_client_ip(peer, &headers, &trusted), peer);
-    }
-
-    #[test]
-    fn trusted_proxy_x_real_ip_takes_precedence() {
-        // Nginx is the peer (127.0.0.1) and reports the real client.
-        let peer = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let headers = headers_xrip("203.0.113.42");
-        let trusted = vec![peer];
-        assert_eq!(
-            resolve_client_ip(peer, &headers, &trusted),
-            ip("203.0.113.42")
-        );
-    }
-
-    #[test]
-    fn trusted_proxy_x_forwarded_for_leftmost_is_used() {
-        let peer = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let headers = headers_xff("198.51.100.7, 10.0.0.1");
-        let trusted = vec![peer];
-        assert_eq!(
-            resolve_client_ip(peer, &headers, &trusted),
-            ip("198.51.100.7")
-        );
-    }
-
-    #[test]
-    fn trusted_proxy_no_headers_falls_back_to_peer() {
-        // Misconfigured Nginx (not setting headers) → behavior is "trust peer",
-        // which is the same vulnerable behavior we had before. Operator must
-        // configure Nginx correctly when opting into header parsing.
-        let peer = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let trusted = vec![peer];
-        assert_eq!(resolve_client_ip(peer, &HeaderMap::new(), &trusted), peer);
-    }
-
-    #[test]
-    fn malformed_header_falls_back_to_peer() {
-        let peer = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let headers = headers_xrip("not-an-ip");
-        let trusted = vec![peer];
-        assert_eq!(resolve_client_ip(peer, &headers, &trusted), peer);
-    }
-}
+#[cfg(test)]
+mod auth_tests;
 
 #[cfg(test)]
 mod tests {

@@ -1483,13 +1483,13 @@ This checklist helps node operators and producers secure their DOLI infrastructu
   # listen_addr = "0.0.0.0:8500"  # DANGEROUS
   ```
 
-- [ ] **RPC authentication** - Enable if exposing RPC externally
-  ```toml
-  [rpc]
-  enabled = true
-  auth_required = true
-  api_key = "your-secure-api-key-here"
-  ```
+- [ ] **RPC admin token** - Always on (INC-I-308). The 14 admin methods need
+  `Authorization: Bearer <token>` from every address, loopback and private networks
+  included; a missing or wrong token returns `-32008`. No address is trusted. The token
+  is env `DOLI_RPC_ADMIN_TOKEN` or config `rpc.admin_token` when at least 32 chars after
+  trim; otherwise the node reuses or creates `<data_dir>/rpc-admin.token` (mode 0600,
+  64 lowercase hex chars). If that file cannot be written, every admin method is refused.
+  Keep the token file owner-only and never pass the token on a public command line.
 
 - [ ] **Rate limiting enabled** - Protect against DoS
   ```toml
