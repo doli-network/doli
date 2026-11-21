@@ -2,13 +2,13 @@
 # gauntlet-gs063.sh — GS-063 backfill-hostile-peer-snap-gap (INC-I-308 R-1/R-2).
 #
 # Usage: bash scripts/gauntlet-gs063.sh   (GA_BIN = node binary, default target/release/doli-node)
-# Env:   GA_BIN, GS063_RPC (8594), GS063_P2P (30394), GS063_METRICS (9094), GS063_PROXY (8598),
+# Env:   GA_BIN, GS063_RPC (8663), GS063_P2P (30463), GS063_METRICS (9163), GS063_PROXY (8667),
 #        GS063_HONEST (http://127.0.0.1:8501), GS063_BOOT (30300 30301 30302 30303),
 #        GS063_SNAP_SECS (900), GS063_FILL_SECS (180), GS063_K (20), GA_WORK
 #
 # Starts ONE victim node (own data dir under GA_WORK, own ports, loopback bind shim, --no-dht,
 # bootstrap = the local testnet P2P ports, snap sync ON). It snap-syncs, so it has the gap
-# [1, snap_h-1]. The shared ~/testnet nodes are only READ (RPC getChainInfo/getBlockRaw/
+# below snap_h (h=1 may be stored by orphan chase). The shared ~/testnet nodes are only READ (RPC getChainInfo/getBlockRaw/
 # getBlockByHeight); nothing under ~/testnet is written, stopped or restarted.
 # A hostile peer (scripts/gauntlet-gs063-proxy.py) answers the tip preflight with the victim's own
 # hash and tampers the block at one height; heights below a floor answer "no block" so each pass ends.
@@ -25,7 +25,7 @@
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gauntlet-rpc-admin-lib.sh"
 mkdir -p "$GA_WORK"
-RPC="${GS063_RPC:-8594}"; P2P="${GS063_P2P:-30394}"; MET="${GS063_METRICS:-9094}"; PX="${GS063_PROXY:-8598}"
+RPC="${GS063_RPC:-8663}"; P2P="${GS063_P2P:-30463}"; MET="${GS063_METRICS:-9163}"; PX="${GS063_PROXY:-8667}"
 HONEST="${GS063_HONEST:-http://127.0.0.1:8501}"; K="${GS063_K:-20}"
 PROXY_PID=""
 cleanup(){ [ -n "$PROXY_PID" ] && kill "$PROXY_PID" 2>/dev/null; ga_scratch_stop; }
@@ -57,20 +57,24 @@ vhash(){ ga_rpc "$V" getBlockByHeight "{\"height\":$1}" | j 'd["result"]["hash"]
 vraw(){ ga_rpc "$V" getBlockRaw "{\"height\":$1}" | j 'd["result"]["block"] if d.get("result") else ""'; }
 hraw(){ ga_rpc "$HONEST" getBlockRaw "{\"height\":$1}" | j 'd["result"]["block"] if d.get("result") else ""'; }
 
-# Wait for snap: victim near the honest tip and h=1 absent. snap_h = lowest stored height (bisect).
+# Wait for snap: victim near the honest tip and h=tip/2 absent (orphan chase may store h=1, so h=1 is
+# not a snap signal). snap_h = lowest height of the stored top run (bisect over (tip/2, tip]).
 deadline=$(( $(date +%s) + ${GS063_SNAP_SECS:-900} )); VTIP=0
 while [ "$(date +%s)" -lt "$deadline" ]; do
   kill -0 "$SCRATCH_PID" 2>/dev/null || { tail -5 "$SCRATCH_DIR/node.log"; echo "VERDICT: NOT_MADE (victim exited)"; exit 3; }
   VTIP=$(ga_rpc "$V" getChainInfo '{}' | j 'd["result"]["bestHeight"]'); VTIP=${VTIP:-0}
-  [ "$VTIP" -gt 1000 ] && [ -z "$(vhash 1)" ] && [ $((HTIP - VTIP)) -lt 200 ] && break
+  [ "$VTIP" -gt 1000 ] && [ -z "$(vhash $((VTIP / 2)))" ] && [ $((HTIP - VTIP)) -lt 200 ] && break
   sleep 5
 done
-[ "$VTIP" -gt 1000 ] && [ -z "$(vhash 1)" ] || { echo "VERDICT: NOT_MADE (no snap-synced gap; tip=$VTIP)"; exit 3; }
-lo=1; hi=$VTIP
+[ "$VTIP" -gt 1000 ] && [ -z "$(vhash $((VTIP / 2)))" ] || { echo "VERDICT: NOT_MADE (no snap-synced gap; tip=$VTIP)"; exit 3; }
+lo=$((VTIP / 2)); hi=$VTIP
 while [ $((hi - lo)) -gt 1 ]; do mid=$(((lo + hi) / 2)); if [ -n "$(vhash $mid)" ]; then hi=$mid; else lo=$mid; fi; done
 SNAP=$hi; TOP=$((SNAP - 1))
-ga_metric victim_tip=$VTIP snap_h=$SNAP gap="1-$TOP"
-[ "$TOP" -gt $((K + 10)) ] || { echo "VERDICT: NOT_MADE (gap too small: $TOP)"; exit 3; }
+# The real gap: walk down from TOP until a stored height; the hostile passes need K+10 empty heights.
+GAP_LO=$TOP
+while [ $((TOP - GAP_LO)) -lt $((K + 10)) ] && [ "$GAP_LO" -gt 1 ] && [ -z "$(vhash $((GAP_LO - 1)))" ]; do GAP_LO=$((GAP_LO - 1)); done
+ga_metric victim_tip=$VTIP snap_h=$SNAP gap_top=$TOP gap_checked="$GAP_LO-$TOP" h1_stored="$([ -n "$(vhash 1)" ] && echo yes || echo no)"
+[ -z "$(vhash "$TOP")" ] && [ $((TOP - GAP_LO)) -ge $((K + 10)) ] || { echo "VERDICT: NOT_MADE (gap too small: $GAP_LO-$TOP)"; exit 3; }
 
 TF=$(find "$SCRATCH_DIR/data" -name rpc-admin.token 2>/dev/null | head -1)
 TOKEN=""; [ -n "$TF" ] && TOKEN=$(tr -d '[:space:]' < "$TF")

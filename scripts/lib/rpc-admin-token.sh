@@ -32,11 +32,43 @@ rpc_admin_curl_args() {
   printf '%s\n' "-H" "Authorization: Bearer $tok"
 }
 
-# rpc_admin_port_data_dir <port> — print the --data-dir of the local process listening on <port>.
+# rpc_admin_cmd_data_dir <command line> — the node data dir, by the rule of bins/node/src/main.rs:
+# --data-dir, else DOLI_DATA_DIR, else the platform default for --network (legacy ~/.doli/<net> if that is absent).
+# ps shows argv unquoted, so a value with spaces runs to the next flag; the longest existing-dir prefix wins.
+rpc_admin_cmd_data_dir() {
+  local cmd=" $1 " rest cand net plat
+  case "$cmd" in
+    *" --data-dir="*) rest="${cmd#*" --data-dir="}" ;;
+    *" --data-dir "*) rest="${cmd#*" --data-dir "}" ;;
+    *) rest="" ;;
+  esac
+  if [ -n "$rest" ]; then
+    rest="${rest%%" --"*}"; rest="${rest%%" -"[A-Za-z]" "*}"; rest="${rest%"${rest##*[![:space:]]}"}"
+    # shellcheck disable=SC2088 # a literal "~/" from argv
+    case "$rest" in "~/"*) rest="$HOME/${rest#"~/"}" ;; esac
+    cand="$rest"
+    while [ ! -d "$cand" ]; do
+      case "$cand" in *" "*) cand="${cand% *}" ;; *) cand="${rest%% *}"; break ;; esac
+    done
+    printf '%s\n' "$cand"; return 0
+  fi
+  [ -n "${DOLI_DATA_DIR:-}" ] && { printf '%s\n' "$DOLI_DATA_DIR"; return 0; }
+  net="$(printf '%s\n' "$cmd" | sed -nE 's/.* (--network[ =]|-n )([A-Za-z]+) .*/\2/p' | head -1)"
+  net="$(printf '%s' "${net:-mainnet}" | tr '[:upper:]' '[:lower:]')"
+  case "$(uname -s)" in
+    Linux) plat="/var/lib/doli/$net" ;;
+    Darwin) plat="$HOME/Library/Application Support/doli/$net" ;;
+    *) plat="$HOME/.doli/$net" ;;
+  esac
+  if [ ! -e "$plat" ] && [ -e "$HOME/.doli/$net" ]; then plat="$HOME/.doli/$net"; fi
+  printf '%s\n' "$plat"
+}
+
+# rpc_admin_port_data_dir <port> — print the data dir of the local process listening on <port>.
 rpc_admin_port_data_dir() {
   local pid
   for pid in $(lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null); do
-    ps -o command= -p "$pid" 2>/dev/null | sed -n 's/.*--data-dir[ =]\([^ ]*\).*/\1/p' | head -1
+    rpc_admin_cmd_data_dir "$(ps -o command= -p "$pid" 2>/dev/null)"
     return 0
   done
 }

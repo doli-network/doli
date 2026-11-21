@@ -142,6 +142,33 @@ else
   echo "SKIP f $PYHELPER absent"
 fi
 
+# l. INC-I-308 M13 — Decision: a FAIL means a data dir with spaces, or a node started without
+#    --data-dir, yields no token path, so the admin call gets -32008.
+SP="$TMP/home/Library/Application Support/doli/testnet"; mkdir -p "$SP"
+if [ "$(uname -s)" = Darwin ]; then DEF="$SP"; else DEF="$TMP/home/.doli/testnet"; mkdir -p "$DEF"; fi
+ENVD="$TMP/env dir"
+L_CASES=(
+  "space|doli-node --network testnet --data-dir $SP run --producer|$SP"
+  "eq-space|doli-node --data-dir=$SP run|$SP"
+  "flag-after|doli-node run --data-dir $SP --rpc-port 8500|$SP"
+  "no-dir-default|doli-node --network testnet run --rpc-port 8500|$DEF"
+  "no-dir-env|doli-node -n testnet run|$ENVD"
+)
+for c in "${L_CASES[@]}"; do
+  IFS='|' read -r name cmd want <<< "$c"
+  envset=""; [ "$name" = no-dir-env ] && envset="$ENVD"
+  o="$( (export HOME="$TMP/home"; unset DOLI_DATA_DIR; [ -n "$envset" ] && export DOLI_DATA_DIR="$envset"
+         source "$ROOT/$HELPER" >/dev/null 2>&1 || exit 97; rpc_admin_cmd_data_dir "$cmd") 2>/dev/null)"
+  [ "$o" = "$want" ] && pass "l sh $name" || fail "l sh $name" "got: [$o] want: [$want]"
+  if [ -f "$PYHELPER" ]; then
+    o="$( (export HOME="$TMP/home"; unset DOLI_DATA_DIR; [ -n "$envset" ] && export DOLI_DATA_DIR="$envset"
+           python3 -I -c 'import sys, importlib.util as u
+s = u.spec_from_file_location("rpc_admin_token", sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m)
+print(m.data_dir_from_command(sys.argv[2]))' "$ROOT/$PYHELPER" "$cmd") 2>&1)"
+    [ "$o" = "$want" ] && pass "l py $name" || fail "l py $name" "got: [$o] want: [$want]"
+  fi
+done
+
 # g. bash -n on admin-calling shell scripts
 gbad=0
 while IFS= read -r f; do

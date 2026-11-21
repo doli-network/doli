@@ -1,7 +1,8 @@
 """Admin RPC token lookup (INC-I-308): env DOLI_RPC_ADMIN_TOKEN, then <data_dir>/rpc-admin.token."""
 import os
-import shlex
+import re
 import subprocess
+import sys
 
 MIN_ADMIN_TOKEN_LEN = 32
 
@@ -38,20 +39,44 @@ def auth_headers(data_dir=None):
     return {"Authorization": "Bearer " + tok} if tok else {}
 
 
+def data_dir_from_command(cmd):
+    """Node data dir from a `ps` command line, by the rule of bins/node/src/main.rs (see the shell helper)."""
+    cmd = " %s " % cmd.strip()
+    m = re.search(r" --data-dir[ =](.*)", cmd)
+    if m:
+        rest = re.split(r" --| -[A-Za-z] ", m.group(1))[0].rstrip()
+        if rest.startswith("~/"):
+            rest = os.path.join(os.path.expanduser("~"), rest[2:])
+        cand = rest
+        while not os.path.isdir(cand):
+            if " " not in cand:
+                return rest.split(" ")[0]
+            cand = cand.rsplit(" ", 1)[0]
+        return cand
+    if os.environ.get("DOLI_DATA_DIR"):
+        return os.environ["DOLI_DATA_DIR"]
+    n = re.search(r" (?:--network[ =]|-n )([A-Za-z]+) ", cmd)
+    net = (n.group(1) if n else "mainnet").lower()
+    home = os.path.expanduser("~")
+    if sys.platform.startswith("linux"):
+        plat = "/var/lib/doli/" + net
+    elif sys.platform == "darwin":
+        plat = os.path.join(home, "Library/Application Support/doli", net)
+    else:
+        plat = os.path.join(home, ".doli", net)
+    legacy = os.path.join(home, ".doli", net)
+    return legacy if not os.path.exists(plat) and os.path.exists(legacy) else plat
+
+
 def data_dir_for_port(port):
-    """--data-dir of the local process listening on TCP `port`, or None."""
+    """Data dir of the local process listening on TCP `port`, or None."""
     try:
         pids = subprocess.run(["lsof", "-nP", "-iTCP:%d" % int(port), "-sTCP:LISTEN", "-t"],
                               capture_output=True, text=True, timeout=10).stdout.split()
         for pid in pids:
             cmd = subprocess.run(["ps", "-o", "command=", "-p", pid],
                                  capture_output=True, text=True, timeout=10).stdout
-            a = shlex.split(cmd)
-            for i, arg in enumerate(a):
-                if arg == "--data-dir" and i + 1 < len(a):
-                    return a[i + 1]
-                if arg.startswith("--data-dir="):
-                    return arg[len("--data-dir="):]
+            return data_dir_from_command(cmd)
     except (OSError, ValueError, subprocess.SubprocessError):
         pass
     return None
