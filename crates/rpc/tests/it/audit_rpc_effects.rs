@@ -40,8 +40,9 @@ use tokio::sync::RwLock;
 use vdf::{VdfOutput, VdfProof};
 
 const BAD_ADDR: &str = "aaaaaaaaaaaaaaaaaaa\u{e9}a";
+const NO_TIP: [u8; 32] = [0x77; 32];
 
-fn block(g: Hash, h: u64, prev: Hash, kp: &KeyPair) -> Block {
+pub(super) fn block(g: Hash, h: u64, prev: Hash, kp: &KeyPair) -> Block {
     let mut header = BlockHeader {
         version: 2,
         prev_hash: prev,
@@ -65,12 +66,12 @@ fn block(g: Hash, h: u64, prev: Hash, kp: &KeyPair) -> Block {
     Block::new(header, vec![])
 }
 
-fn local_node(store_dir: &Path, best_height: u64) -> RpcContext {
+pub(super) fn local_node(store_dir: &Path, best_height: u64, tip_hash: Hash) -> RpcContext {
     let network = Network::Devnet;
     let params = ConsensusParams::for_network(network);
     let mut cs = ChainState::new(Hash::ZERO);
     cs.best_height = best_height;
-    cs.best_hash = Hash::from_bytes([0x77; 32]);
+    cs.best_hash = tip_hash;
     let block_store = Arc::new(BlockStore::open(store_dir).unwrap());
     let mempool = Mempool::new(MempoolPolicy::default(), params.clone(), network);
     RpcContext::new_for_network(
@@ -83,7 +84,7 @@ fn local_node(store_dir: &Path, best_height: u64) -> RpcContext {
     )
 }
 
-async fn raw(ctx: &RpcContext, method: &str, params: Value) -> Value {
+pub(super) async fn raw(ctx: &RpcContext, method: &str, params: Value) -> Value {
     let resp = ctx
         .handle_request(JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -95,13 +96,13 @@ async fn raw(ctx: &RpcContext, method: &str, params: Value) -> Value {
     serde_json::to_value(&resp).unwrap()
 }
 
-async fn call(ctx: &RpcContext, method: &str, params: Value) -> Value {
+pub(super) async fn call(ctx: &RpcContext, method: &str, params: Value) -> Value {
     let v = raw(ctx, method, params).await;
     assert!(v.get("error").is_none_or(Value::is_null), "{method}: {v}");
     v["result"].clone()
 }
 
-async fn wait_done(ctx: &RpcContext) -> Value {
+pub(super) async fn wait_done(ctx: &RpcContext) -> Value {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let st = call(ctx, "backfillStatus", json!({})).await;
@@ -114,10 +115,11 @@ async fn wait_done(ctx: &RpcContext) -> Value {
 }
 
 #[derive(Clone)]
-struct Peer {
-    tip: u64,
-    blocks: Vec<Block>,
-    garbage: bool,
+pub(super) struct Peer {
+    pub(super) tip: u64,
+    pub(super) blocks: Vec<Block>,
+    pub(super) garbage: bool,
+    pub(super) claim_tip: Option<Hash>,
 }
 
 async fn peer_rpc(State(p): State<Arc<Peer>>, Json(req): Json<Value>) -> Json<Value> {
@@ -129,6 +131,10 @@ async fn peer_rpc(State(p): State<Arc<Peer>>, Json(req): Json<Value>) -> Json<Va
     Json(match req["method"].as_str() {
         Some("getChainInfo") => ok(json!({"bestHeight": p.tip})),
         Some("verifyChainIntegrity") => ok(json!({"chainCommitment": "ff"})),
+        Some("getBlockByHeight") if req["params"].is_object() => match p.claim_tip {
+            Some(t) => ok(json!({"hash": t.to_hex()})),
+            None => none,
+        },
         Some("getBlockByHeight") => match p.blocks.iter().find(|b| b.header.slot as u64 == pos) {
             Some(b) => ok(json!({"hash": b.hash().to_hex()})),
             None => none,
@@ -150,7 +156,7 @@ async fn peer_rpc(State(p): State<Arc<Peer>>, Json(req): Json<Value>) -> Json<Va
     })
 }
 
-async fn serve_peer(p: Peer) -> String {
+pub(super) async fn serve_peer(p: Peer) -> String {
     let app = Router::new()
         .route("/", post(peer_rpc))
         .with_state(Arc::new(p));
@@ -163,7 +169,7 @@ async fn serve_peer(p: Peer) -> String {
 fn prune_ctx(tmp: &TempDir) -> RpcContext {
     let g = crypto::hash::hash(b"inc-i-308-m2-prune");
     let kp = KeyPair::from_seed([0x5A; 32]);
-    let ctx = local_node(&tmp.path().join("blocks"), 2_100)
+    let ctx = local_node(&tmp.path().join("blocks"), 2_100, Hash::from_bytes(NO_TIP))
         .with_data_dir(tmp.path().to_path_buf())
         .with_archive_dir(tmp.path().join("arch"));
     std::fs::create_dir_all(tmp.path().join("arch")).unwrap();
@@ -181,7 +187,7 @@ fn prune_ctx(tmp: &TempDir) -> RpcContext {
 #[tokio::test]
 async fn audit_p1_rpc_008_multibyte_address_returns_invalid_params() {
     let tmp = TempDir::new().unwrap();
-    let ctx = local_node(tmp.path(), 1);
+    let ctx = local_node(tmp.path(), 1, Hash::from_bytes(NO_TIP));
     for method in ["getBalance", "getUtxos", "getHistory"] {
         let v = raw(&ctx, method, json!({"address": BAD_ADDR})).await;
         assert_eq!(v["error"]["code"], json!(-32602), "{method}: {v}");
@@ -221,11 +227,13 @@ async fn audit_p1_rpc_004_prune_with_force_runs() {
 async fn audit_p1_rpc_007_repair_archive_rejects_garbage_and_clamps_to_local_tip() {
     let tmp = TempDir::new().unwrap();
     let arch = tmp.path().join("arch");
-    let ctx = local_node(&tmp.path().join("blocks"), 2).with_archive_dir(arch.clone());
+    let ctx = local_node(&tmp.path().join("blocks"), 2, Hash::from_bytes(NO_TIP))
+        .with_archive_dir(arch.clone());
     let url = serve_peer(Peer {
         tip: 5,
         blocks: vec![],
         garbage: true,
+        claim_tip: None,
     })
     .await;
     let v = raw(&ctx, "repairArchiveFromPeer", json!({"rpc_url": url})).await;
@@ -260,7 +268,7 @@ async fn audit_p1_rpc_005_backfill_refuses_block_contradicting_stored_neighbor()
     let forged = block(g, 3, h2.hash(), &attacker);
     assert_ne!(forged.hash(), h3.hash(), "fixture");
     let tmp = TempDir::new().unwrap();
-    let ctx = local_node(tmp.path(), 4);
+    let ctx = local_node(tmp.path(), 4, h4.hash());
     for (b, h) in [(&h1, 1), (&h2, 2), (&h4, 4)] {
         ctx.block_store.put_block_canonical(b, h).unwrap();
     }
@@ -268,6 +276,7 @@ async fn audit_p1_rpc_005_backfill_refuses_block_contradicting_stored_neighbor()
         tip: 4,
         blocks: vec![h1.clone(), h2.clone(), forged.clone(), h4.clone()],
         garbage: false,
+        claim_tip: None,
     })
     .await;
     let started = call(
@@ -297,7 +306,7 @@ async fn audit_p1_rpc_005_backfill_refuses_block_contradicting_stored_neighbor()
     );
 }
 
-fn chain3(g: Hash, kp: &KeyPair) -> (Block, Block, Block) {
+pub(super) fn chain3(g: Hash, kp: &KeyPair) -> (Block, Block, Block) {
     let h1 = block(g, 1, g, kp);
     let h2 = block(g, 2, h1.hash(), kp);
     let h3 = block(g, 3, h2.hash(), kp);
@@ -308,7 +317,7 @@ async fn repair_with_h2(served: &Block, h1: &Block, h3: &Block) -> (TempDir, Val
     let tmp = TempDir::new().unwrap();
     let arch = tmp.path().join("arch");
     std::fs::create_dir_all(&arch).unwrap();
-    let ctx = local_node(&tmp.path().join("blocks"), 3).with_archive_dir(arch);
+    let ctx = local_node(&tmp.path().join("blocks"), 3, h3.hash()).with_archive_dir(arch);
     for (b, h) in [(h1, 1), (h3, 3)] {
         ctx.block_store.put_block_canonical(b, h).unwrap();
     }
@@ -316,6 +325,7 @@ async fn repair_with_h2(served: &Block, h1: &Block, h3: &Block) -> (TempDir, Val
         tip: 3,
         blocks: vec![h1.clone(), served.clone(), h3.clone()],
         garbage: false,
+        claim_tip: None,
     })
     .await;
     let v = call(&ctx, "repairArchiveFromPeer", json!({"rpc_url": url})).await;
@@ -357,6 +367,7 @@ async fn backfill(ctx: &RpcContext, blocks: Vec<Block>) -> Value {
         tip: 3,
         blocks,
         garbage: false,
+        claim_tip: None,
     })
     .await;
     let p = json!({"rpc_url": url, "skip_divergence_check": true});
@@ -372,7 +383,7 @@ async fn audit_p1_rpc_005_backfill_refuses_block_when_height_index_holds_differe
     let (h1, h2, h3) = chain3(g, &KeyPair::from_seed([0x5A; 32]));
     let other = Hash::from_bytes([0x42; 32]);
     let tmp = TempDir::new().unwrap();
-    let ctx = local_node(tmp.path(), 3);
+    let ctx = local_node(tmp.path(), 3, h3.hash());
     for (b, h) in [(&h1, 1), (&h3, 3)] {
         ctx.block_store.put_block_canonical(b, h).unwrap();
     }
@@ -391,10 +402,10 @@ async fn audit_p1_rpc_005_backfill_refuses_block_when_height_index_holds_differe
 async fn audit_p1_rpc_005_backfill_refuses_block_contradicting_stored_prev() {
     let g = crypto::hash::hash(b"inc-i-308-m6b");
     let kp = KeyPair::from_seed([0x5A; 32]);
-    let (h1, h2, _h3) = chain3(g, &kp);
+    let (h1, h2, h3) = chain3(g, &kp);
     let forged = block(g, 3, Hash::from_bytes([0x09; 32]), &kp);
     let tmp = TempDir::new().unwrap();
-    let ctx = local_node(tmp.path(), 3);
+    let ctx = local_node(tmp.path(), 3, h3.hash());
     for (b, h) in [(&h1, 1), (&h2, 2)] {
         ctx.block_store.put_block_canonical(b, h).unwrap();
     }
@@ -403,24 +414,42 @@ async fn audit_p1_rpc_005_backfill_refuses_block_contradicting_stored_prev() {
     assert!(got.is_none(), "forged h3 stored; status {st}");
 }
 
-// P1-RPC-005 (INC-I-308) — Decision: a failure means the neighbor check blocks fork repair, so a forked node can never re-adopt the peer chain.
+// P1-RPC-005 (INC-I-308 R-1) — Decision: a failure means backfill rewrites a node's own applied branch with a peer branch, or hides the divergence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn audit_p1_rpc_005_backfill_repair_set_overwrites_stale_successor() {
+async fn audit_p1_rpc_005_backfill_reports_divergence_without_overwriting_own_branch() {
     let g = crypto::hash::hash(b"inc-i-308-m6b");
     let (h1, h2, h3) = chain3(g, &KeyPair::from_seed([0x5A; 32]));
     let fork = KeyPair::from_seed([0x66; 32]);
     let f2 = block(g, 2, h1.hash(), &fork);
     let f3 = block(g, 3, f2.hash(), &fork);
     let tmp = TempDir::new().unwrap();
-    let ctx = local_node(tmp.path(), 3);
+    let ctx = local_node(tmp.path(), 3, f3.hash());
     for (b, h) in [(&h1, 1), (&f2, 2), (&f3, 3)] {
         ctx.block_store.put_block_canonical(b, h).unwrap();
     }
-    let st = backfill(&ctx, vec![h1, h2.clone(), h3.clone()]).await;
-    for (h, want) in [(2, h2.hash()), (3, h3.hash())] {
+    let url = serve_peer(Peer {
+        tip: 3,
+        blocks: vec![h1, h2, h3],
+        garbage: false,
+        claim_tip: None,
+    })
+    .await;
+    let p = json!({"rpc_url": url, "skip_divergence_check": true});
+    let reply = call(&ctx, "backfillFromPeer", p).await;
+    let st = wait_done(&ctx).await;
+    for (h, want) in [(2, f2.hash()), (3, f3.hash())] {
         let got = ctx.block_store.get_hash_by_height(h).unwrap();
-        assert_eq!(got, Some(want), "h{h} still on the fork; status {st}");
+        assert_eq!(
+            got,
+            Some(want),
+            "h{h} own branch overwritten; reply {reply} status {st}"
+        );
     }
+    let check = reply["divergence_check"].as_str().unwrap_or("");
+    assert!(
+        check.starts_with("diverged"),
+        "divergence not reported: {reply}"
+    );
 }
 
 // P1-RPC-004 (INC-I-308) — Decision: a failure means a covering archive no longer admits a plain prune.
@@ -447,7 +476,7 @@ async fn audit_p1_rpc_007_repair_archive_reports_different_chain_for_foreign_gen
     let tmp = TempDir::new().unwrap();
     let arch = tmp.path().join("arch");
     std::fs::create_dir_all(&arch).unwrap();
-    let ctx = local_node(&tmp.path().join("blocks"), 3).with_archive_dir(arch.clone());
+    let ctx = local_node(&tmp.path().join("blocks"), 3, l3.hash()).with_archive_dir(arch.clone());
     assert_ne!(
         ctx.chain_state.read().await.genesis_hash,
         foreign,
@@ -460,6 +489,7 @@ async fn audit_p1_rpc_007_repair_archive_reports_different_chain_for_foreign_gen
         tip: 3,
         blocks: vec![h1, h2, h3],
         garbage: false,
+        claim_tip: None,
     })
     .await;
     let v = raw(&ctx, "repairArchiveFromPeer", json!({"rpc_url": url})).await;

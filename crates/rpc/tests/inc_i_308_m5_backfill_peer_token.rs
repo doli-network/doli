@@ -14,6 +14,7 @@
 //   O2 x P-ACCEPT x I1 -> inc_i_308_m5_peer_token_sent_on_verify_chain_integrity
 //   O1 x P-REFUSE x I2 -> inc_i_308_m5_refused_divergence_check_is_reported
 //   O2 x P-ACCEPT x I3 -> inc_i_308_m5_local_token_never_sent_to_peer
+//   O1 x real verifyChainIntegrity producer x {same chain, forked tip} -> inc_i_308_m5_real_peer_commitment_*
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -245,6 +246,12 @@ async fn inc_i_308_m5_peer_token_sent_on_verify_chain_integrity() {
         json!(false),
         "matching commitment -> no repair: {resp}"
     );
+    assert_eq!(resp["result"]["divergence_check"], json!("ok"), "{resp}");
+    assert_eq!(
+        resp["result"]["message"],
+        json!("No gaps detected — chain is complete."),
+        "{resp}"
+    );
 }
 
 // INC-I-308-M5 — Decision: a failure means a refused divergence check is still reported as "chain is complete" with no signal to the operator.
@@ -263,10 +270,14 @@ async fn inc_i_308_m5_refused_divergence_check_is_reported() {
     );
     let result = &resp["result"];
     assert_eq!(result["started"], json!(false), "{resp}");
-    assert_eq!(
-        result["message"],
-        json!("No gaps detected — chain is complete."),
-        "existing message unchanged: {resp}"
+    let msg = result["message"].as_str().unwrap_or("");
+    assert!(
+        !msg.contains("chain is complete"),
+        "skipped check reported as complete: {resp}"
+    );
+    assert!(
+        msg.contains("not verified"),
+        "message must say completeness is not verified: {resp}"
     );
     let check = result["divergence_check"].as_str().unwrap_or_else(|| {
         panic!("refused peer must be reported in `divergence_check`, got silent reply: {resp}")
@@ -328,5 +339,46 @@ async fn inc_i_308_m5_local_token_never_sent_to_peer() {
         verify_calls(&seen),
         vec![Some(want)],
         "verifyChainIntegrity must carry the peer token: {seen:?}, resp={resp}"
+    );
+}
+
+async fn backfill_against_real_peer(peer_blocks: Vec<Block>, local_blocks: &[Block]) -> Value {
+    let (peer_url, _peer_tmp) = start_server(|| {
+        let tmp = TempDir::new().unwrap();
+        (local_node(&tmp, &peer_blocks), tmp)
+    })
+    .await;
+    let tmp = TempDir::new().unwrap();
+    let ctx = local_node(&tmp, local_blocks);
+    let p = json!({"rpc_url": peer_url, "peer_token": LOCAL_TOKEN, "skip_divergence_check": true});
+    backfill(&ctx, p).await
+}
+
+// INC-I-308-M5 P2-c — Decision: a failure means the consumer no longer parses the real verifyChainIntegrity output, so every check is "skipped".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inc_i_308_m5_real_peer_commitment_same_chain_is_ok() {
+    let blocks = chain();
+    let resp = backfill_against_real_peer(blocks.clone(), &blocks).await;
+    assert_eq!(resp["result"]["divergence_check"], json!("ok"), "{resp}");
+    assert_eq!(resp["result"]["started"], json!(false), "{resp}");
+}
+
+// INC-I-308-M5 P2-c — Decision: a failure means a real peer on another tip is reported as "ok".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inc_i_308_m5_real_peer_commitment_forked_tip_is_not_ok() {
+    let blocks = chain();
+    let mut forked = blocks.clone();
+    let last = forked.len() - 1;
+    forked[last].header.timestamp += 1;
+    assert_ne!(forked[last].hash(), blocks[last].hash(), "fixture");
+    let resp = backfill_against_real_peer(forked, &blocks).await;
+    let check = resp["result"]["divergence_check"].as_str().unwrap_or("");
+    assert!(
+        check != "ok" && !check.is_empty(),
+        "forked peer reported ok: {resp}"
+    );
+    assert!(
+        check.starts_with("diverged"),
+        "want diverged report: {resp}"
     );
 }

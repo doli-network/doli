@@ -144,12 +144,12 @@ async fn serve_peer(blocks: Vec<Block>) -> String {
     format!("http://{addr}")
 }
 
-fn local_node(tmp: &TempDir) -> RpcContext {
+fn local_node(tmp: &TempDir, tip_hash: Hash) -> RpcContext {
     let network = Network::Devnet;
     let params = ConsensusParams::for_network(network);
     let mut cs = ChainState::new(Hash::ZERO);
     cs.best_height = TIP;
-    cs.best_hash = Hash::from_bytes([0x77; 32]);
+    cs.best_hash = tip_hash;
     let block_store = Arc::new(BlockStore::open(tmp.path()).unwrap());
     let mempool = Mempool::new(MempoolPolicy::default(), params.clone(), network);
     RpcContext::new_for_network(
@@ -196,7 +196,7 @@ async fn req_auth_019_p13_backfill_forged_not_stored() {
         let blocks = chain(last);
         let url = serve_peer(blocks.clone()).await;
         let tmp = TempDir::new().unwrap();
-        let ctx = local_node(&tmp);
+        let ctx = local_node(&tmp, blocks.last().unwrap().hash());
         let started = call(
             &ctx,
             "backfillFromPeer",
