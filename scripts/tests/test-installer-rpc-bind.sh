@@ -108,6 +108,16 @@ if need "$JS"; then
   fi
 fi
 
+# g. explorer network.html: -32008 on verifyChainIntegrity is shown, never swallowed; no token in the browser
+HTML=testnetlinux/explorer/network.html
+if need "$HTML"; then
+  grep -q -- '-32008' "$HTML" && pass "g $HTML handles -32008" || fail "g $HTML handles -32008" "no -32008 branch"
+  grep -qi 'admin token' "$HTML" && pass "g $HTML shows admin token message" \
+    || fail "g $HTML shows admin token message" "no visible 'admin token' text"
+  gbad="$(grep -nE 'Authorization|Bearer|rpc-admin\.token' "$HTML")"
+  [ -z "$gbad" ] && pass "g $HTML carries no token or auth header" || fail "g $HTML carries no token or auth header" "$gbad"
+fi
+
 # f. no installer puts a token on a command line or in a unit Environment= line
 fbad=""
 for f in "${CLI_FILES[@]}" "${SAFE_INSTALLERS[@]}" "$FLEET"; do

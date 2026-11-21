@@ -154,3 +154,24 @@ async fn admin_unauthorized_reply_prints_hint() {
     assert!(err.contains("DOLI_RPC_ADMIN_TOKEN"), "error text: {err}");
     assert!(err.contains("rpc-admin.token"), "error text: {err}");
 }
+
+// INC-I-308 M6a — Decision: a failure means admin_token_for sends the local admin token to a non-loopback host.
+#[test]
+fn m6a_is_loopback_exact_host() {
+    use crate::rpc_client::is_loopback;
+    for url in [
+        "http://localhost@attacker.example:8500",
+        "http://127.0.0.1.attacker.example:8500",
+        "http://attacker.example/://localhost",
+    ] {
+        assert!(!is_loopback(url), "must not be loopback: {url}");
+    }
+    for url in [
+        "http://127.0.0.1:8500",
+        "http://localhost:8500",
+        "http://[::1]:8500",
+        "http://127.0.0.2:8500",
+    ] {
+        assert!(is_loopback(url), "must be loopback: {url}");
+    }
+}

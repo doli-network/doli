@@ -1007,10 +1007,21 @@ pub fn format_balance(units: u64) -> String {
     format!("{} DOLI", units_to_coins(units))
 }
 
-fn is_loopback(endpoint: &str) -> bool {
-    ["://127.0.0.1", "://localhost", "://[::1]"]
-        .iter()
-        .any(|h| endpoint.contains(h))
+pub(crate) fn is_loopback(endpoint: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(endpoint) else {
+        return false;
+    };
+    if !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let ip = host.trim_start_matches('[').trim_end_matches(']');
+    match ip.parse::<std::net::IpAddr>() {
+        Ok(addr) => addr.is_loopback(),
+        Err(_) => host.eq_ignore_ascii_case("localhost"),
+    }
 }
 
 fn local_data_dir() -> std::path::PathBuf {

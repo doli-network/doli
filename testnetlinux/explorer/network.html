@@ -394,7 +394,11 @@
             })
             .then(function(r) { clearTimeout(timeout); return r.json(); })
             .then(function(d) {
-                if (d.error) throw new Error(d.error.message || d.error);
+                if (d.error) {
+                    var err = new Error(d.error.message || d.error);
+                    err.code = d.error.code;
+                    throw err;
+                }
                 return d.result;
             })
             .catch(function(e) { clearTimeout(timeout); throw e; });
@@ -480,8 +484,10 @@
                         ts: Date.now()
                     };
                 })
-                .catch(function() {
-                    // Don't overwrite cache on error
+                .catch(function(e) {
+                    if (e && e.code !== undefined) {
+                        fullIntegrityCache[node.api] = { error: true, code: e.code, ts: Date.now() };
+                    }
                 });
         }
 
@@ -714,6 +720,10 @@
             var integrityHtml;
             if (!fi) {
                 integrityHtml = '<span class="chain-gap">...</span>';
+            } else if (fi.error && fi.code === -32008) {
+                integrityHtml = '<span class="chain-gap">Integrity check needs the node admin token (admin method). Run <code>doli chain-verify</code> on the node host.</span>';
+            } else if (fi.error) {
+                integrityHtml = '<span class="chain-err">Integrity check failed (RPC error ' + Number(fi.code) + ').</span>';
             } else if (fi.complete && fi.chainCommitment) {
                 var short = fi.chainCommitment.substring(0, 8) + '..';
                 if (integrityRef && integrityRef.commitment) {
@@ -953,7 +963,7 @@
             var incompleteNodes = [];
             online.forEach(function(n) {
                 var fi = getFullIntegrity(n.api);
-                if (fi && !fi.complete) {
+                if (fi && !fi.error && !fi.complete) {
                     incompleteNodes.push(n.name + '(-' + fi.missingCount + ')');
                 }
             });

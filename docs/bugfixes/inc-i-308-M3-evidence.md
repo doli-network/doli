@@ -135,3 +135,25 @@ Count: 15 caller scripts patched + 2 installers + relay + README = 19 files; 2 h
 - `RpcClient::with_admin_token` is used by tests only (production resolves lazily); `rpc_client.rs` was already over
   the 500-line budget (1009 → 1074).
 - `cmd_snap` env-only token path has no unit test.
+
+## M6a — verifier fix round (run 732)
+
+Findings from `docs/verifications/verify-4cf8be8531e6-a602869fc1bc.md`:
+1. P1 — `is_loopback` was a substring test, so the CLI attached the local `rpc-admin.token` for non-loopback hosts.
+2. P1 — `network.html` integrity panel swallowed the `-32008` admin refusal and showed nothing.
+
+RED (pre-fix code):
+- `cargo test -p doli-cli --bins m6a_` → `must not be loopback: http://localhost@attacker.example:8500`, 0 passed / 1 failed.
+- `bash scripts/tests/test-installer-rpc-bind.sh` section g → `FAIL g ... handles -32008`, `FAIL g ... shows admin token message`.
+
+Fix:
+- `bins/cli/src/rpc_client.rs` `is_loopback`: parse with `reqwest::Url`; reject userinfo; host must be a loopback IP (127.0.0.0/8, ::1) or exactly `localhost`.
+- `testnetlinux/explorer/network.html`: `rpc()` keeps the JSON-RPC error code; on `-32008` the panel shows "Integrity check needs the node admin token (admin method). Run `doli chain-verify` on the node host."; other errors show a fixed message with the numeric code only. No token or auth header in the page or relay.
+
+GREEN:
+- `cargo test -p doli-cli --bins m6a_` → 1 passed.
+- `cargo test -p doli-cli` → 489 passed, 0 failed.
+- `cargo clippy -p doli-cli --all-targets -- -D warnings` → exit 0; `cargo fmt --check` → exit 0.
+- `bash scripts/tests/test-installer-rpc-bind.sh` → all pass (section g: 3 PASS).
+
+Outcome probe (real binary, mock RPC listener on 127.0.0.1, token file in `DOLI_DATA_DIR`, endpoint `http://localhost@127.0.0.1:PORT`, `doli chain-verify`): `token_leak_userinfo_url` before (a602869f) / after — see the M6a commit body.
