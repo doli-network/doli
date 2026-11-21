@@ -898,7 +898,7 @@ assert(){
       ok=2; why="$t: standalone scenario, run scripts/gauntlet-gs028.sh (not part of gauntlet.sh)" ;;
     gs029-mixed-txs-mined|gs029-old-producer-built|gs029-mixed-producer-set-equal|gs029-mixed-no-fork|gs029-mixed-state-equal|gs029-old-blocks-canonical|gs029-restart-same-datadir|gs029-crossing-no-fork|gs029-unsigned-tx-refused|gs029-unsigned-block-refused|gs029-signed-tx-mined|gs029-post-gate-unbonding)
       ok=2; why="$t: standalone scenario, run scripts/gauntlet-gs029.sh (not part of gauntlet.sh)" ;;
-    gs056-*|gs057-*|gs058-*|gs061-*)
+    gs056-*|gs057-*|gs058-*|gs061-*|gs063-*)
       ok=2; why="$t: standalone scenario, run scripts/gauntlet-${t%%-*}.sh (INC-I-308; not part of gauntlet.sh)" ;;
     *)
       why="unknown assertion token '$t'" ;;

@@ -15,3 +15,4 @@ mod inc_i_204_m41_force_reorg_rpc;
 mod inc_i_233_confirmed_fee;
 mod inc_i_248_state_snapshot_maintainer;
 mod inc_i_308_r1_anchor;
+mod inc_i_308_r2_populations;
