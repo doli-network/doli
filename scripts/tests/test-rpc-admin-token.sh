@@ -167,11 +167,11 @@ hdr() {
     rpc_admin_port_data_dir() { printf '%s\n' "$D_FILE"; }
     rpc_admin_header_for pauseProduction "$2" ) 2>/dev/null
 }
-for u in "http://203.0.113.9:8501" "10.0.0.5:8501" "http://localhost@203.0.113.9:8501" "http://127.0.0.1.evil.example:8501"; do
+for u in "http://203.0.113.9:8501" "10.0.0.5:8501" "http://localhost@203.0.113.9:8501" "http://127.0.0.1.evil.example:8501" "http://8545"; do
   o="$(hdr unset "$u")"; [ -z "$o" ] && pass "i remote $u, env unset → no header" || fail "i remote $u, env unset → no header" "got: $(show "$o")"
   o="$(hdr set "$u")"; [ "$o" = "Authorization: Bearer $TOK_ENV" ] && pass "i remote $u, env set → env token" || fail "i remote $u, env set → env token" "got: $(show "$o")"
 done
-for u in "http://127.0.0.1:8501" "localhost:8501" "http://[::1]:8501"; do
+for u in "http://127.0.0.1:8501" "localhost:8501" "http://[::1]:8501" "8545"; do
   o="$(hdr unset "$u")"; [ "$o" = "Authorization: Bearer $TOK_FILE" ] && pass "i loopback $u → file token" || fail "i loopback $u → file token" "got: $(show "$o")"
 done
 

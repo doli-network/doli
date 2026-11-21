@@ -40,7 +40,7 @@ rpc_admin_is_loopback() {
   printf '%s\n' "$1" | grep -Eq '^127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$'
 }
 
-# rpc_admin_header_for <method> <url|host:port> — print the Authorization line for an admin method (use: curl -H @<(...)).
+# rpc_admin_header_for <method> <url|host:port|port> — print the Authorization line for an admin method (use: curl -H @<(...)).
 rpc_admin_header_for() {
   local auth="${2#*://}" host port dir="" tok
   case "$RPC_ADMIN_METHODS" in *" $1 "*) ;; *) return 0 ;; esac
@@ -53,6 +53,7 @@ rpc_admin_header_for() {
   esac
   port="${auth##*:}"
   port="${port%%[!0-9]*}"
+  case "$2" in ''|*[!0-9]*) ;; *) host=127.0.0.1 ;; esac # bare port = local node
   rpc_admin_is_loopback "$host" || host=""
   [ -n "${DOLI_RPC_ADMIN_TOKEN:-}" ] || [ -z "$host" ] || [ -z "$port" ] || dir="$(rpc_admin_port_data_dir "$port")"
   tok="$(rpc_admin_token "$dir")" && printf 'Authorization: Bearer %s\n' "$tok"

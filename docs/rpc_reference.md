@@ -1915,7 +1915,7 @@ Fetch missing archive `.block` files from a peer. Admin-gated.
 
 - The loop is clamped to the local tip; heights above it are not fetched.
 - A block from a different genesis aborts the call with `Block at h=N has wrong genesis_hash — peer is on a different chain`.
-- A block is archived only if its hash equals the local canonical hash at that height, or it links to a stored neighbor (signature and body checked). On a pruned or snap-synced store, only the height next to the store floor fills per run; the other heights are counted in `errors`. Run again to extend the range.
+- A block is archived only if its hash equals the local canonical hash at that height, or it links to a stored neighbor (signature and body checked). On a pruned or snap-synced store, only the height next to the lowest stored block can be anchored; the other store-absent heights are reported in `errors`. Admitted blocks go to the archive only, never to the store, so a second run does not extend the range. To fill those heights, first restore the blocks into the store (for example with `backfillFromPeer`), then run the repair.
 
 ### `backfillStatus`
 

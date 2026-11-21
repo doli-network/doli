@@ -176,3 +176,11 @@ GREEN: see the results below.
 - `bash scripts/tests/test-rpc-admin-token.sh` → ALL PASS (section `i`: 11 PASS).
 - `cargo test -p rpc` → 165 passed, 0 failed, 1 ignored (incl. `audit_p1_rpc_007_repair_archive_reports_different_chain_for_foreign_genesis`).
 - `cargo clippy -p rpc --all-targets -- -D warnings` → exit 0; `cargo fmt --check` → exit 0; `bash -n scripts/lib/rpc-admin-token.sh` and `python3 -m py_compile scripts/lib/rpc_admin_token.py` → exit 0.
+
+## M8 — bare-port callers and the repairArchiveFromPeer anchor note
+
+- RED on HEAD 2ae61693: `bash scripts/tests/test-rpc-admin-token.sh` → `FAIL i loopback 8545 → file token — got: ` (1 check failed). A bare port parsed as host `8545`, not loopback, so no file token was sent.
+- Fix: `scripts/lib/rpc-admin-token.sh` `rpc_admin_header_for` treats an all-digits argument as the local node on 127.0.0.1. A URL `http://8545` stays remote (new remote case in section i passes before and after).
+- GREEN: `bash -n scripts/lib/rpc-admin-token.sh` ok; `bash scripts/tests/test-rpc-admin-token.sh` ALL PASS; `bash scripts/tests/test-installer-rpc-bind.sh` ALL PASS.
+- Doc: `docs/rpc_reference.md` repairArchiveFromPeer note no longer says "Run again to extend the range"; it states that only the height next to the lowest stored block can be anchored, admitted blocks go to the archive only, and other heights need `backfillFromPeer` into the store first.
+- P3 (CLI env token < 32 chars) NOT done: existing tests in `bins/cli/src/rpc_admin_auth_tests.rs:101-107` use short env tokens; the change needs a test rewrite and a CLI build, over the 3-minute limit. Open.
