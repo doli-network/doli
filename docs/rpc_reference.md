@@ -1886,9 +1886,11 @@ Trigger hot backfill of missing blocks from a remote seed/archive node. Admin-ga
 **Parameters:**
 - `rpc_url` (string, required) — RPC URL of the source node, never a peer ID (e.g., `"http://<source-hostname>:8500"`). On mainnet, a URL whose host is a private, loopback or link-local IP literal is refused; use a DNS name.
 - `skip_divergence_check` (bool, optional, default `false`) — skip the tip check. By default the call fails with `Tip divergence detected` when the local tip hash differs from the source's block at that height. Set `true` only after a genesis reset.
+- `peer_token` (string, optional) — the SOURCE node's admin token. It is sent only as `Authorization: Bearer` on the source's `verifyChainIntegrity` call. Without it, an admin-gated source refuses that call and the reply carries `divergence_check: "skipped: …"`. The local node's own token is never forwarded.
 
 **Behavior:**
 - Scans every height 1..tip of the local block store and fetches each missing one. There is no range parameter. When nothing is missing and the source answers `verifyChainIntegrity` with a different `chainCommitment`, it re-fetches the divergent heights from the tip down.
+- With no gaps, the reply carries `divergence_check`: `"ok"` when the commitments were compared, or `"skipped: <reason>"` (with a log warning) when the source was unreachable, refused `verifyChainIntegrity` (pass `peer_token`), or sent no `chainCommitment`. A skipped check means a forked block was not looked for.
 - Fetches with `getBlockRaw` and checks the BLAKE3 checksum that the same source supplies. This detects accidental corruption only: it is not an authenticity check, and it is skipped when the source sends no checksum. Backfill does not apply the blocks and runs no VDF check. It skips (logs `Backfill: rejected block at height …`) a block whose producer signature fails at or above the signature activation height, or whose body does not match its header (merkle root, and presence root at that height); run it again with another source to fill such a height.
 - Writes the block store only. It does not apply state and never writes the `--archive-to` directory (one node restart refills it from the block store).
 - A height the source lacks is skipped with a log warning; `backfillStatus.error` stays `null`.
@@ -1902,7 +1904,7 @@ Trigger hot backfill of missing blocks from a remote seed/archive node. Admin-ga
   "total": 977
 }
 ```
-With no gaps: `{"started": false, "message": "No gaps detected — chain is complete."}`
+With no gaps: `{"started": false, "message": "No gaps detected — chain is complete.", "divergence_check": "ok"}`
 
 ### `backfillStatus`
 

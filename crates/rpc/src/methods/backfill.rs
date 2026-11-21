@@ -16,6 +16,8 @@ use super::context::RpcContext;
 
 #[path = "backfill_neighbor.rs"]
 mod neighbor;
+#[path = "backfill_peer_commitment.rs"]
+mod peer_commitment;
 
 /// Check if an IP address is in a private/reserved range (SSRF protection).
 fn is_private_ip(ip: &IpAddr) -> bool {
@@ -190,23 +192,18 @@ impl RpcContext {
 
         // Phase 2: check peer commitment — if different, find divergent heights
         let mut repair_heights: Vec<u64> = Vec::new();
+        let mut divergence_check = "ok".to_string();
         if missing_heights.is_empty() {
             let client = reqwest::Client::new();
-            if let Ok(resp) = client
-                .post(&peer_url)
-                .json(&serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "method": "verifyChainIntegrity",
-                    "params": [],
-                    "id": 1
-                }))
-                .send()
-                .await
-            {
-                if let Ok(body) = resp.json::<serde_json::Value>().await {
-                    let peer_commitment = body["result"]["chainCommitment"].as_str().unwrap_or("");
+            let token = params.peer_token.as_deref();
+            match peer_commitment::fetch(&client, &peer_url, token).await {
+                Err(reason) => {
+                    warn!("Backfill: {reason}: divergence check skipped");
+                    divergence_check = format!("skipped: {reason}");
+                }
+                Ok(peer_commitment) => {
                     let local_hex = hex::encode(local_commitment.as_bytes());
-                    if !peer_commitment.is_empty() && peer_commitment != local_hex {
+                    if peer_commitment != local_hex {
                         info!(
                             "Backfill: commitment mismatch (local={:.16} peer={:.16}), scanning for divergent blocks",
                             local_hex, peer_commitment
@@ -271,7 +268,8 @@ impl RpcContext {
         if all_heights.is_empty() {
             return Ok(serde_json::json!({
                 "started": false,
-                "message": "No gaps detected — chain is complete."
+                "message": "No gaps detected — chain is complete.",
+                "divergence_check": divergence_check
             }));
         }
 

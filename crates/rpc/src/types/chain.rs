@@ -308,6 +308,9 @@ pub struct BackfillParams {
     /// is still enforced regardless of this flag.
     #[serde(default)]
     pub skip_divergence_check: bool,
+    /// Admin token of the PEER, sent only on the peer's verifyChainIntegrity.
+    #[serde(default)]
+    pub peer_token: Option<String>,
 }
 
 /// Response for backfillStatus
