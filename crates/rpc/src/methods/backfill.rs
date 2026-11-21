@@ -218,6 +218,7 @@ impl RpcContext {
 
         let walk = anchor::Walk {
             store: self.block_store.clone(),
+            chain: self.chain_state.clone(),
             state: self.backfill_state.clone(),
             url: params.rpc_url.clone(),
             tip_height,

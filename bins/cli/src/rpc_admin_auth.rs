@@ -88,6 +88,17 @@ pub fn unauthorized_hint_for(env: Option<&str>, token_file: &Path) -> String {
     }
 }
 
+/// One-line -32008 hint for a remote endpoint: only the env token is ever sent there.
+pub fn unauthorized_hint_remote(env: Option<&str>) -> String {
+    let need = format!("set {ENV_TOKEN} to that node's full token (at least {MIN_ADMIN_TOKEN_LEN} chars); no token file is sent to a remote endpoint");
+    match short_env_len(env) {
+        Some(n) => format!(
+            "admin RPC method refused ({UNAUTHORIZED_CODE}): {ENV_TOKEN} is shorter than {MIN_ADMIN_TOKEN_LEN} chars ({n} chars), so it was ignored and no token was sent; {need}"
+        ),
+        None => format!("admin RPC method refused ({UNAUTHORIZED_CODE}): {need}"),
+    }
+}
+
 #[cfg(test)]
 #[path = "rpc_admin_auth_tests.rs"]
 mod tests;

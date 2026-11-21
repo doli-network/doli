@@ -6,7 +6,8 @@ use std::sync::Arc;
 use crypto::Hash;
 use doli_core::validation::verify_block_signature_at;
 use doli_core::Block;
-use storage::BlockStore;
+use storage::{BlockStore, ChainState};
+use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use super::super::context::BackfillState;
@@ -91,6 +92,7 @@ async fn fetch(client: &reqwest::Client, url: &str, h: u64) -> Result<Block, Str
 
 pub(super) struct Walk {
     pub store: Arc<BlockStore>,
+    pub chain: Arc<RwLock<ChainState>>,
     pub state: Arc<BackfillState>,
     pub url: String,
     pub tip_height: u64,
@@ -147,7 +149,7 @@ impl Walk {
                         *skipped += 1;
                     }
                     Verdict::Store => {
-                        self.store_at(&block, h, &want)?;
+                        self.store_at(&block, h).await?;
                         *imported += 1;
                         self.state.imported.store(*imported, Ordering::SeqCst);
                         if imported.is_multiple_of(100) {
@@ -162,20 +164,35 @@ impl Walk {
         Ok(())
     }
 
-    fn store_at(&self, block: &Block, h: u64, want: &Hash) -> Result<(), (u64, String)> {
+    /// Writes only if the CURRENT chain still commits to `block` at h; the chain_state read lock spans re-check and write.
+    async fn store_at(&self, block: &Block, h: u64) -> Result<(), (u64, String)> {
         let store_err = |e: storage::StorageError| (h, format!("store error: {e}"));
+        let hash = block.hash();
+        let cs = self.chain.read().await;
+        let now = anchor_above(&self.store, h, cs.best_height, cs.best_hash);
+        if now != Some(hash) {
+            let why = match now {
+                Some(x) => {
+                    format!("chain moved at h {h}: our chain now commits to {x}, not {hash}")
+                }
+                None => format!("no stored block at {} or tip commits to {hash}", h + 1),
+            };
+            return Err((h, why));
+        }
         if let Some(x) = self.store.get_hash_by_height(h).map_err(store_err)? {
-            if x != *want {
+            if x != hash {
                 if self.store.get_block(&x).map_err(store_err)?.is_none() {
                     return Err((
                         h,
-                        format!("our index at h holds {x}, our chain commits to {want}"),
+                        format!("our index at h holds {x}, our chain commits to {hash}"),
                     ));
                 }
                 self.store.remove_canonical_entry(h, x).map_err(store_err)?;
             }
         }
-        self.store.put_block_canonical(block, h).map_err(store_err)
+        let r = self.store.put_block_canonical(block, h).map_err(store_err);
+        drop(cs);
+        r
     }
 }
 

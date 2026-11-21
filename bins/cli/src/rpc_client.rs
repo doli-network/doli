@@ -475,7 +475,7 @@ impl RpcClient {
     }
 
     /// Use `token` for admin methods instead of env/file resolution.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn with_admin_token(mut self, token: Option<String>) -> Self {
         self.admin_token = token;
         self
@@ -573,6 +573,7 @@ impl RpcClient {
         match self.call_inspect(method, params).await? {
             RpcOutcome::Ok(result) => Ok(result),
             RpcOutcome::Error(error) => Err(with_admin_hint(
+                &self.endpoint,
                 method,
                 i64::from(error.code),
                 format_rpc_error(&error),
@@ -616,6 +617,7 @@ impl RpcClient {
         if let Some(error) = body.get("error") {
             let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
             return Err(with_admin_hint(
+                &self.endpoint,
                 method,
                 code,
                 anyhow!("RPC error: {}", error),
@@ -1031,14 +1033,16 @@ fn local_data_dir() -> std::path::PathBuf {
     crate::paths::resolve_base_dir(network, None)
 }
 
-fn with_admin_hint(method: &str, code: i64, err: anyhow::Error) -> anyhow::Error {
+fn with_admin_hint(endpoint: &str, method: &str, code: i64, err: anyhow::Error) -> anyhow::Error {
     if admin::is_admin_method(method) && code == admin::UNAUTHORIZED_CODE {
         let env = std::env::var(admin::ENV_TOKEN).ok();
-        let file = local_data_dir().join(admin::TOKEN_FILE_NAME);
-        anyhow!(
-            "{err}\n  hint: {}",
+        let hint = if is_loopback(endpoint) {
+            let file = local_data_dir().join(admin::TOKEN_FILE_NAME);
             admin::unauthorized_hint_for(env.as_deref(), &file)
-        )
+        } else {
+            admin::unauthorized_hint_remote(env.as_deref())
+        };
+        anyhow!("{err}\n  hint: {hint}")
     } else {
         err
     }

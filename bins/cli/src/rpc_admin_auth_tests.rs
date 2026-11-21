@@ -281,3 +281,18 @@ fn unauthorized_hint_names_short_env_cause() {
     assert!(!unset.contains("shorter than 32"), "hint: {unset}");
     assert!(unset.contains(&file.display().to_string()), "hint: {unset}");
 }
+
+/// INC-I-308 M12 — Decision: a failure means a -32008 from a remote node points the operator at a token file the CLI never sends there.
+#[test]
+fn unauthorized_hint_remote_names_env_only_cause() {
+    let hint = unauthorized_hint_remote(Some("legacy-short"));
+    assert!(hint.contains("shorter than 32"), "hint: {hint}");
+    assert!(hint.contains("ignored"), "hint: {hint}");
+    assert!(hint.contains("no token file is sent"), "hint: {hint}");
+    assert!(!hint.contains(TOKEN_FILE_NAME), "hint: {hint}");
+    assert_eq!(hint.trim_end().lines().count(), 1, "hint: {hint:?}");
+    let unset = unauthorized_hint_remote(None);
+    assert!(unset.contains("at least 32"), "hint: {unset}");
+    assert!(unset.contains("no token file is sent"), "hint: {unset}");
+    assert!(!unset.contains(TOKEN_FILE_NAME), "hint: {unset}");
+}
