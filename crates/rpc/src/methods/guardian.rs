@@ -573,19 +573,18 @@ impl RpcContext {
                     continue;
                 }
 
-                let block = match repair_check::admissible(&store_bg, &data, h, sig_ah, bls_ah) {
-                    Ok(b) => b,
-                    Err(why) => {
-                        tracing::warn!("[REPAIR_ARCHIVE] Refused h={}: {}", h, why);
-                        errors += 1;
-                        continue;
+                if let Some(b) = doli_core::transaction::legacy::deserialize_block_compat(&data) {
+                    if b.header.genesis_hash != local_genesis {
+                        return Err(format!(
+                            "Block at h={} has wrong genesis_hash — peer is on a different chain",
+                            h
+                        ));
                     }
-                };
-                if block.header.genesis_hash != local_genesis {
-                    return Err(format!(
-                        "Block at h={} has wrong genesis_hash — peer is on a different chain",
-                        h
-                    ));
+                }
+                if let Err(why) = repair_check::admissible(&store_bg, &data, h, sig_ah, bls_ah) {
+                    tracing::warn!("[REPAIR_ARCHIVE] Refused h={}: {}", h, why);
+                    errors += 1;
+                    continue;
                 }
 
                 // Write .block file (atomic via tmp rename)

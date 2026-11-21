@@ -5,11 +5,11 @@
 // covers: crates/rpc/src/methods/balance.rs crates/rpc/src/methods/history.rs crates/rpc/src/methods/context.rs
 // covers: crates/crypto/src/address.rs crates/storage/src/block_store/maintenance.rs crates/storage/src/block_store/writes.rs
 //
-// OUTPUT CONTRACT
+// OUTPUT CONTRACT:
 //   O1 JSON-RPC reply (result | error.code); O2 block_store height index; O3 archive dir *.block files
 //   PATHS: getBalance/getUtxos/getHistory bad address -> -32602 | pruneBlocks no covering archive -> refuse or keep,
 //     force -> prune | repairArchiveFromPeer -> only decodable blocks <= local tip | backfillFromPeer -> anchored to h+1.prev_hash
-// INPUT PARTITIONS
+// INPUT PARTITIONS:
 //   address: 19 ASCII + 'é' at bytes 19..21 + 'a'; prune: [2000] vs [2000, true], archive w/o manifest;
 //   repair peer: tip 5 > local 2, garbage bytes, empty blake3; backfill peer: self-signed forged h3, prev = honest h2
 // MATRIX
@@ -434,5 +434,42 @@ async fn audit_p1_rpc_004_prune_without_force_admitted_when_archive_covers_cutof
     assert!(
         ctx.block_store.get_block_by_height(1).unwrap().is_none(),
         "covered prune kept h1: {r}"
+    );
+}
+
+// P1-RPC-007 (INC-I-308) — Decision: a failure means a peer on another chain is reported as "ok with errors" instead of the different-chain refusal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn audit_p1_rpc_007_repair_archive_reports_different_chain_for_foreign_genesis() {
+    let foreign = crypto::hash::hash(b"inc-i-308-m7-foreign-genesis");
+    let kp = KeyPair::from_seed([0x5A; 32]);
+    let (l1, _l2, l3) = chain3(Hash::ZERO, &kp);
+    let (h1, h2, h3) = chain3(foreign, &kp);
+    let tmp = TempDir::new().unwrap();
+    let arch = tmp.path().join("arch");
+    std::fs::create_dir_all(&arch).unwrap();
+    let ctx = local_node(&tmp.path().join("blocks"), 3).with_archive_dir(arch.clone());
+    assert_ne!(
+        ctx.chain_state.read().await.genesis_hash,
+        foreign,
+        "fixture"
+    );
+    for (b, h) in [(&l1, 1), (&l3, 3)] {
+        ctx.block_store.put_block_canonical(b, h).unwrap();
+    }
+    let url = serve_peer(Peer {
+        tip: 3,
+        blocks: vec![h1, h2, h3],
+        garbage: false,
+    })
+    .await;
+    let v = raw(&ctx, "repairArchiveFromPeer", json!({"rpc_url": url})).await;
+    let msg = v["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("different chain"),
+        "want different-chain error: {v}"
+    );
+    assert!(
+        !arch.join("0000000002.block").exists(),
+        "foreign h2 archived: {v}"
     );
 }

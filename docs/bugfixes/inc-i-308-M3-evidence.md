@@ -157,3 +157,22 @@ GREEN:
 - `bash scripts/tests/test-installer-rpc-bind.sh` → all pass (section g: 3 PASS).
 
 Outcome probe (real binary, mock RPC listener on 127.0.0.1, token file in `DOLI_DATA_DIR`, endpoint `http://localhost@127.0.0.1:PORT`, `doli chain-verify`): `token_leak_userinfo_url` before (a602869f) / after — see the M6a commit body.
+
+## M7 — loopback-only token file + repair genesis abort (run 732)
+
+Fixes:
+- `scripts/lib/rpc-admin-token.sh` `rpc_admin_header_for`: reads the local token file only when the URL host is exactly loopback (`127.a.b.c`, `localhost`, `::1`, `[::1]`) and the authority has no userinfo (`@`). Other hosts get only `DOLI_RPC_ADMIN_TOKEN`, else no header. `scripts/lib/rpc_admin_token.py` adds `headers_for_host(method, host, port)` with the same rule; `headers_for` is unchanged because its callers pass a local port or data dir only.
+- `crates/rpc/src/methods/guardian.rs` `repairArchiveFromPeer`: the genesis check runs on the decoded block BEFORE `repair_check::admissible`, so a foreign-genesis peer aborts with `wrong genesis_hash — peer is on a different chain` instead of a count in `errors`.
+
+Tests:
+- `scripts/tests/test-rpc-admin-token.sh` section `i` (REQ-RPC-ADMIN-LOOPBACK).
+- `audit_p1_rpc_007_repair_archive_reports_different_chain_for_foreign_genesis` in `crates/rpc/tests/it/audit_rpc_effects.rs`.
+
+RED (pre-fix):
+- section `i`: 4 FAIL (remote `203.0.113.9`, `10.0.0.5`, `localhost@203.0.113.9`, `127.0.0.1.evil.example` with env unset got the file token).
+- `cargo test -p rpc audit_p1_rpc_007_repair_archive_reports_different_chain_for_foreign_genesis` → `want different-chain error: ... "errors":3 ... "status":"ok"`, 0 passed / 1 failed.
+
+GREEN: see the results below.
+- `bash scripts/tests/test-rpc-admin-token.sh` → ALL PASS (section `i`: 11 PASS).
+- `cargo test -p rpc` → 165 passed, 0 failed, 1 ignored (incl. `audit_p1_rpc_007_repair_archive_reports_different_chain_for_foreign_genesis`).
+- `cargo clippy -p rpc --all-targets -- -D warnings` → exit 0; `cargo fmt --check` → exit 0; `bash -n scripts/lib/rpc-admin-token.sh` and `python3 -m py_compile scripts/lib/rpc_admin_token.py` → exit 0.

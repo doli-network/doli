@@ -52,3 +52,17 @@ def headers_for(method, port=None, data_dir=None):
     if not data_dir and port is not None and not os.environ.get("DOLI_RPC_ADMIN_TOKEN"):
         data_dir = data_dir_for_port(port)
     return auth_headers(data_dir)
+
+
+def is_loopback(host):
+    """Exact loopback host match: localhost, ::1, [::1], 127.a.b.c."""
+    if host in ("localhost", "::1", "[::1]"):
+        return True
+    parts = str(host).split(".")
+    return (len(parts) == 4 and parts[0] == "127"
+            and all(p.isdigit() and len(p) <= 3 for p in parts))
+
+
+def headers_for_host(method, host, port=None):
+    """headers_for an RPC at host:port; the local token file is read only for a loopback host."""
+    return headers_for(method, port if is_loopback(host) else None)

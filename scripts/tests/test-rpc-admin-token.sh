@@ -158,6 +158,23 @@ for e in "${EXCEPTIONS[@]}"; do [ -f "${e%%|*}" ] || echo "  stale exception (fi
 [ "$offenders" = 0 ] && pass "h census: $callers admin callers reference the token helper" \
   || fail "h census" "$offenders of $callers admin callers lack a token path"
 
+# i. rpc_admin_header_for: local token file only for a loopback URL host
+# REQ-RPC-ADMIN-LOOPBACK — Decision: a FAIL means the helper sends the local node's admin token to a remote or look-alike host.
+hdr() {
+  ( unset DOLI_RPC_ADMIN_TOKEN
+    [ "$1" = set ] && export DOLI_RPC_ADMIN_TOKEN="$TOK_ENV"
+    source "$ROOT/$HELPER" >/dev/null 2>&1 || exit 97
+    rpc_admin_port_data_dir() { printf '%s\n' "$D_FILE"; }
+    rpc_admin_header_for pauseProduction "$2" ) 2>/dev/null
+}
+for u in "http://203.0.113.9:8501" "10.0.0.5:8501" "http://localhost@203.0.113.9:8501" "http://127.0.0.1.evil.example:8501"; do
+  o="$(hdr unset "$u")"; [ -z "$o" ] && pass "i remote $u, env unset → no header" || fail "i remote $u, env unset → no header" "got: $(show "$o")"
+  o="$(hdr set "$u")"; [ "$o" = "Authorization: Bearer $TOK_ENV" ] && pass "i remote $u, env set → env token" || fail "i remote $u, env set → env token" "got: $(show "$o")"
+done
+for u in "http://127.0.0.1:8501" "localhost:8501" "http://[::1]:8501"; do
+  o="$(hdr unset "$u")"; [ "$o" = "Authorization: Bearer $TOK_FILE" ] && pass "i loopback $u → file token" || fail "i loopback $u → file token" "got: $(show "$o")"
+done
+
 echo "---"
 [ "$FAILS" = 0 ] && { echo "ALL PASS"; exit 0; }
 echo "$FAILS check(s) failed"; exit 1

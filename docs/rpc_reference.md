@@ -1909,6 +1909,14 @@ Trigger hot backfill of missing blocks from a remote seed/archive node. Admin-ga
 ```
 With no gaps: `{"started": false, "message": "No gaps detected — chain is complete.", "divergence_check": "ok"}`
 
+### `repairArchiveFromPeer`
+
+Fetch missing archive `.block` files from a peer. Admin-gated.
+
+- The loop is clamped to the local tip; heights above it are not fetched.
+- A block from a different genesis aborts the call with `Block at h=N has wrong genesis_hash — peer is on a different chain`.
+- A block is archived only if its hash equals the local canonical hash at that height, or it links to a stored neighbor (signature and body checked). On a pruned or snap-synced store, only the height next to the store floor fills per run; the other heights are counted in `errors`. Run again to extend the range.
+
 ### `backfillStatus`
 
 Check the progress of an active backfill operation.

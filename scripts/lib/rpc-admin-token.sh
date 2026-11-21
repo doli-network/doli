@@ -32,12 +32,29 @@ rpc_admin_port_data_dir() {
 
 RPC_ADMIN_METHODS=" pauseProduction resumeProduction createCheckpoint pruneBlocks backfillFromPeer enterRecoveryMode exitRecoveryMode bridgeFromArchive getUtxoDiff getStateSnapshot getStateRootDebug verifyChainIntegrity repairArchiveFromPeer forceReorgTo "
 
+# rpc_admin_is_loopback <host> — exact match: localhost, ::1, [::1], 127.a.b.c.
+rpc_admin_is_loopback() {
+  case "$1" in
+    localhost|::1|\[::1\]) return 0 ;;
+  esac
+  printf '%s\n' "$1" | grep -Eq '^127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$'
+}
+
 # rpc_admin_header_for <method> <url|host:port> — print the Authorization line for an admin method (use: curl -H @<(...)).
 rpc_admin_header_for() {
-  local port="${2##*:}" dir="" tok
+  local auth="${2#*://}" host port dir="" tok
   case "$RPC_ADMIN_METHODS" in *" $1 "*) ;; *) return 0 ;; esac
+  auth="${auth%%/*}"
+  case "$auth" in
+    *@*) host="" ;;
+    \[*) host="${auth%%]*}]" ;;
+    *:*) host="${auth%:*}" ;;
+    *) host="$auth" ;;
+  esac
+  port="${auth##*:}"
   port="${port%%[!0-9]*}"
-  [ -n "${DOLI_RPC_ADMIN_TOKEN:-}" ] || [ -z "$port" ] || dir="$(rpc_admin_port_data_dir "$port")"
+  rpc_admin_is_loopback "$host" || host=""
+  [ -n "${DOLI_RPC_ADMIN_TOKEN:-}" ] || [ -z "$host" ] || [ -z "$port" ] || dir="$(rpc_admin_port_data_dir "$port")"
   tok="$(rpc_admin_token "$dir")" && printf 'Authorization: Bearer %s\n' "$tok"
   return 0
 }
