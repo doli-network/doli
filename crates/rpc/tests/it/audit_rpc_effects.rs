@@ -125,8 +125,14 @@ async fn peer_rpc(State(p): State<Arc<Peer>>, Json(req): Json<Value>) -> Json<Va
     let height = req["params"]["height"].as_u64().unwrap_or(0);
     let ok = |r: Value| json!({"jsonrpc": "2.0", "id": id, "result": r});
     let none = json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "stub"}});
+    let pos = req["params"][0].as_u64().unwrap_or(0);
     Json(match req["method"].as_str() {
         Some("getChainInfo") => ok(json!({"bestHeight": p.tip})),
+        Some("verifyChainIntegrity") => ok(json!({"chainCommitment": "ff"})),
+        Some("getBlockByHeight") => match p.blocks.iter().find(|b| b.header.slot as u64 == pos) {
+            Some(b) => ok(json!({"hash": b.hash().to_hex()})),
+            None => none,
+        },
         Some("getBlockRaw") if p.garbage && height >= 1 => ok(json!({
             "block": base64::engine::general_purpose::STANDARD.encode(b"not a block"),
             "blake3": "", "height": height})),
@@ -288,5 +294,145 @@ async fn audit_p1_rpc_005_backfill_refuses_block_contradicting_stored_neighbor()
         got.is_none() || got == Some(anchor),
         "h3 {got:?} contradicts stored h4.prev_hash {anchor:?}; forged={}, status {st}",
         forged.hash()
+    );
+}
+
+fn chain3(g: Hash, kp: &KeyPair) -> (Block, Block, Block) {
+    let h1 = block(g, 1, g, kp);
+    let h2 = block(g, 2, h1.hash(), kp);
+    let h3 = block(g, 3, h2.hash(), kp);
+    (h1, h2, h3)
+}
+
+async fn repair_with_h2(served: &Block, h1: &Block, h3: &Block) -> (TempDir, Value) {
+    let tmp = TempDir::new().unwrap();
+    let arch = tmp.path().join("arch");
+    std::fs::create_dir_all(&arch).unwrap();
+    let ctx = local_node(&tmp.path().join("blocks"), 3).with_archive_dir(arch);
+    for (b, h) in [(h1, 1), (h3, 3)] {
+        ctx.block_store.put_block_canonical(b, h).unwrap();
+    }
+    let url = serve_peer(Peer {
+        tip: 3,
+        blocks: vec![h1.clone(), served.clone(), h3.clone()],
+        garbage: false,
+    })
+    .await;
+    let v = call(&ctx, "repairArchiveFromPeer", json!({"rpc_url": url})).await;
+    (tmp, v)
+}
+
+// P1-RPC-007 (INC-I-308) — Decision: a failure means repairArchiveFromPeer archives a self-signed block that does not link to the stored chain.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn audit_p1_rpc_007_repair_archive_refuses_block_not_linked_to_stored_chain() {
+    let attacker = KeyPair::from_seed([0x66; 32]);
+    let (h1, _h2, h3) = chain3(Hash::ZERO, &KeyPair::from_seed([0x5A; 32]));
+    let forged = block(Hash::ZERO, 2, h1.hash(), &attacker);
+    assert_ne!(forged.hash(), h3.header.prev_hash, "fixture");
+    let (tmp, v) = repair_with_h2(&forged, &h1, &h3).await;
+    let arch = tmp.path().join("arch");
+    assert!(
+        !arch.join("0000000002.block").exists(),
+        "forged h2 archived: {v}"
+    );
+    assert!(
+        v["fetched"].as_u64().unwrap() <= 2,
+        "fetched counts h2: {v}"
+    );
+}
+
+// P1-RPC-007 (INC-I-308) — Decision: a failure means the link check also refuses the honest block, so repair never fills a gap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn audit_p1_rpc_007_repair_archive_writes_linked_block() {
+    let (h1, h2, h3) = chain3(Hash::ZERO, &KeyPair::from_seed([0x5A; 32]));
+    assert_eq!(h2.hash(), h3.header.prev_hash, "fixture");
+    let (tmp, v) = repair_with_h2(&h2, &h1, &h3).await;
+    let data = std::fs::read(tmp.path().join("arch").join("0000000002.block"))
+        .unwrap_or_else(|e| panic!("honest h2 not archived ({e}): {v}"));
+    assert_eq!(deserialize_block_compat(&data).unwrap().hash(), h2.hash());
+}
+
+async fn backfill(ctx: &RpcContext, blocks: Vec<Block>) -> Value {
+    let url = serve_peer(Peer {
+        tip: 3,
+        blocks,
+        garbage: false,
+    })
+    .await;
+    let p = json!({"rpc_url": url, "skip_divergence_check": true});
+    let started = call(ctx, "backfillFromPeer", p).await;
+    assert_eq!(started["started"], json!(true), "fixture: {started}");
+    wait_done(ctx).await
+}
+
+// P1-RPC-005 (INC-I-308) — Decision: a failure means backfill overwrites a height-index entry outside the repair set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn audit_p1_rpc_005_backfill_refuses_block_when_height_index_holds_different_hash() {
+    let g = crypto::hash::hash(b"inc-i-308-m6b");
+    let (h1, h2, h3) = chain3(g, &KeyPair::from_seed([0x5A; 32]));
+    let other = Hash::from_bytes([0x42; 32]);
+    let tmp = TempDir::new().unwrap();
+    let ctx = local_node(tmp.path(), 3);
+    for (b, h) in [(&h1, 1), (&h3, 3)] {
+        ctx.block_store.put_block_canonical(b, h).unwrap();
+    }
+    ctx.block_store.seed_canonical_index(other, 2).unwrap();
+    assert!(
+        ctx.block_store.get_block_by_height(2).unwrap().is_none(),
+        "fixture"
+    );
+    let st = backfill(&ctx, vec![h1, h2, h3]).await;
+    let got = ctx.block_store.get_hash_by_height(2).unwrap();
+    assert_eq!(got, Some(other), "index at h2 overwritten; status {st}");
+}
+
+// P1-RPC-005 (INC-I-308) — Decision: a failure means backfill stores a block whose prev_hash contradicts the stored h-1.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn audit_p1_rpc_005_backfill_refuses_block_contradicting_stored_prev() {
+    let g = crypto::hash::hash(b"inc-i-308-m6b");
+    let kp = KeyPair::from_seed([0x5A; 32]);
+    let (h1, h2, _h3) = chain3(g, &kp);
+    let forged = block(g, 3, Hash::from_bytes([0x09; 32]), &kp);
+    let tmp = TempDir::new().unwrap();
+    let ctx = local_node(tmp.path(), 3);
+    for (b, h) in [(&h1, 1), (&h2, 2)] {
+        ctx.block_store.put_block_canonical(b, h).unwrap();
+    }
+    let st = backfill(&ctx, vec![h1, h2, forged]).await;
+    let got = ctx.block_store.get_block_by_height(3).unwrap();
+    assert!(got.is_none(), "forged h3 stored; status {st}");
+}
+
+// P1-RPC-005 (INC-I-308) — Decision: a failure means the neighbor check blocks fork repair, so a forked node can never re-adopt the peer chain.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn audit_p1_rpc_005_backfill_repair_set_overwrites_stale_successor() {
+    let g = crypto::hash::hash(b"inc-i-308-m6b");
+    let (h1, h2, h3) = chain3(g, &KeyPair::from_seed([0x5A; 32]));
+    let fork = KeyPair::from_seed([0x66; 32]);
+    let f2 = block(g, 2, h1.hash(), &fork);
+    let f3 = block(g, 3, f2.hash(), &fork);
+    let tmp = TempDir::new().unwrap();
+    let ctx = local_node(tmp.path(), 3);
+    for (b, h) in [(&h1, 1), (&f2, 2), (&f3, 3)] {
+        ctx.block_store.put_block_canonical(b, h).unwrap();
+    }
+    let st = backfill(&ctx, vec![h1, h2.clone(), h3.clone()]).await;
+    for (h, want) in [(2, h2.hash()), (3, h3.hash())] {
+        let got = ctx.block_store.get_hash_by_height(h).unwrap();
+        assert_eq!(got, Some(want), "h{h} still on the fork; status {st}");
+    }
+}
+
+// P1-RPC-004 (INC-I-308) — Decision: a failure means a covering archive no longer admits a plain prune.
+#[tokio::test]
+async fn audit_p1_rpc_004_prune_without_force_admitted_when_archive_covers_cutoff() {
+    let tmp = TempDir::new().unwrap();
+    let ctx = prune_ctx(&tmp);
+    let manifest = json!({"latest_height": 100}).to_string();
+    std::fs::write(tmp.path().join("arch").join("manifest.json"), manifest).unwrap();
+    let r = call(&ctx, "pruneBlocks", json!([2000])).await;
+    assert!(
+        ctx.block_store.get_block_by_height(1).unwrap().is_none(),
+        "covered prune kept h1: {r}"
     );
 }

@@ -51,3 +51,22 @@ Fix: crypto 1 passed; rpc 5 passed.
 - `cargo clippy -p crypto -p rpc --all-targets -- -D warnings`: clean. `rustfmt --check` on the 7 M2 files: clean.
 
 Consensus shape: (1) no (2) no (3) n/a — RPC handlers and an error-message preview only. No activation height, no version bump.
+
+## M6b (run 732)
+
+**P1 fix (P1-RPC-007).** `crates/rpc/src/methods/guardian_repair_check.rs::admissible`: when the local store has no block at `h`, a signed block with a matching body must also pass the `backfillFromPeer` neighbor rule (inlined as `linked`: stored h+1 `prev_hash` == block hash, block `prev_hash` == stored h-1 hash; `backfill.rs` untouched) and must have a stored anchor (stored h+1 block or stored h-1 hash). Otherwise `Err` ("no stored neighbor to anchor" or the neighbor reason) -> `[REPAIR_ARCHIVE] Refused h=...`, counted under errors.
+
+**RED -> GREEN.** `audit_p1_rpc_007_repair_archive_refuses_block_not_linked_to_stored_chain` (forged h2 was archived) now passes; `audit_p1_rpc_007_repair_archive_writes_linked_block` and `..._rejects_garbage_and_clamps_to_local_tip` still pass.
+
+**Coverage tests (mutation-checked, `crates/rpc/tests/it/audit_rpc_effects.rs`).**
+
+| Test | Mutation | Result |
+|---|---|---|
+| C1 `audit_p1_rpc_005_backfill_refuses_block_when_height_index_holds_different_hash` | index branch disabled | FAIL; reverted |
+| C2 `audit_p1_rpc_005_backfill_refuses_block_contradicting_stored_prev` | h-1 branch disabled | FAIL; reverted |
+| C3 `audit_p1_rpc_005_backfill_repair_set_overwrites_stale_successor` | repair exemptions removed | FAIL; reverted |
+| D `audit_p1_rpc_004_prune_without_force_admitted_when_archive_covers_cutoff` | `!archive_verified && !force` -> `!force` | FAIL; reverted |
+
+**P3.** `guardian.rs`: `repairArchiveFromPeer` doc and Complete log state the range `1..=min(peer_tip, local_tip)`; JSON `peer_tip` unchanged.
+
+**Docs.** `docs/rpc_reference.md`: `pruneBlocks` documents `[keep_last_n, force]` and the archive-coverage refusal (no longer "advisory"); every curl example for an `ADMIN_METHODS` entry carries `-H "Authorization: Bearer $DOLI_RPC_ADMIN_TOKEN"` (10 examples added; `forceReorgTo` already had it).

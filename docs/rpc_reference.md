@@ -1611,6 +1611,7 @@ Returns the per-component state root hashes. Compare these across nodes at the s
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $DOLI_RPC_ADMIN_TOKEN" \
     -d '{"jsonrpc":"2.0","method":"getStateRootDebug","params":{},"id":1}'
 ```
 
@@ -1686,6 +1687,7 @@ Where `type`: 0=Normal, 1=Bond. `cb`/`er`: 0=false, 1=true. `ed`: extra_data hex
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $DOLI_RPC_ADMIN_TOKEN" \
     -d '{"jsonrpc":"2.0","method":"getUtxoDiff","params":{},"id":1}'
 ```
 
@@ -1693,6 +1695,7 @@ curl -X POST http://127.0.0.1:8500 \
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $DOLI_RPC_ADMIN_TOKEN" \
     -d '{"jsonrpc":"2.0","method":"getUtxoDiff","params":{"referenceHashes":["abc123...","def456..."]},"id":1}'
 ```
 
@@ -2033,6 +2036,7 @@ Returns a full state snapshot (chain state, UTXO set, producer set) as hex-encod
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $DOLI_RPC_ADMIN_TOKEN" \
     -d '{"jsonrpc":"2.0","method":"getStateSnapshot","params":{},"id":1}'
 ```
 
@@ -2262,6 +2266,7 @@ Pause block production on this node. The node remains running (serving RPC, sync
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $DOLI_RPC_ADMIN_TOKEN" \
     -d '{"jsonrpc":"2.0","method":"pauseProduction","params":[],"id":1}'
 ```
 
@@ -2283,6 +2288,7 @@ Resume block production on this node. Clears the explicit production block set b
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $DOLI_RPC_ADMIN_TOKEN" \
     -d '{"jsonrpc":"2.0","method":"resumeProduction","params":[],"id":1}'
 ```
 
@@ -2308,11 +2314,13 @@ Create a RocksDB checkpoint (hot backup) of the state database and block store. 
 # Default path (data_dir/checkpoints/)
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $DOLI_RPC_ADMIN_TOKEN" \
     -d '{"jsonrpc":"2.0","method":"createCheckpoint","params":[],"id":1}'
 
 # Custom path
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $DOLI_RPC_ADMIN_TOKEN" \
     -d '{"jsonrpc":"2.0","method":"createCheckpoint","params":["/backup/doli"],"id":1}'
 ```
 
@@ -2456,9 +2464,9 @@ curl -s -X POST http://127.0.0.1:8500 \
 
 Prune old blocks below a given retention depth to reclaim disk space. Removes block headers, bodies, transaction indexes, address indexes, and slot indexes for pruned heights. Runs RocksDB compaction after deletion to actually free disk.
 
-**Safety:** Enforces a minimum retention of 2000 blocks from the chain tip (block-store floor — independent of `UNDO_KEEP_DEPTH`, which gates per-block UTXO undo records at depth 100). If an archive directory exists at `{data_dir}/archive/`, verifies archive coverage before pruning (advisory — pruning proceeds regardless).
+**Safety:** Enforces a minimum retention of 2000 blocks from the chain tip (block-store floor — independent of `UNDO_KEEP_DEPTH`, which gates per-block UTXO undo records at depth 100). Without `force`, pruning is refused unless the archive manifest (the `--archive-to` directory, or `{data_dir}/archive/`) covers the prune cutoff; the error is `Archive does not cover prune cutoff <cutoff>; pass [keep_last_n, true] to force`.
 
-**Parameters:** `[keep_last_n]` — Number of recent blocks to keep (default: 2000, minimum: 2000).
+**Parameters:** `[keep_last_n, force]` — `keep_last_n`: recent blocks to keep (default 2000; values below 2000 are clamped to 2000). `force` (default `false`): `true` prunes without a covering archive.
 
 **Response:**
 ```json
@@ -2477,11 +2485,13 @@ Prune old blocks below a given retention depth to reclaim disk space. Removes bl
 # Prune keeping last 5000 blocks
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $DOLI_RPC_ADMIN_TOKEN" \
     -d '{"jsonrpc":"2.0","method":"pruneBlocks","params":[5000],"id":1}'
 
 # Prune with minimum retention (2000 blocks)
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $DOLI_RPC_ADMIN_TOKEN" \
     -d '{"jsonrpc":"2.0","method":"pruneBlocks","params":[],"id":1}'
 ```
 

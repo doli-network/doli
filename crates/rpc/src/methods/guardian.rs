@@ -409,7 +409,7 @@ impl RpcContext {
     ///
     /// INC-I-055: Replaces the manual tar+scp relay between seeds. Given a peer's
     /// RPC URL, scans the local archive directory for missing .block files up to
-    /// the peer's chain tip, fetches each missing block via `getBlockRaw`, verifies
+    /// min(peer tip, local tip), fetches each missing block via `getBlockRaw`, verifies
     /// the BLAKE3 checksum, validates genesis_hash, and writes the file to the
     /// local archive directory.
     ///
@@ -624,7 +624,7 @@ impl RpcContext {
                 fetched,
                 skipped,
                 errors,
-                peer_tip
+                peer_tip.min(local_tip)
             );
 
             Ok((fetched, skipped, errors, peer_tip))
