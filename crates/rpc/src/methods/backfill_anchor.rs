@@ -1,5 +1,6 @@
 //! Anchor rule for `backfillFromPeer` (INC-I-308 R-1): a peer block is stored at h only if our chain commits to its hash.
 
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -30,6 +31,39 @@ pub(super) fn anchor_above(
         .ok()
         .flatten()
         .map(|b| b.header.prev_hash)
+}
+
+/// Blocks this walk verified by hash but did not store: height -> (hash, prev_hash).
+pub(super) type Rejected = HashMap<u64, (Hash, Hash)>;
+
+/// Like `anchor_above`, but the commitment may pass through rejected blocks of this walk: a rejected block
+/// at k+1 gives its prev_hash only while the CURRENT chain still commits to its hash at k+1.
+pub(super) fn anchor_now(
+    store: &BlockStore,
+    h: u64,
+    tip_height: u64,
+    tip_hash: Hash,
+    rejected: &Rejected,
+) -> Option<Hash> {
+    let mut k = h;
+    let mut through = Vec::new();
+    let mut a = loop {
+        if k >= tip_height {
+            break anchor_above(store, k, tip_height, tip_hash)?;
+        }
+        if let Some(b) = store.get_block_by_height(k + 1).ok().flatten() {
+            break b.header.prev_hash;
+        }
+        through.push(*rejected.get(&(k + 1))?);
+        k += 1;
+    };
+    for (hash, prev) in through.into_iter().rev() {
+        if a != hash {
+            return None;
+        }
+        a = prev;
+    }
+    Some(a)
 }
 
 /// True when the stored block at `h` (header and body present) has exactly this hash.
@@ -127,6 +161,7 @@ impl Walk {
         skipped: &mut u64,
     ) -> Result<(), (u64, String)> {
         let client = reqwest::Client::new();
+        let mut rejected = Rejected::new();
         let mut i = todo.len();
         while i > 0 {
             let b = todo[i - 1];
@@ -147,9 +182,10 @@ impl Walk {
                     Verdict::SkipKeepChain(why) => {
                         error!("Backfill: rejected block at height {h}: {why}");
                         *skipped += 1;
+                        rejected.insert(h, (want, block.header.prev_hash));
                     }
                     Verdict::Store => {
-                        self.store_at(&block, h).await?;
+                        self.store_at(&block, h, &rejected).await?;
                         *imported += 1;
                         self.state.imported.store(*imported, Ordering::SeqCst);
                         if imported.is_multiple_of(100) {
@@ -165,11 +201,16 @@ impl Walk {
     }
 
     /// Writes only if the CURRENT chain still commits to `block` at h; the chain_state read lock spans re-check and write.
-    async fn store_at(&self, block: &Block, h: u64) -> Result<(), (u64, String)> {
+    async fn store_at(
+        &self,
+        block: &Block,
+        h: u64,
+        rejected: &Rejected,
+    ) -> Result<(), (u64, String)> {
         let store_err = |e: storage::StorageError| (h, format!("store error: {e}"));
         let hash = block.hash();
         let cs = self.chain.read().await;
-        let now = anchor_above(&self.store, h, cs.best_height, cs.best_hash);
+        let now = anchor_now(&self.store, h, cs.best_height, cs.best_hash, rejected);
         if now != Some(hash) {
             let why = match now {
                 Some(x) => {
@@ -283,5 +324,24 @@ mod tests {
         assert!(holds(&store, 2, &b2.hash()));
         assert!(!holds(&store, 2, &b1.hash()));
         assert!(!holds(&store, 1, &b1.hash()));
+    }
+
+    #[test]
+    fn anchor_now_passes_rejected_only_while_chain_commits() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = BlockStore::open(tmp.path()).unwrap();
+        let b1 = blk(1, Hash::ZERO, &kp());
+        let b2 = blk(2, b1.hash(), &kp());
+        let b3 = blk(3, b2.hash(), &kp());
+        let b4 = blk(4, b3.hash(), &kp());
+        store.put_block_canonical(&b4, 4).unwrap();
+        let mut rej = Rejected::new();
+        rej.insert(3, (b3.hash(), b2.hash()));
+        rej.insert(2, (b2.hash(), b1.hash()));
+        assert_eq!(anchor_now(&store, 1, 4, b4.hash(), &rej), Some(b1.hash()));
+        let moved = Hash::from_bytes([7; 32]);
+        assert_eq!(anchor_now(&store, 1, 3, moved, &rej), None);
+        assert_eq!(anchor_now(&store, 1, 4, b4.hash(), &Rejected::new()), None);
+        assert_eq!(anchor_now(&store, 5, 4, b4.hash(), &rej), None);
     }
 }

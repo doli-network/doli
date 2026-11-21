@@ -5,11 +5,14 @@
 //
 // OUTPUT CONTRACT:
 //   O1 block_store height index + body per height; O2 backfillStatus {imported, error}; O3 archive *.block files
-//   PATHS: backfill walk Store | Break (STOP) | peer has no block (STOP) | honest fill; repair admit | refuse
+//   PATHS: backfill walk Store | Break (STOP) | SkipKeepChain (hash ok, body rejected: skip, keep going) |
+//     peer has no block (STOP) | honest fill; repair admit | refuse
 // INPUT PARTITIONS:
 //   positions P1 h=1 snap gap, P2 gap bottom, P3 gap middle, P5 tip absent, P6 one-block hole, P7 bodiless seed;
-//   peer: hostile (claims our tip, self-signed forged blocks, no skip_divergence_check) | honest | missing block
+//   peer: hostile (claims our tip, self-signed forged blocks, no skip_divergence_check) | honest | missing block |
+//     body variant (same header hash, presence bit flipped) at a middle height of an empty store
 // MATRIX
+//   O1,O2 x SkipKeepChain x P3 (empty store, h=3 of 6), then honest peer -> m14_backfill_rejected_middle_block_keeps_fill_below
 //   O1,O2 x Break x {P1,P2,P3,P5} -> r1_backfill_refuses_forged_{h1_and_snap_gap,gap_bottom,gap_middle,tip}
 //   O1,O2 x honest x {P1,P7,P2..P6} -> r1_backfill_honest_peer_fills_{snap_gap,every_position}
 //   O1 x stale stored f1,f2 -> r1_backfill_heals_forged_low_blocks | O1,O2 x no block -> r1_backfill_stops_where_peer_has_no_block
@@ -292,6 +295,55 @@ async fn r1_backfill_stops_where_peer_has_no_block() {
     assert_eq!(idx(&ctx, 4), Some(h[3].hash()), "{st}");
     assert_eq!(idx(&ctx, 5), Some(h[4].hash()), "{st}");
     assert_stopped(&st, 3, 2);
+}
+
+/// `b` with one attestation bit flipped: same header hash, body rejected by `body_matches_header`.
+fn body_variant(b: &Block) -> Block {
+    let mut v = b.clone();
+    match v.attestation_bitfield.first_mut() {
+        Some(byte) => *byte ^= 1,
+        None => v.attestation_bitfield.push(1),
+    }
+    assert_eq!(v.hash(), b.hash(), "fixture: same header hash");
+    assert_ne!(v, *b, "fixture: a different body");
+    v
+}
+
+fn body_at(ctx: &RpcContext, k: u64) -> Option<Block> {
+    ctx.block_store.get_block_by_height(k).unwrap()
+}
+
+// INC-I-308-M14 — Decision: a failure means one body-rejected block in the middle stops every honest block below it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m14_backfill_rejected_middle_block_keeps_fill_below() {
+    let h = honest(6);
+    let tmp = TempDir::new().unwrap();
+    let ctx = local_node(tmp.path(), 6, h[5].hash());
+    let mut served = h.clone();
+    served[2] = body_variant(&h[2]);
+    let (reply, st) = run(&ctx, 6, h[5].hash(), served.clone()).await;
+    for k in [1u64, 2, 4, 5, 6] {
+        assert_eq!(
+            body_at(&ctx, k).as_ref(),
+            Some(&h[k as usize - 1]),
+            "peer A: honest h{k} not stored; reply {reply} status {st}"
+        );
+    }
+    assert_eq!(
+        idx(&ctx, 3),
+        None,
+        "peer A: rejected h3 indexed; status {st}"
+    );
+    assert_clean(&st, 5);
+    let (reply_b, st_b) = run(&ctx, 6, h[5].hash(), h.clone()).await;
+    for k in 1..=6u64 {
+        assert_eq!(
+            body_at(&ctx, k).as_ref(),
+            Some(&h[k as usize - 1]),
+            "peer B: h{k} not the honest block; reply {reply_b} status {st_b}"
+        );
+    }
+    assert_clean(&st_b, 1);
 }
 
 async fn repair(ctx: &RpcContext, tip: u64, blocks: Vec<Block>) -> Value {
