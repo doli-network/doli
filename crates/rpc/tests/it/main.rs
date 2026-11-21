@@ -7,6 +7,7 @@
 
 mod audit_rpc_access;
 mod audit_rpc_access_fixture;
+mod audit_rpc_effects;
 mod inc_i_171_m7_bond_details_shape;
 mod inc_i_178_m4_empty_detection;
 mod inc_i_180_ledger_fields;

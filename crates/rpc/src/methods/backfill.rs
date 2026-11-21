@@ -14,6 +14,9 @@ use crate::types::*;
 
 use super::context::RpcContext;
 
+#[path = "backfill_neighbor.rs"]
+mod neighbor;
+
 /// Check if an IP address is in a private/reserved range (SSRF protection).
 fn is_private_ip(ip: &IpAddr) -> bool {
     match ip {
@@ -311,6 +314,7 @@ impl RpcContext {
         let rpc_url = params.rpc_url.clone();
         let sig_ah = self.inc_i_236_block_signature_activation_height;
         let bls_ah = self.inc_i_178_attestation_bls_activation_height;
+        let repair: std::collections::HashSet<u64> = repair_heights.into_iter().collect();
 
         tokio::spawn(async move {
             info!(
@@ -428,6 +432,11 @@ impl RpcContext {
                         "Backfill: rejected block at height {}: body does not match its header",
                         h
                     );
+                    skipped += 1;
+                    continue;
+                }
+                if let Some(why) = neighbor::refusal(&block_store, &block, h, &repair) {
+                    error!("Backfill: rejected block at height {}: {}", h, why);
                     skipped += 1;
                     continue;
                 }

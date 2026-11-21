@@ -158,8 +158,8 @@ pub fn resolve(input: &str, expected_prefix: Option<&str>) -> Result<Hash, Addre
     // 3. Nothing matched
     Err(AddressError::InvalidFormat(format!(
         "unrecognized address format: use a bech32 address (doli1...), got '{}'",
-        if trimmed.len() > 20 {
-            format!("{}...", &trimmed[..20])
+        if trimmed.chars().count() > 20 {
+            format!("{}...", trimmed.chars().take(20).collect::<String>())
         } else {
             trimmed.to_string()
         }
@@ -192,6 +192,12 @@ fn looks_like_bech32(s: &str) -> bool {
 mod tests {
     use super::*;
     use crate::hash::hash_with_domain;
+
+    // P1-RPC-008 (INC-I-308) — Decision: a failure means one RPC address string with a multibyte char at byte 20 aborts the node (panic = "abort").
+    #[test]
+    fn resolve_multibyte_at_byte_20_is_err_not_panic() {
+        assert!(resolve("aaaaaaaaaaaaaaaaaaa\u{e9}a", Some("doli")).is_err());
+    }
 
     #[test]
     fn test_encode_decode_roundtrip() {
