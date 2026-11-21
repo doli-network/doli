@@ -5,6 +5,7 @@ use doli_cli::cmd_snap_maintainer::{
     agree_maintainer_digest, query_maintainer_answers, retired_keys_height,
     write_snap_maintainer_state, SnapMaintainerOutcome,
 };
+use doli_cli::rpc_admin_auth as admin;
 
 use crate::cmd_snap_service::{restart_matching_service, stop_doli_service};
 
@@ -419,8 +420,7 @@ async fn query_state_root(rpc_url: &str) -> Result<(u64, String)> {
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
 
-    let body: serde_json::Value = client
-        .post(rpc_url)
+    let body: serde_json::Value = with_env_admin_token(client.post(rpc_url))
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "method": "getStateRootDebug",
@@ -432,6 +432,7 @@ async fn query_state_root(rpc_url: &str) -> Result<(u64, String)> {
         .json()
         .await?;
 
+    check_admin_refusal(&body, "getStateRootDebug")?;
     let r = body.get("result").ok_or_else(|| anyhow!("No result"))?;
     Ok((
         r["height"].as_u64().ok_or_else(|| anyhow!("No height"))?,
@@ -449,8 +450,7 @@ async fn download_snapshot(rpc_url: &str) -> Result<serde_json::Value> {
         .timeout(std::time::Duration::from_secs(120)) // large payload
         .build()?;
 
-    let body: serde_json::Value = client
-        .post(rpc_url)
+    let body: serde_json::Value = with_env_admin_token(client.post(rpc_url))
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "method": "getStateSnapshot",
@@ -463,6 +463,7 @@ async fn download_snapshot(rpc_url: &str) -> Result<serde_json::Value> {
         .json()
         .await?;
 
+    check_admin_refusal(&body, "getStateSnapshot")?;
     if let Some(err) = body.get("error") {
         anyhow::bail!("RPC error: {}", err);
     }
@@ -470,4 +471,23 @@ async fn download_snapshot(rpc_url: &str) -> Result<serde_json::Value> {
     body.get("result")
         .cloned()
         .ok_or_else(|| anyhow!("No result"))
+}
+
+/// Remote seeds get only the env token, never this node's token file.
+fn with_env_admin_token(req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    match admin::env_token(std::env::var(admin::ENV_TOKEN).ok().as_deref()) {
+        Some(token) => req.bearer_auth(token),
+        None => req,
+    }
+}
+
+fn check_admin_refusal(body: &serde_json::Value, method: &str) -> Result<()> {
+    if body["error"]["code"].as_i64() == Some(admin::UNAUTHORIZED_CODE) {
+        anyhow::bail!(
+            "seed refused {method} ({}): set {} to that seed's admin token (the local token file is never sent to a remote seed)",
+            admin::UNAUTHORIZED_CODE,
+            admin::ENV_TOKEN
+        );
+    }
+    Ok(())
 }

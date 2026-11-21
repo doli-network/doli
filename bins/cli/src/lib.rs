@@ -6,6 +6,7 @@ pub mod cmd_snap_maintainer;
 pub mod producer_ledger;
 pub mod producer_tx;
 pub mod rotate_tx;
+pub mod rpc_admin_auth;
 pub mod service_unit;
 pub mod unbonding_tx;
 pub mod upgrade_systemd_plan;

@@ -31,7 +31,11 @@ all_equal() {
   for v in "$@"; do { [ -n "$v" ] && [ "$v" = "$1" ]; } || return 1; done
 }
 
-rpc() { curl -s -m 8 "http://127.0.0.1:$1" -H 'Content-Type: application/json' -d "$2" 2>/dev/null; }
+rpc() {
+  declare -F rpc_admin_header_for >/dev/null || . "$(dirname "${BASH_SOURCE[0]}")/lib/rpc-admin-token.sh"
+  local m="${2#*\"method\":\"}"
+  curl -s -m 8 "http://127.0.0.1:$1" -H 'Content-Type: application/json' -H @<(rpc_admin_header_for "${m%%\"*}" "$1") -d "$2" 2>/dev/null
+}
 call() { local p="${3:-}"; [ -n "$p" ] || p='{}'; rpc "$1" "{\"jsonrpc\":\"2.0\",\"method\":\"$2\",\"params\":$p,\"id\":1}"; }
 port_busy() { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
 udp_busy() { lsof -nP -iUDP:"$1" >/dev/null 2>&1; }

@@ -35,10 +35,11 @@ pass() { echo -e "  ${GREEN}PASS${NC} $1"; PASS=$((PASS+1)); }
 fail() { echo -e "  ${RED}FAIL${NC} $1"; FAIL=$((FAIL+1)); }
 skip() { echo -e "  ${YELLOW}SKIP${NC} $1"; SKIP=$((SKIP+1)); }
 
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/rpc-admin-token.sh"
 rpc() {
   local method="$1"
   local params="${2:-[]}"
-  curl -sf --max-time 5 -X POST "http://${ENDPOINT}" \
+  curl -sf --max-time 5 -X POST "http://${ENDPOINT}" -H @<(rpc_admin_header_for "$method" "$ENDPOINT") \
     -H "Content-Type: application/json" \
     -d "{\"jsonrpc\":\"2.0\",\"method\":\"${method}\",\"params\":${params},\"id\":1}" 2>/dev/null
 }

@@ -334,6 +334,9 @@ else
     echo "    sudo doli service install                         # start node as system service"
     echo "    doli chain                                        # check sync progress"
     echo ""
+    echo "  Admin RPC: the node creates rpc-admin.token in its data dir (owner-only); admin methods need it."
+    echo "    Remote access: ssh -L 8500:127.0.0.1:8500 <host>, or send 'Authorization: Bearer <token>'."
+    echo ""
 fi
 
 if [ "$SKILL_COUNT" -gt 0 ] 2>/dev/null; then

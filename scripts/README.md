@@ -996,6 +996,23 @@ The gate (`.claude/hooks/gauntlet-gate.sh`) arms only when `.omega/gauntlet.conf
 
 ---
 
+## Admin RPC token (scripts/lib/rpc-admin-token.sh)
+
+Admin RPC methods (pauseProduction, createCheckpoint, getStateRootDebug, verifyChainIntegrity, ...)
+need `Authorization: Bearer <token>` from every address (else error -32008). The node creates the
+token at `<data_dir>/rpc-admin.token` (0600). Scripts resolve it in this order: env
+`DOLI_RPC_ADMIN_TOKEN` (non-empty), then the node data dir token file.
+
+| Helper | Use |
+|--------|-----|
+| `rpc_admin_token [data_dir]` | print the token; return 1 if none |
+| `rpc_admin_curl_args [data_dir]` | print `-H` and `Authorization: Bearer <tok>`, one per line |
+| `rpc_admin_header_for <method> <url\|host:port>` | header line for an admin method only; data dir found from the local process on that port. Use `curl -H @<(rpc_admin_header_for ...)` so the token stays off argv |
+| `rpc_admin_ssh <host> <service> <port> <json>` | admin call on a remote host's 127.0.0.1; the token is read there (or piped from the local env) |
+| `scripts/lib/rpc_admin_token.py` | `admin_token(data_dir)`, `auth_headers(data_dir)`, `headers_for(method, port=, data_dir=)` |
+
+New scripts that call an admin method must use one of these; `scripts/tests/test-rpc-admin-token.sh` enforces it.
+
 ## Quick Reference
 
 | Script | Nodes | Duration | Purpose |

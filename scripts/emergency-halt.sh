@@ -30,9 +30,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+source "$(dirname "${BASH_SOURCE[0]}")/lib/rpc-admin-token.sh"
+
 rpc_call() {
   local endpoint="$1" method="$2"
-  curl -sf --max-time 5 -X POST "http://${endpoint}" \
+  curl -sf --max-time 5 -X POST "http://${endpoint}" -H @<(rpc_admin_header_for "$method" "$endpoint") \
     -H "Content-Type: application/json" \
     -d "{\"jsonrpc\":\"2.0\",\"method\":\"${method}\",\"params\":[],\"id\":1}" 2>/dev/null
 }
@@ -108,10 +110,8 @@ if [[ "$MODE" == "mainnet" ]]; then
 
     # Try RPC via SSH port forward (direct RPC only works if ports are exposed)
     # Simpler: try to call RPC through SSH
-    rpc_result=$(ssh -o ConnectTimeout=5 -o BatchMode=yes "${ssh_host}" \
-      "curl -sf --max-time 5 -X POST 'http://127.0.0.1:${rpc_port}' \
-       -H 'Content-Type: application/json' \
-       -d '{\"jsonrpc\":\"2.0\",\"method\":\"pauseProduction\",\"params\":[],\"id\":1}'" 2>/dev/null) || rpc_result=""
+    rpc_result=$(rpc_admin_ssh "${ssh_host}" "${service}" "${rpc_port}" \
+      '{"jsonrpc":"2.0","method":"pauseProduction","params":[],"id":1}' 2>/dev/null) || rpc_result=""
 
     if [[ -n "$rpc_result" ]]; then
       status=$(echo "$rpc_result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('result',{}).get('status','error'))" 2>/dev/null || echo "error")

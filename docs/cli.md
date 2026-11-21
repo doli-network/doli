@@ -69,6 +69,25 @@ All commands support these options:
 | Testnet | 18500 | `--rpc http://127.0.0.1:18500` |
 | Devnet | 28500 | `--rpc http://127.0.0.1:28500` |
 
+### RPC Admin Token
+
+The node refuses its 14 admin RPC methods without `Authorization: Bearer <token>` and answers `-32008 Unauthorized`. These CLI commands call admin methods:
+
+| Command | Admin method |
+|---------|--------------|
+| `doli guardian halt` / `resume` / `checkpoint` | `pauseProduction` / `resumeProduction` / `createCheckpoint` |
+| `doli chain-verify` | `verifyChainIntegrity` |
+| `doli snap` | `getStateRootDebug`, `getStateSnapshot` (on remote seeds) |
+
+The CLI sends the header only on admin calls. Token resolution:
+
+1. `DOLI_RPC_ADMIN_TOKEN` (when not empty after trim).
+2. `<node data dir>/rpc-admin.token` (the node creates it, owner-only, on first start). The CLI reads this file only when `--rpc` is a loopback address. On a multi-node host, set `DOLI_DATA_DIR` to the data dir of the node you call.
+
+`doli snap` sends only `DOLI_RPC_ADMIN_TOKEN` to remote seeds. It never sends the local token file. For remote access to your own node, use `ssh -L 8500:127.0.0.1:8500 <host>`. Do not bind the RPC to `0.0.0.0`.
+
+On `-32008`, the error has a hint line that names the env var and the token file path.
+
 ---
 
 ## Agent Safety Rules

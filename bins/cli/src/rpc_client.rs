@@ -4,6 +4,7 @@
 //! and submitting transactions.
 
 use anyhow::{anyhow, Result};
+use doli_cli::rpc_admin_auth as admin;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 /// JSON-RPC request
@@ -444,6 +445,8 @@ pub struct RpcClient {
     client: reqwest::Client,
     /// Archiver endpoints for fallback on block-store queries
     archiver_endpoints: Vec<String>,
+    /// Explicit admin token; `None` resolves env, then the local token file.
+    admin_token: Option<String>,
 }
 
 impl RpcClient {
@@ -467,7 +470,37 @@ impl RpcClient {
             endpoint: endpoint.to_string(),
             client: Self::build_client(),
             archiver_endpoints: archivers,
+            admin_token: None,
         }
+    }
+
+    /// Use `token` for admin methods instead of env/file resolution.
+    #[allow(dead_code)]
+    pub fn with_admin_token(mut self, token: Option<String>) -> Self {
+        self.admin_token = token;
+        self
+    }
+
+    fn post(&self, method: &str) -> reqwest::RequestBuilder {
+        let req = self.client.post(&self.endpoint);
+        match self.admin_token_for(method) {
+            Some(tok) => req.bearer_auth(tok),
+            None => req,
+        }
+    }
+
+    fn admin_token_for(&self, method: &str) -> Option<String> {
+        if !admin::is_admin_method(method) {
+            return None;
+        }
+        if self.admin_token.is_some() {
+            return self.admin_token.clone();
+        }
+        let env = std::env::var(admin::ENV_TOKEN).ok();
+        if !is_loopback(&self.endpoint) {
+            return admin::env_token(env.as_deref());
+        }
+        admin::resolve_admin_token(env.as_deref(), &local_data_dir())
     }
 
     /// Create a bare RPC client without archiver fallback (used internally).
@@ -476,6 +509,7 @@ impl RpcClient {
             endpoint: endpoint.to_string(),
             client: Self::build_client(),
             archiver_endpoints: Vec::new(),
+            admin_token: None,
         }
     }
 
@@ -502,8 +536,7 @@ impl RpcClient {
         let request = RpcRequest::new(method, params);
 
         let response = self
-            .client
-            .post(&self.endpoint)
+            .post(method)
             .json(&request)
             .send()
             .await
@@ -539,7 +572,11 @@ impl RpcClient {
     ) -> Result<R> {
         match self.call_inspect(method, params).await? {
             RpcOutcome::Ok(result) => Ok(result),
-            RpcOutcome::Error(error) => Err(format_rpc_error(&error)),
+            RpcOutcome::Error(error) => Err(with_admin_hint(
+                method,
+                i64::from(error.code),
+                format_rpc_error(&error),
+            )),
         }
     }
 
@@ -558,8 +595,7 @@ impl RpcClient {
         });
 
         let response = self
-            .client
-            .post(&self.endpoint)
+            .post(method)
             .json(&request)
             .send()
             .await
@@ -578,7 +614,12 @@ impl RpcClient {
             .map_err(|e| anyhow!("Failed to parse response: {}", e))?;
 
         if let Some(error) = body.get("error") {
-            return Err(anyhow!("RPC error: {}", error));
+            let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
+            return Err(with_admin_hint(
+                method,
+                code,
+                anyhow!("RPC error: {}", error),
+            ));
         }
 
         body.get("result")
@@ -964,6 +1005,30 @@ pub fn coins_to_units(coins: &str) -> Result<u64, String> {
 /// Format balance for display
 pub fn format_balance(units: u64) -> String {
     format!("{} DOLI", units_to_coins(units))
+}
+
+fn is_loopback(endpoint: &str) -> bool {
+    ["://127.0.0.1", "://localhost", "://[::1]"]
+        .iter()
+        .any(|h| endpoint.contains(h))
+}
+
+fn local_data_dir() -> std::path::PathBuf {
+    let network = crate::common::NETWORK
+        .get()
+        .map_or("mainnet", |n| n.as_str());
+    crate::paths::resolve_base_dir(network, None)
+}
+
+fn with_admin_hint(method: &str, code: i64, err: anyhow::Error) -> anyhow::Error {
+    if admin::is_admin_method(method) && code == admin::UNAUTHORIZED_CODE {
+        anyhow!(
+            "{err}\n  hint: {}",
+            admin::unauthorized_hint(&local_data_dir())
+        )
+    } else {
+        err
+    }
 }
 
 #[cfg(test)]

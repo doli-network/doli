@@ -12,6 +12,7 @@ const fs = require("fs");
 const path = require("path");
 
 const PORT = 8080;
+const HOST = process.env.EXPLORER_HOST || "127.0.0.1";
 const STATIC_DIR = __dirname;
 
 // Map API paths to local RPC ports
@@ -74,6 +75,7 @@ function proxyWebSocket(req, socket, head, targetPort) {
     const reqLine = `${req.method} /ws HTTP/${req.httpVersion}\r\n`;
     let headers = "";
     for (let i = 0; i < req.rawHeaders.length; i += 2) {
+      if (req.rawHeaders[i].toLowerCase() === "authorization") continue;
       headers += `${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}\r\n`;
     }
     upstream.write(reqLine + headers + "\r\n");
@@ -194,7 +196,7 @@ server.on("upgrade", (req, socket, head) => {
   }
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
   console.log(`DOLI Explorer running at http://localhost:${PORT}`);
   console.log(`  Explorer:  http://localhost:${PORT}/`);
   console.log(`  Network:   http://localhost:${PORT}/network.html`);

@@ -1422,6 +1422,18 @@ Without a proof the ladder continues: header-first sync, or the wedge terminal (
 
 **What to do:** on a fixed build, a coordinator rollback below the gate without `header_proof`, or an `[APPLY_START]` without an `[APPLY_END]`, must not occur. Report it with the 2 minutes of log before the line. The fix is node-local: no activation height, safe for a rolling restart.
 
+### 4.10. `-32008 Unauthorized` on an Admin Method (INC-I-308)
+
+**Symptom:** `doli guardian halt`, `doli chain-verify`, `doli snap` or a `curl` to an admin method fails with `RPC error -32008: Unauthorized`.
+
+**Cause:** the node gates all 14 admin methods with a bearer token, from every address (loopback too). The caller sent no token or a wrong token.
+
+**Fix:**
+- Local CLI: run it as a user that can read `<data dir>/rpc-admin.token` (owner-only, created by the node on first start). On a multi-node host, set `DOLI_DATA_DIR=<that node's data dir>`.
+- Or set `DOLI_RPC_ADMIN_TOKEN=<token>` for the command. `doli snap` against remote seeds uses only this env var.
+- `curl`: add `-H "Authorization: Bearer $(cat <data dir>/rpc-admin.token)"`.
+- Remote access: `ssh -L 8500:127.0.0.1:8500 <host>`, then call `http://127.0.0.1:8500`. Do not bind the RPC to `0.0.0.0`.
+
 ---
 
 ## 5. Update Issues

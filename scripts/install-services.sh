@@ -554,3 +554,8 @@ if [[ "${1:-}" != "validate" ]]; then
       ;;
   esac
 fi
+
+echo ""
+echo "=== Admin RPC token ==="
+echo "Each node creates <data_dir>/rpc-admin.token (owner-only); admin RPC methods need it from every address."
+echo "Reach RPC safely: ssh -L 8500:127.0.0.1:8500 <host>, or send 'Authorization: Bearer <token>'."

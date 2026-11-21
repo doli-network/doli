@@ -38,6 +38,9 @@ mod parsers;
 mod paths;
 mod pool_tx;
 mod rpc_client;
+#[cfg(test)]
+mod rpc_client_auth_tests;
+mod service_rpc_guidance;
 mod tx_retention;
 mod upgrade_restart;
 mod wallet;

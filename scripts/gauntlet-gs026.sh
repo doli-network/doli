@@ -128,9 +128,8 @@ for ((i = 0; i < N; i++)); do
   fi
 done
 
-rpc() {
-  curl -s -m 8 "http://127.0.0.1:$1" -H 'Content-Type: application/json' -d "$2" 2>/dev/null
-}
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/rpc-admin-token.sh"
+rpc() { local m="${2#*\"method\":\"}"; curl -s -m 8 "http://127.0.0.1:$1" -H 'Content-Type: application/json' -H @<(rpc_admin_header_for "${m%%\"*}" "$1") -d "$2" 2>/dev/null; }
 ok_body() { case "$1" in *'"result"'*) return 0 ;; esac; return 1; }
 port_busy() { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
 udp_busy() { lsof -nP -iUDP:"$1" >/dev/null 2>&1; }
