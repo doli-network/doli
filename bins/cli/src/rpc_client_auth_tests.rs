@@ -175,3 +175,25 @@ fn m6a_is_loopback_exact_host() {
         assert!(is_loopback(url), "must be loopback: {url}");
     }
 }
+
+// INC-I-308 P2-a — Decision: a failure means `doli guardian halt` on a loopback node sends a short env token the node ignores instead of the data-dir token file.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn guardian_halt_short_env_sends_file_token() {
+    let _env = crate::paths::TEST_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("rpc-admin.token"), format!("{TOKEN}\n")).unwrap();
+    std::env::set_var("DOLI_RPC_ADMIN_TOKEN", "legacy-short");
+    std::env::set_var("DOLI_DATA_DIR", dir.path());
+    let (url, server) = mock_server(ok_reply());
+    let result = RpcClient::new(&url)
+        .call_raw("pauseProduction", json!({}))
+        .await;
+    let raw = server.join().expect("mock thread");
+    std::env::remove_var("DOLI_RPC_ADMIN_TOKEN");
+    std::env::remove_var("DOLI_DATA_DIR");
+    assert!(result.is_ok(), "call_raw: {result:?}");
+    assert_eq!(authorization_values(&raw), vec![format!("Bearer {TOKEN}")]);
+}

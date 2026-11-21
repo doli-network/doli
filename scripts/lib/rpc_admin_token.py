@@ -3,17 +3,26 @@ import os
 import shlex
 import subprocess
 
+MIN_ADMIN_TOKEN_LEN = 32
+
 ADMIN_METHODS = frozenset((
     "pauseProduction", "resumeProduction", "createCheckpoint", "pruneBlocks", "backfillFromPeer",
     "enterRecoveryMode", "exitRecoveryMode", "bridgeFromArchive", "getUtxoDiff", "getStateSnapshot",
     "getStateRootDebug", "verifyChainIntegrity", "repairArchiveFromPeer", "forceReorgTo"))
 
 
+def env_token():
+    """Trimmed DOLI_RPC_ADMIN_TOKEN when it has >= MIN_ADMIN_TOKEN_LEN chars, else None."""
+    tok = os.environ.get("DOLI_RPC_ADMIN_TOKEN", "").strip()
+    return tok if len(tok) >= MIN_ADMIN_TOKEN_LEN else None
+
+
 def admin_token(data_dir=None):
     """Return the admin token string, or None."""
-    tok = os.environ.get("DOLI_RPC_ADMIN_TOKEN", "")
+    tok = env_token()
     if tok:
         return tok
+    tok = ""
     if data_dir:
         try:
             with open(os.path.join(os.path.expanduser(str(data_dir)), "rpc-admin.token")) as f:
@@ -38,8 +47,11 @@ def data_dir_for_port(port):
             cmd = subprocess.run(["ps", "-o", "command=", "-p", pid],
                                  capture_output=True, text=True, timeout=10).stdout
             a = shlex.split(cmd)
-            if "--data-dir" in a and a.index("--data-dir") + 1 < len(a):
-                return a[a.index("--data-dir") + 1]
+            for i, arg in enumerate(a):
+                if arg == "--data-dir" and i + 1 < len(a):
+                    return a[i + 1]
+                if arg.startswith("--data-dir="):
+                    return arg[len("--data-dir="):]
     except (OSError, ValueError, subprocess.SubprocessError):
         pass
     return None
@@ -49,7 +61,7 @@ def headers_for(method, port=None, data_dir=None):
     """auth_headers for an admin `method` (data dir given or found from the local RPC port), else {}."""
     if method not in ADMIN_METHODS:
         return {}
-    if not data_dir and port is not None and not os.environ.get("DOLI_RPC_ADMIN_TOKEN"):
+    if not data_dir and port is not None and not env_token():
         data_dir = data_dir_for_port(port)
     return auth_headers(data_dir)
 

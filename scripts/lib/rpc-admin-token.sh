@@ -1,12 +1,23 @@
 #!/usr/bin/env bash
 # Admin RPC token lookup (INC-I-308). Source this file; it defines functions only.
-# Order: env DOLI_RPC_ADMIN_TOKEN (non-empty), then <data_dir>/rpc-admin.token.
+# Order: env DOLI_RPC_ADMIN_TOKEN (trimmed, >= 32 chars), then <data_dir>/rpc-admin.token.
+
+RPC_ADMIN_MIN_TOKEN_LEN=32
+
+# rpc_admin_env_token — print the trimmed env token when it has >= 32 chars; return 1 otherwise.
+rpc_admin_env_token() {
+  local t="${DOLI_RPC_ADMIN_TOKEN:-}"
+  t="${t#"${t%%[![:space:]]*}"}"
+  t="${t%"${t##*[![:space:]]}"}"
+  [ "${#t}" -ge "$RPC_ADMIN_MIN_TOKEN_LEN" ] || return 1
+  printf '%s\n' "$t"
+}
 
 # rpc_admin_token [data_dir] — print the token; return 1 when none is found.
 rpc_admin_token() {
   local dir="${1:-}" tok=""
-  if [ -n "${DOLI_RPC_ADMIN_TOKEN:-}" ]; then
-    tok="$DOLI_RPC_ADMIN_TOKEN"
+  if tok="$(rpc_admin_env_token)"; then
+    :
   elif [ -n "$dir" ] && [ -r "$dir/rpc-admin.token" ]; then
     tok="$(tr -d '[:space:]' < "$dir/rpc-admin.token")"
   fi
@@ -55,7 +66,7 @@ rpc_admin_header_for() {
   port="${port%%[!0-9]*}"
   case "$2" in ''|*[!0-9]*) ;; *) host=127.0.0.1 ;; esac # bare port = local node
   rpc_admin_is_loopback "$host" || host=""
-  [ -n "${DOLI_RPC_ADMIN_TOKEN:-}" ] || [ -z "$host" ] || [ -z "$port" ] || dir="$(rpc_admin_port_data_dir "$port")"
+  rpc_admin_env_token >/dev/null || [ -z "$host" ] || [ -z "$port" ] || dir="$(rpc_admin_port_data_dir "$port")"
   tok="$(rpc_admin_token "$dir")" && printf 'Authorization: Bearer %s\n' "$tok"
   return 0
 }
@@ -63,12 +74,13 @@ rpc_admin_header_for() {
 # rpc_admin_ssh <host> <service> <port> <json> — admin RPC to 127.0.0.1:<port> on <host>; the token stays off argv.
 rpc_admin_ssh() {
   local remote='read -r t
-if [ -z "$t" ]; then
+t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
+if [ "${#t}" -lt 32 ]; then
   d=$(systemctl show -p ExecStart --value "$1" 2>/dev/null | sed -n "s/.*--data-dir[ =]\([^ ;]*\).*/\1/p")
   t=$(cat "$d/rpc-admin.token" 2>/dev/null || sudo -n cat "$d/rpc-admin.token" 2>/dev/null)
 fi
 if [ -n "$t" ]; then printf "Authorization: Bearer %s\n" "$t"; fi |
   curl -sf --max-time 5 -X POST "http://127.0.0.1:$2" -H "Content-Type: application/json" -H @- -d "$3"'
-  printf '%s\n' "${DOLI_RPC_ADMIN_TOKEN:-}" | ssh -o ConnectTimeout=5 -o BatchMode=yes "$1" \
+  { rpc_admin_env_token || echo; } | ssh -o ConnectTimeout=5 -o BatchMode=yes "$1" \
     "bash -c $(printf %q "$remote") _ $(printf '%q ' "$2" "$3" "$4")"
 }

@@ -106,6 +106,9 @@ fn platform_data_dir(network: &str) -> PathBuf {
 }
 
 #[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -123,6 +126,7 @@ mod tests {
 
     #[test]
     fn test_resolve_wallet_path_default_ends_with_wallet_json() {
+        let _env = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Clear env to avoid interference
         std::env::remove_var("DOLI_WALLET_FILE");
         std::env::remove_var("DOLI_DATA_DIR");

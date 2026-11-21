@@ -92,20 +92,117 @@ fn public_method_is_not_admin() {
     }
 }
 
-/// R-5 — Decision: env must override the file so an operator can point a tool at another node.
+/// R-5 — Decision: a usable (>=32-char) env must override the file so an operator can point a tool at another node.
 #[test]
 fn token_resolves_from_env_first() {
+    let env_tok = "e".repeat(40);
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join(TOKEN_FILE_NAME), format!("{TOKEN_HEX}\n")).unwrap();
     assert_eq!(
-        resolve_admin_token(Some("  env-token \n"), dir.path()),
-        Some("env-token".to_string())
+        resolve_admin_token(Some(&format!("  {env_tok} \n")), dir.path()),
+        Some(env_tok.clone())
     );
     let empty = tempfile::tempdir().unwrap();
     assert_eq!(
-        resolve_admin_token(Some("env-only"), empty.path()),
-        Some("env-only".to_string())
+        resolve_admin_token(Some(&env_tok), empty.path()),
+        Some(env_tok.clone())
     );
+}
+
+/// INC-I-308 P2-a — Decision: a failure means a short env token (which the node ignores) shadows the valid token file, so guardian halt gets -32008.
+#[test]
+fn token_short_env_falls_back_to_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(TOKEN_FILE_NAME), format!("{TOKEN_HEX}\n")).unwrap();
+    let file = Some(TOKEN_HEX.to_string());
+    let c31 = "s".repeat(31);
+    let c32 = "t".repeat(32);
+    assert_eq!(resolve_admin_token(Some("legacy-short"), dir.path()), file);
+    assert_eq!(resolve_admin_token(Some(&c31), dir.path()), file);
+    assert_eq!(
+        resolve_admin_token(Some(&c32), dir.path()),
+        Some(c32.clone())
+    );
+    assert_eq!(
+        resolve_admin_token(Some(&format!(" {c31}\n")), dir.path()),
+        file
+    );
+    assert_eq!(env_token(Some(&c31)), None);
+    assert_eq!(env_token(Some(&c32)), Some(c32));
+}
+
+fn const_usize(src: &str, decl: &str) -> Option<usize> {
+    let rest = &src[src.find(decl)? + decl.len()..];
+    rest[..rest.find(';')?].trim().parse().ok()
+}
+
+/// INC-I-308 P2-a — Decision: a failure means the CLI length rule drifts from the node rule, so the CLI sends a token the node ignores.
+#[test]
+fn min_token_len_matches_node() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let node = std::fs::read_to_string(root.join("../../crates/rpc/src/admin_token.rs")).unwrap();
+    let cli = std::fs::read_to_string(root.join("src/rpc_admin_auth.rs")).unwrap();
+    let decl = "pub const MIN_ADMIN_TOKEN_LEN: usize =";
+    let node_len = const_usize(&node, decl).expect("node MIN_ADMIN_TOKEN_LEN");
+    assert_eq!(node_len, 32);
+    assert_eq!(
+        const_usize(&cli, decl),
+        Some(node_len),
+        "CLI rpc_admin_auth.rs must declare {decl} {node_len};"
+    );
+}
+
+fn quoted_names(text: &str) -> Vec<String> {
+    let mut v: Vec<String> = text
+        .split(|c: char| c == '"' || c == '\'' || c.is_whitespace() || c == '|' || c == ',')
+        .filter(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric()))
+        .map(str::to_string)
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+fn between<'a>(src: &'a str, start: &str, end: &str) -> &'a str {
+    let s = src
+        .find(start)
+        .unwrap_or_else(|| panic!("missing {start:?}"))
+        + start.len();
+    let e = src[s..]
+        .find(end)
+        .unwrap_or_else(|| panic!("missing end {end:?}"));
+    &src[s..s + e]
+}
+
+/// INC-I-308 P3-c — Decision: a failure means a script helper omits an admin method, so that script calls it without a token and gets -32008.
+#[test]
+fn script_admin_method_lists_match_rpc_server_list() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let read =
+        |p: &str| std::fs::read_to_string(root.join(p)).unwrap_or_else(|e| panic!("{p}: {e}"));
+    let mut server = server_admin_methods();
+    server.sort();
+    assert_eq!(server.len(), 14);
+    let sh = read("scripts/lib/rpc-admin-token.sh");
+    let py = read("scripts/lib/rpc_admin_token.py");
+    let census = read("scripts/tests/test-rpc-admin-token.sh");
+    let lists = [
+        (
+            "rpc-admin-token.sh RPC_ADMIN_METHODS",
+            quoted_names(between(&sh, "RPC_ADMIN_METHODS=\"", "\"")),
+        ),
+        (
+            "rpc_admin_token.py ADMIN_METHODS",
+            quoted_names(between(&py, "ADMIN_METHODS = frozenset((", "))")),
+        ),
+        (
+            "test-rpc-admin-token.sh ADMIN",
+            quoted_names(between(&census, "\nADMIN='", "'")),
+        ),
+    ];
+    for (name, list) in lists {
+        assert_eq!(list, server, "{name} differs from server.rs ADMIN_METHODS");
+    }
 }
 
 /// R-5 — Decision: a missing or untrimmed file read breaks every operator tool after the upgrade.
@@ -169,4 +266,18 @@ fn unauthorized_hint_names_env_and_file() {
         1,
         "hint must be one line: {hint:?}"
     );
+}
+
+/// INC-I-308 P2-a — Decision: a failure means a -32008 with a short env token tells the operator to set a variable that is already set.
+#[test]
+fn unauthorized_hint_names_short_env_cause() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join(TOKEN_FILE_NAME);
+    let hint = unauthorized_hint_for(Some("legacy-short"), &file);
+    assert!(hint.contains("shorter than 32"), "hint: {hint}");
+    assert!(hint.contains(&file.display().to_string()), "hint: {hint}");
+    assert_eq!(hint.trim_end().lines().count(), 1, "hint: {hint:?}");
+    let unset = unauthorized_hint_for(None, &file);
+    assert!(!unset.contains("shorter than 32"), "hint: {unset}");
+    assert!(unset.contains(&file.display().to_string()), "hint: {unset}");
 }

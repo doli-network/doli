@@ -34,7 +34,10 @@ pub fn is_admin_method(method: &str) -> bool {
     ADMIN_METHODS.contains(&method)
 }
 
-/// Non-empty trimmed `env`, else the non-empty trimmed `<data_dir>/rpc-admin.token`.
+/// Node rule: a token shorter than this is ignored (`crates/rpc/src/admin_token.rs`).
+pub const MIN_ADMIN_TOKEN_LEN: usize = 32;
+
+/// Valid trimmed `env`, else the non-empty trimmed `<data_dir>/rpc-admin.token`.
 pub fn resolve_admin_token(env: Option<&str>, data_dir: &Path) -> Option<String> {
     env_token(env).or_else(|| {
         std::fs::read_to_string(data_dir.join(TOKEN_FILE_NAME))
@@ -43,9 +46,23 @@ pub fn resolve_admin_token(env: Option<&str>, data_dir: &Path) -> Option<String>
     })
 }
 
-/// Non-empty trimmed env value only.
+/// Trimmed env value with at least `MIN_ADMIN_TOKEN_LEN` chars only.
 pub fn env_token(env: Option<&str>) -> Option<String> {
     env.and_then(non_empty)
+        .filter(|t| t.chars().count() >= MIN_ADMIN_TOKEN_LEN)
+}
+
+/// Char count of a set but too short trimmed env value.
+pub fn short_env_len(env: Option<&str>) -> Option<usize> {
+    let n = env.and_then(non_empty)?.chars().count();
+    (n < MIN_ADMIN_TOKEN_LEN).then_some(n)
+}
+
+/// " (... shorter than 32 chars ...)" for a short env value, else "".
+pub fn short_env_note(env: Option<&str>) -> String {
+    short_env_len(env)
+        .map(|n| format!(" ({ENV_TOKEN} is set but shorter than {MIN_ADMIN_TOKEN_LEN} chars: {n} chars, so no token was sent)"))
+        .unwrap_or_default()
 }
 
 fn non_empty(s: &str) -> Option<String> {
@@ -55,10 +72,20 @@ fn non_empty(s: &str) -> Option<String> {
 
 /// One-line operator hint for a -32008 refusal.
 pub fn unauthorized_hint(data_dir: &Path) -> String {
-    format!(
-        "admin RPC method refused ({UNAUTHORIZED_CODE}): set {ENV_TOKEN} or make the node token file {} readable; on a multi-node host point DOLI_DATA_DIR at that node's data dir",
-        data_dir.join(TOKEN_FILE_NAME).display()
-    )
+    unauthorized_hint_for(None, &data_dir.join(TOKEN_FILE_NAME))
+}
+
+/// One-line -32008 hint for the given env value and token file.
+pub fn unauthorized_hint_for(env: Option<&str>, token_file: &Path) -> String {
+    let file = token_file.display();
+    match short_env_len(env) {
+        Some(n) => format!(
+            "admin RPC method refused ({UNAUTHORIZED_CODE}): {ENV_TOKEN} is set but shorter than {MIN_ADMIN_TOKEN_LEN} chars ({n} chars), so the node ignores it; the CLI then sent the token file {file}, which is missing, unreadable, or not this node's token; unset {ENV_TOKEN} or set it to the node's full token, or point DOLI_DATA_DIR at that node's data dir"
+        ),
+        None => format!(
+            "admin RPC method refused ({UNAUTHORIZED_CODE}): set {ENV_TOKEN} or make the node token file {file} readable; on a multi-node host point DOLI_DATA_DIR at that node's data dir"
+        ),
+    }
 }
 
 #[cfg(test)]

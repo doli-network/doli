@@ -123,12 +123,10 @@ fn audit_rpc_access_table_classifies_every_method() {
 /// client (headers ignored: `trusted_proxies` empty, server.rs:284-286), and for a
 /// cross-site browser POST (`Content-Type: text/plain`, foreign `Origin`; the body
 /// is parsed whatever its type, server.rs:316 — known as INC-I-269).
-/// Branch: server.rs:218-220 — `is_trusted_network(effective_ip) &&
-/// !OPERATOR_TOKEN_METHODS.contains(&method)` returns `Ok(())` before the token is
-/// looked at; loopback test at server.rs:268-269.
-/// Fails today at: `assert!(exposed.is_empty(), ...)`.
+/// Gate: `check_admin_auth` (server.rs) requires the bearer token for every admin
+/// method from every address; the client address grants nothing.
 #[tokio::test]
-async fn audit_rpc_access_c1_admin_methods_answer_loopback_without_token() {
+async fn audit_rpc_access_c1_admin_methods_refuse_loopback_without_token() {
     let gated = start(Some(TOKEN), &[]).await;
     let open = start(None, &[]).await;
     let mut exposed = Vec::new();
@@ -175,13 +173,11 @@ async fn audit_rpc_access_c1_admin_methods_answer_loopback_without_token() {
 ///
 /// Proves: each `AdminMutating` method is answered with no bearer token when the
 /// effective client address is in 10/8, 172.16/12 or 192.168/16.
-/// Branch: server.rs:218-220 (trusted-network bypass) with server.rs:268
-/// `v4.is_private()`. The address reaches the check through a declared proxy
-/// (server.rs:288-294); the direct-peer case takes the same branch and is pinned by
+/// Gate: `check_admin_auth` (server.rs) requires the bearer token for every admin
+/// method from every address; the direct-peer case is pinned by
 /// `auth_tests.rs::r2_every_admin_method_needs_the_token_from_every_address`.
-/// Fails today at: `assert!(exposed.is_empty(), ...)`.
 #[tokio::test]
-async fn audit_rpc_access_c2_admin_methods_answer_private_network_without_token() {
+async fn audit_rpc_access_c2_admin_methods_refuse_private_network_without_token() {
     let node = start(Some(TOKEN), &["127.0.0.1"]).await;
     let mut exposed = Vec::new();
     for from in ["10.0.0.5", "172.16.0.9", "172.31.255.254", "192.168.1.20"] {
@@ -402,9 +398,10 @@ async fn audit_rpc_access_c4_control_payload_without_valid_signature_changes_not
 /// Proves: with the token configured and 127.0.0.1 declared, each `AdminMutating`
 /// method is answered with no token for the header values such a proxy forwards for
 /// the public client 203.0.113.9. No bypass of the NAME match exists (see the C5
-/// control). Fails today at: `assert!(exposed.is_empty(), ...)`.
+/// control). Gate: `check_admin_auth` (server.rs) requires the bearer token for every
+/// admin method whatever address the forwarding headers name.
 #[tokio::test]
-async fn audit_rpc_access_c5_forged_forwarding_header_passes_as_trusted_address() {
+async fn audit_rpc_access_c5_forged_forwarding_header_does_not_pass_the_gate() {
     let node = start(Some(TOKEN), &["127.0.0.1"]).await;
     let mut exposed = Vec::new();
     for (caller, headers) in [

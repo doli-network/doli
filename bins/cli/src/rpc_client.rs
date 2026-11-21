@@ -1033,9 +1033,11 @@ fn local_data_dir() -> std::path::PathBuf {
 
 fn with_admin_hint(method: &str, code: i64, err: anyhow::Error) -> anyhow::Error {
     if admin::is_admin_method(method) && code == admin::UNAUTHORIZED_CODE {
+        let env = std::env::var(admin::ENV_TOKEN).ok();
+        let file = local_data_dir().join(admin::TOKEN_FILE_NAME);
         anyhow!(
             "{err}\n  hint: {}",
-            admin::unauthorized_hint(&local_data_dir())
+            admin::unauthorized_hint_for(env.as_deref(), &file)
         )
     } else {
         err

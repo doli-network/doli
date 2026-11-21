@@ -483,8 +483,9 @@ fn with_env_admin_token(req: reqwest::RequestBuilder) -> reqwest::RequestBuilder
 
 fn check_admin_refusal(body: &serde_json::Value, method: &str) -> Result<()> {
     if body["error"]["code"].as_i64() == Some(admin::UNAUTHORIZED_CODE) {
+        let short = admin::short_env_note(std::env::var(admin::ENV_TOKEN).ok().as_deref());
         anyhow::bail!(
-            "seed refused {method} ({}): set {} to that seed's admin token (the local token file is never sent to a remote seed)",
+            "seed refused {method} ({}): set {} to that seed's full admin token{short} (the local token file is never sent to a remote seed)",
             admin::UNAUTHORIZED_CODE,
             admin::ENV_TOKEN
         );

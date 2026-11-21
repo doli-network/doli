@@ -15,6 +15,7 @@ ADMIN='pauseProduction|resumeProduction|createCheckpoint|pruneBlocks|backfillFro
 REF='rpc-admin-token\.sh|rpc_admin_curl_args|rpc_admin_token|rpc_admin_token\.py|auth_headers|Authorization'
 
 EXCEPTIONS=(
+  "scripts/gauntlet-gs063.sh|reads the scratch node's own rpc-admin.token and passes it to ga_rpc (:75-76)"
   "scripts/test_gauntlet_gs024.sh|offline test: method name is a grep pattern over a mock command trace (:488,:495)"
   "scripts/test_gauntlet_gs029.sh|offline test: method name is a token asserted present in probe script text (:119)"
   "scripts/test_gauntlet_stateroot_settle.py|unit test: mock RPC dispatch compares method names (:64)"
@@ -51,7 +52,7 @@ run_helper() {
   local mode="$1" fn="$2" dir="$3"
   (
     unset DOLI_RPC_ADMIN_TOKEN
-    case "$mode" in empty) export DOLI_RPC_ADMIN_TOKEN="";; set) export DOLI_RPC_ADMIN_TOKEN="$TOK_ENV";; esac
+    case "$mode" in empty) export DOLI_RPC_ADMIN_TOKEN="";; set) export DOLI_RPC_ADMIN_TOKEN="$TOK_ENV";; short) export DOLI_RPC_ADMIN_TOKEN="legacy-short";; esac
     # shellcheck disable=SC1090
     source "$ROOT/$HELPER" >/dev/null 2>&1 || exit 97
     "$fn" "$dir"
@@ -105,6 +106,10 @@ if [ "$HAVE" = 1 ]; then
   out="$(run_helper set rpc_admin_curl_args "$D_NONE")"
   [ "$out" = "-H"$'\n'"Authorization: Bearer $TOK_ENV"$'\n'"rc=0" ] && pass "e curl args from env without file" \
     || fail "e curl args from env without file" "got: $(show "$out")"
+
+  # j. INC-I-308 P2-a — Decision: a FAIL means a short env token (ignored by the node) shadows the token file.
+  out="$(run_helper short rpc_admin_token "$D_FILE")"
+  [ "$out" = "$TOK_FILE"$'\n'"rc=0" ] && pass "j short env → file token" || fail "j short env → file token" "got: $(show "$out")"
 fi
 
 # f. python sibling module (optional)
@@ -113,6 +118,7 @@ if [ -f "$PYHELPER" ]; then
     (unset DOLI_RPC_ADMIN_TOKEN
      [ "$1" = set ] && export DOLI_RPC_ADMIN_TOKEN="$TOK_ENV"
      [ "$1" = empty ] && export DOLI_RPC_ADMIN_TOKEN=""
+     [ "$1" = short ] && export DOLI_RPC_ADMIN_TOKEN="legacy-short"
      python3 -I -c 'import sys, importlib.util as u
 s = u.spec_from_file_location("rpc_admin_token", sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m)
 print(repr(m.admin_token(sys.argv[2])), repr(m.auth_headers(sys.argv[2])))' "$ROOT/$PYHELPER" "$2") 2>&1
@@ -123,6 +129,15 @@ print(repr(m.admin_token(sys.argv[2])), repr(m.auth_headers(sys.argv[2])))' "$RO
   o="$(pyrun unset "$D_FILE")"; [ "$o" = "$exp_f" ] && pass "f py file when env unset" || fail "f py file when env unset" "$o"
   o="$(pyrun empty "$D_FILE")"; [ "$o" = "$exp_f" ] && pass "f py file when env empty" || fail "f py file when env empty" "$o"
   o="$(pyrun unset "$D_NONE")"; [ "$o" = "None {}" ] && pass "f py none" || fail "f py none" "$o"
+  o="$(pyrun short "$D_FILE")"; [ "$o" = "$exp_f" ] && pass "j py short env → file token" || fail "j py short env → file token" "$o"
+  # k. INC-I-308 P3-b — Decision: a FAIL means `--data-dir=/x` is missed, so no token is sent.
+  o="$(python3 -I -c 'import sys, types, importlib.util as u
+s = u.spec_from_file_location("rpc_admin_token", sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m)
+def run(argv, **kw):
+    return types.SimpleNamespace(stdout="4242\n" if argv[0] == "lsof" else "doli-node --data-dir=/tmp/x run\n")
+m.subprocess.run = run
+print(m.data_dir_for_port(1))' "$ROOT/$PYHELPER" 2>&1)"
+  [ "$o" = "/tmp/x" ] && pass "k py data_dir_for_port --data-dir=/x" || fail "k py data_dir_for_port --data-dir=/x" "got: $o"
 else
   echo "SKIP f $PYHELPER absent"
 fi
@@ -163,6 +178,7 @@ for e in "${EXCEPTIONS[@]}"; do [ -f "${e%%|*}" ] || echo "  stale exception (fi
 hdr() {
   ( unset DOLI_RPC_ADMIN_TOKEN
     [ "$1" = set ] && export DOLI_RPC_ADMIN_TOKEN="$TOK_ENV"
+    [ "$1" = short ] && export DOLI_RPC_ADMIN_TOKEN="legacy-short"
     source "$ROOT/$HELPER" >/dev/null 2>&1 || exit 97
     rpc_admin_port_data_dir() { printf '%s\n' "$D_FILE"; }
     rpc_admin_header_for pauseProduction "$2" ) 2>/dev/null
@@ -174,6 +190,8 @@ done
 for u in "http://127.0.0.1:8501" "localhost:8501" "http://[::1]:8501" "8545"; do
   o="$(hdr unset "$u")"; [ "$o" = "Authorization: Bearer $TOK_FILE" ] && pass "i loopback $u → file token" || fail "i loopback $u → file token" "got: $(show "$o")"
 done
+o="$(hdr short 8545)"; [ "$o" = "Authorization: Bearer $TOK_FILE" ] && pass "j loopback 8545, short env → file token" || fail "j loopback 8545, short env → file token" "got: $(show "$o")"
+o="$(hdr short http://203.0.113.9:8501)"; [ -z "$o" ] && pass "j remote, short env → no header" || fail "j remote, short env → no header" "got: $(show "$o")"
 
 echo "---"
 [ "$FAILS" = 0 ] && { echo "ALL PASS"; exit 0; }

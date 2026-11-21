@@ -1888,15 +1888,19 @@ Trigger hot backfill of missing blocks from a remote seed/archive node. Admin-ga
 
 **Parameters:**
 - `rpc_url` (string, required) — RPC URL of the source node, never a peer ID (e.g., `"http://<source-hostname>:8500"`). On mainnet, a URL whose host is a private, loopback or link-local IP literal is refused; use a DNS name.
-- `skip_divergence_check` (bool, optional, default `false`) — skip the tip check. By default the call fails with `Tip divergence detected` when the local tip hash differs from the source's block at that height. Set `true` only after a genesis reset.
+- `skip_divergence_check` (bool, optional, default `false`) — skip the tip preflight only. By default the call fails with `Tip divergence detected` when the local tip hash differs from the source's block at that height. It never skips the anchor rule below. Set `true` only after a genesis reset.
 - `peer_token` (string, optional) — the SOURCE node's admin token. It is sent only as `Authorization: Bearer` on the source's `verifyChainIntegrity` call. Without it, an admin-gated source refuses that call and the reply carries `divergence_check: "skipped: …"`. The local node's own token is never forwarded.
 
 **Behavior:**
-- Scans every height 1..tip of the local block store and fetches each missing one. There is no range parameter. When nothing is missing and the source answers `verifyChainIntegrity` with a different `chainCommitment`, it re-fetches the divergent heights from the tip down.
-- With no gaps, the reply carries `divergence_check`: `"ok"` when the commitments were compared, or `"skipped: <reason>"` (with a log warning) when the source was unreachable, refused `verifyChainIntegrity` (pass `peer_token`), or sent no `chainCommitment`. A skipped check means a forked block was not looked for.
-- Fetches with `getBlockRaw` and checks the BLAKE3 checksum that the same source supplies. This detects accidental corruption only: it is not an authenticity check, and it is skipped when the source sends no checksum. Backfill does not apply the blocks and runs no VDF check. It skips (logs `Backfill: rejected block at height …`) a block whose producer signature fails at or above the signature activation height, or whose body does not match its header (merkle root, and presence root at that height); run it again with another source to fill such a height.
+- Scans every height 1..tip of the local block store. A height is to do when it is missing, or when the stored block at the next height does not link to it. There is no range parameter.
+- **Anchor rule (top-down):** the walk starts at our tip and goes down. It stores a peer block at height h only if the block hash equals the hash our chain commits to at h: `best_hash` at the tip, else the `prev_hash` of the trusted block at h+1 (stored, or accepted earlier in the same walk).
+- **Chain break = error:** a peer block whose hash is not our chain's hash, a fetch failure (also a height the source lacks), or a missing anchor block stops the pass. `backfillStatus.error` then reads `stopped at height <h>: <reason>; <imported> of <total> stored`. Blocks below a break are not stored.
+- The signature and `body_matches_header` are checked before every write. A block that fails them is not stored (log `Backfill: rejected block at height …`); the walk keeps its `prev_hash` as the next anchor. Run it again with another source to fill such a height.
+- `imported` (in `backfillStatus`) counts stored blocks only.
+- **Phase 2 (divergence check) is report-only.** With no gaps, the node compares its `chainCommitment` with the source's `verifyChainIntegrity`. It never repairs a difference. The reply carries `divergence_check`: `"ok"`; `"diverged: peer differs from h=<h>; not repaired"` (or `"diverged: commitment differs, no block divergence found; not repaired"`); or `"skipped: <reason>"` when the source was unreachable, refused `verifyChainIntegrity` (pass `peer_token`), or sent no `chainCommitment`.
+- The no-gap `message` says `chain is complete` only when `divergence_check` is `"ok"`. Otherwise it says `chain not verified against the peer (<divergence_check>)`.
+- Fetches with `getBlockRaw`. Backfill does not apply the blocks and runs no VDF check.
 - Writes the block store only. It does not apply state and never writes the `--archive-to` directory (one node restart refills it from the block store).
-- A height the source lacks is skipped with a log warning; `backfillStatus.error` stays `null`.
 - Verify the result against a second node that is not the source: `verifyChainIntegrity [H]` compares the header hashes 1..H, and a per-height `getBlockRaw` `blake3` compare proves the block bytes (header and body). Runbook: [archiver.md §5.3](./archiver.md#53-hot-backfill-fill-and-verify-a-height-hole).
 
 **Response:**
@@ -1907,7 +1911,7 @@ Trigger hot backfill of missing blocks from a remote seed/archive node. Admin-ga
   "total": 977
 }
 ```
-With no gaps: `{"started": false, "message": "No gaps detected — chain is complete.", "divergence_check": "ok"}`
+With no gaps: `{"started": false, "message": "No gaps detected — chain is complete.", "divergence_check": "ok"}`. With no gaps and no `"ok"` check: `"message": "No gaps detected — chain not verified against the peer (<divergence_check>)."`.
 
 ### `repairArchiveFromPeer`
 
@@ -1915,7 +1919,9 @@ Fetch missing archive `.block` files from a peer. Admin-gated.
 
 - The loop is clamped to the local tip; heights above it are not fetched.
 - A block from a different genesis aborts the call with `Block at h=N has wrong genesis_hash — peer is on a different chain`.
-- A block is archived only if its hash equals the local canonical hash at that height, or it links to a stored neighbor (signature and body checked). On a pruned or snap-synced store, only the height next to the lowest stored block can be anchored; the other store-absent heights are reported in `errors`. Admitted blocks go to the archive only, never to the store, so a second run does not extend the range. To fill those heights, first restore the blocks into the store (for example with `backfillFromPeer`), then run the repair.
+- A block is archived only if its hash equals the hash our chain commits to at that height: the canonical index hash at h, else the `prev_hash` of the stored block at h+1. If the two differ, the height is refused (`local store contradicts itself`). The signature and `body_matches_header` are checked before every write, also when the hash is equal.
+- A height with no trusted hash is refused (`no trusted hash for h=<h>; run backfillFromPeer first`). Refused heights count in `errors`; the pass continues. Admitted blocks go to the archive only, never to the store. To fill refused heights, first restore the blocks into the store with `backfillFromPeer`, then run the repair.
+- Reply: `{"status": "ok", "fetched": <stored files>, "already_present": <n>, "errors": <n>, "peer_tip": <h>}`. `fetched` counts written blocks only.
 
 ### `backfillStatus`
 
