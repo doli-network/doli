@@ -1,0 +1,47 @@
+# INC-I-308 — port onto v6.46.3
+
+v6.46.3 = v6.46.2 (`328ac1da`) + the INC-I-308 RPC admin access fix only. Run 737.
+Plan: `docs/.workflow/run737-port-plan.md` (main checkout, not shipped).
+
+## Source range
+
+`4cf8be85..612876e4` on the fix branch (19 commits). 17 commits are cherry-picked in order with `-x`.
+
+Skipped commits (unreleased fixture work only):
+
+- `3120256f` (M15): GS-045 / GS-052 stranded-node fixtures.
+- `612876e4` (M16): same fixtures.
+
+## Dropped files (14)
+
+These files belong to the unreleased stack. The fix only adds the admin token to their RPC calls.
+
+- `scripts/gauntlet-inc-i-301-diskfull.sh`
+- `scripts/gauntlet-inc-i-302-rewind.sh`
+- `scripts/inc-i-300-repair-restart.sh`
+- `scripts/gauntlet-stranded.sh`
+- `scripts/gauntlet-stranded/{nodes,state_parity_watch,fastpath,gsn01,replay,storefill}.py`
+- `scripts/test_gauntlet_stranded_replay_side.py`
+- `scripts/test_gauntlet_stranded_storefill.py`
+- `bins/node/examples/gs_store_fill.rs`, `bins/node/examples/gs_store_fill/tests.rs`
+
+## Hand resolutions
+
+- `crates/rpc/src/server.rs`, `server/auth_tests.rs`, `tests/it/audit_rpc_access.rs`, `tests/it/audit_rpc_access_fixture.rs`: whole file from `5cc7e23c`. `server/proxy_tests.rs` from `612876e4` (test-module split).
+- `crates/rpc/tests/it/main.rs`: 2 `mod audit_rpc_access*` lines added by hand.
+- `bins/node/tests/it/main.rs`: base file + `mod inc_i_308_m10_script_token_harness;` only.
+- `docs/rpc_reference.md`, `scripts/README.md`, `scripts/gauntlet.sh`: base text + the INC-I-308 lines only. The `forceReorgTo` section keeps the v6.46.2 behavior text; only its access sentence changes (token from every address).
+
+## Owner rulings
+
+- **D-1**: KEEP `OPERATOR_TOKEN_METHODS` in `crates/rpc/src/server.rs`. It is a label read by tests only; `check_admin_auth` does not read it.
+- **D-8**: BRING `scripts/gauntlet-stranded/loopback_bind.c` (from `612876e4`) so `gauntlet-rpc-admin-lib.sh` can build its P2P shim for GS-058 / GS-063. No other `scripts/gauntlet-stranded/` file ships.
+
+## Not in this release
+
+- `forceReorgTo` keeps the v6.46.2 behavior (no GRET Run 4b rules). Only its access changes.
+- Not changed: `CURRENT_PROTOCOL_VERSION`, `EPOCH_STATE_FORMAT_VERSION`, activation heights, `NetworkParams`, `HardForkSchedule`.
+
+## Evidence limit
+
+The evidence docs `docs/bugfixes/inc-i-308-*.md` were measured on `612876e4` (fix branch binary), not on v6.46.3. `inc-i-308-run735-*-analysis.md` also describes the GS-045 / GS-052 fixtures, which do not ship here.
