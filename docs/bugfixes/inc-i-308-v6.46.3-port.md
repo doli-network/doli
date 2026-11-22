@@ -32,6 +32,8 @@ These files belong to the unreleased stack. The fix only adds the admin token to
 - `bins/node/tests/it/main.rs`: base file + `mod inc_i_308_m10_script_token_harness;` only.
 - `docs/rpc_reference.md`, `scripts/README.md`, `scripts/gauntlet.sh`: base text + the INC-I-308 lines only. The `forceReorgTo` section keeps the v6.46.2 behavior text; only its access sentence changes (token from every address).
 
+- `scripts/gauntlet-gs016.sh` (not in the fix diff): `_gs016_rpc` calls `forceReorgTo` and `verifyChainIntegrity` with no token at v6.46.2. On the fix branch its token path came from unreleased GRET Run 4b (`4472226e`, `bfa8e4aa`). Only that token body is ported (token from `DOLI_RPC_ADMIN_TOKEN`, sent on stdin). The `scripts/gauntlet.sh` GS-016 banner gets a comma so the caller census does not read display text as a call. Found by `scripts/tests/test-rpc-admin-token.sh` check h.
+
 ## Owner rulings
 
 - **D-1**: KEEP `OPERATOR_TOKEN_METHODS` in `crates/rpc/src/server.rs`. It is a label read by tests only; `check_admin_auth` does not read it.
