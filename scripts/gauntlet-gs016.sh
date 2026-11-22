@@ -64,15 +64,11 @@ _gs016_rpc() {
     local port="$1" method="$2" params="${3:-}"
     [ -n "$params" ] || params='{}'
     local body="{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$method\",\"params\":$params}"
-    if [ -n "${DOLI_RPC_ADMIN_TOKEN:-}" ]; then
-        # The token goes in on stdin (-H @-), never on the argv where `ps` shows it.
-        printf 'Authorization: Bearer %s\n' "$DOLI_RPC_ADMIN_TOKEN" \
-            | curl -sf --max-time 15 -X POST "http://127.0.0.1:$port" \
-                -H 'Content-Type: application/json' -H @- -d "$body" 2>/dev/null
-    else
-        curl -sf --max-time 15 -X POST "http://127.0.0.1:$port" \
-            -H 'Content-Type: application/json' -d "$body" 2>/dev/null
-    fi
+    # env token, else the token file of the node listening on the port; never on argv
+    # shellcheck source=lib/rpc-admin-token.sh
+    . "$(dirname "${BASH_SOURCE[0]}")/lib/rpc-admin-token.sh"
+    curl -sf --max-time 15 -X POST "http://127.0.0.1:$port" -H 'Content-Type: application/json' \
+        -H @<(rpc_admin_header_for "$method" "127.0.0.1:$port") -d "$body" 2>/dev/null
 }
 
 # _gs016_jq <expr> — read stdin JSON, print `eval(expr)` on the parsed dict `d`.

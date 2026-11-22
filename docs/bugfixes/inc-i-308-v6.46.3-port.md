@@ -47,3 +47,32 @@ These files belong to the unreleased stack. The fix only adds the admin token to
 ## Evidence limit
 
 The evidence docs `docs/bugfixes/inc-i-308-*.md` were measured on `612876e4` (fix branch binary), not on v6.46.3. `inc-i-308-run735-*-analysis.md` also describes the GS-045 / GS-052 fixtures, which do not ship here.
+
+## Send-back 1 — operator traps on structural hosts
+
+Structural hosts set `DOLI_RPC_ADMIN_TOKEN` in the systemd unit and have no token file, so
+`sudo doli -r http://127.0.0.1:<port> guardian halt` was refused `-32008` unless the operator
+exported the token. Four fixes:
+
+- **D1 node** (`crates/rpc/src/admin_token.rs`): an env or config token is also written to
+  `<data_dir>/rpc-admin.token` (atomic, 0600) when the file is absent or differs; a matching
+  file only gets its mode tightened. A write failure is logged without the token and does not
+  stop the node. Removed behavior: "env token leaves no file on disk" is replaced by "the file
+  holds exactly the env token, mode 0600".
+- **D2 CLI** (`bins/cli/src/rpc_admin_locate.rs`): loopback lookup order is env token >
+  `DOLI_DATA_DIR` > data dir of the process listening on the port (Linux `/proc/net/tcp{,6}` +
+  `/proc/<pid>/fd`; macOS `lsof` + `ps`) > network default dir. The listener is accepted only
+  when its uid owns `<dir>/rpc-admin.token`. The shell and Python helpers got the same uid check.
+  The `-32008` hint names the file tried and says to use `sudo` for a root-owned file.
+- **D3 installer** (`scripts/install-services.sh`): a re-run carries an existing unit's
+  `DOLI_RPC_ADMIN_TOKEN` Environment line into the new unit; `validate` hides that line.
+  NOT COMMITTED: the commit gate refuses any change to `install-services.sh` on this branch,
+  because INV-DEPLOY-003 links the test `crates/storage/tests/inv_deploy_003_rocksdb_memory_caps.rs`,
+  which exists only on later branches (run 721). The change and its test
+  (`scripts/tests/test-installer-unit-token.sh`) wait for an owner ruling.
+- **D4 snap** (`bins/cli/src/cmd_snap_wipe.rs`): `rpc-admin.token` is in the preserve list.
+- **D5** `scripts/gauntlet-gs016.sh` `_gs016_rpc` uses `rpc_admin_header_for`.
+
+Tests: `scripts/tests/test-unit-token-tools.sh <doli-node> <doli>` (scratch node, end to end),
+`scripts/tests/test-rpc-admin-token.sh` k2-k4,
+`admin_token::tests`, `rpc_admin_locate::tests`, `cmd_snap_wipe::tests`.
