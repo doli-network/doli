@@ -100,6 +100,8 @@ else
   tool neg ${NEG_AS[@]+"${NEG_AS[@]}"} "$CLI_BIN" -r "$URL" guardian halt --yes; rc=$?
   [ $rc != 0 ] && pass "6 unreadable token file -> halt exits non-zero" || fail "6 unreadable token file -> halt exits non-zero"
   if [ ${#NEG_AS[@]} -gt 0 ] && ! grep -qF "$NEG_HINT" "$T/out/neg"; then NEG_HINT="could not identify the node on port $RPC"; fi
+  # Linux: a non-root caller sees the LISTEN socket but not its root owner (F4 rule).
+  if [ ${#NEG_AS[@]} -gt 0 ] && ! grep -qF "$NEG_HINT" "$T/out/neg"; then NEG_HINT="found a listener on port $RPC but could not identify its owner process"; fi
   grep -q -- -32008 "$T/out/neg" && grep -qF "$NEG_HINT" "$T/out/neg" && grep -q "run with sudo" "$T/out/neg" \
     && pass "6 -32008 hint names the node's token file (or the unidentified port) and sudo" \
     || fail "6 -32008 hint names the node's token file (or the unidentified port) and sudo" "$(grep -m1 hint "$T/out/neg" | cut -c1-300)"

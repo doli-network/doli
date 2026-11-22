@@ -82,6 +82,10 @@ exported the token. Four fixes:
   created by root and kept by a privilege-dropped or socket-activated process carries uid 0.
   Unchecked `DOLI_DATA_DIR` / default dir remains only when no listener is visible (macOS
   `lsof` sees none, or no LISTEN socket). Test: `visible_socket_with_unknown_owner_gets_no_token_dir`.
+  Linux re-run at `f3a8071a`: "5d requests=24 with-auth=0". A root CLI without ptrace fails
+  closed for a root node too (rc=1, not paused); the operator uses sudo on the host or the env token.
+  F5 — `test-unit-token-tools.sh` test 6 also accepts this unknown-owner hint (the `nobody` caller
+  on Linux sees the socket but not the root owner).
 - **D3 installer** (`scripts/install-services.sh`): a re-run carries an existing unit's
   `DOLI_RPC_ADMIN_TOKEN` Environment line into the new unit; `validate` hides that line.
   Test: `scripts/tests/test-installer-unit-token.sh` (red on `8e065a3a`, `FAILS: 4`; green now).
