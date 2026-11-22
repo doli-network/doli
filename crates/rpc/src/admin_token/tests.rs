@@ -2,7 +2,7 @@
 //!
 //! OUTPUT CONTRACT: fn resolve_admin_token(env, config, data_dir) -> io::Result<(String, TokenSource)>
 //!   O1 return: trimmed token + its source, or `Err` when the file cannot be written.
-//!   O2 disk: `<data_dir>/rpc-admin.token` (absent | reused | created), content, unix mode.
+//!   O2 disk: `<data_dir>/rpc-admin.token` (reused | created | written from env/config), content, unix mode.
 //!   O3 disk: `data_dir` created when missing; no temp file left in it.
 //!   PATHS: env usable · env unusable -> config usable · both unusable -> file reused |
 //!          file invalid -> recreated | no file -> created · unwritable -> Err.
@@ -58,9 +58,9 @@ fn contract_constants_and_usable_token_boundary() {
 }
 
 /// Decision: a failure means an operator's env token is ignored (tools holding it get
-/// refused) or the node writes a second, unused token file beside it.
+/// refused), or local tools that read the data dir cannot find the token the node uses.
 #[test]
-fn usable_env_token_wins_and_writes_no_file() {
+fn usable_env_token_wins_and_is_written_to_the_token_file() {
     let d = TempDir::new().unwrap();
     let got = resolve_admin_token(
         Some(ENV_TOKEN.to_string()),
@@ -69,10 +69,58 @@ fn usable_env_token_wins_and_writes_no_file() {
     )
     .unwrap();
     assert_eq!(got, (ENV_TOKEN.to_string(), TokenSource::Env));
-    assert!(
-        !token_path(d.path()).exists(),
-        "env token must not write a file"
+    let path = token_path(d.path());
+    assert_eq!(
+        fs::read_to_string(&path).expect("env token must be written to the token file"),
+        format!("{ENV_TOKEN}\n")
     );
+    #[cfg(unix)]
+    assert_eq!(mode(&path), 0o600);
+}
+
+/// Decision: a failure means a stale token file (an old token, a token from another
+/// source) stays on disk, so tools that read it are refused.
+#[test]
+fn env_token_replaces_a_token_file_with_a_different_token() {
+    let d = TempDir::new().unwrap();
+    let path = token_path(d.path());
+    fs::write(&path, format!("{CFG_TOKEN}\n")).unwrap();
+    let got = resolve_admin_token(Some(ENV_TOKEN.to_string()), None, d.path()).unwrap();
+    assert_eq!(got, (ENV_TOKEN.to_string(), TokenSource::Env));
+    assert_eq!(fs::read_to_string(&path).unwrap(), format!("{ENV_TOKEN}\n"));
+    #[cfg(unix)]
+    assert_eq!(mode(&path), 0o600);
+}
+
+/// Decision: a failure means a token file that already matches is rewritten on every
+/// start (needless writes) or is left readable by other users.
+#[cfg(unix)]
+#[test]
+fn matching_token_file_is_not_rewritten_only_tightened() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = TempDir::new().unwrap();
+    let path = token_path(d.path());
+    fs::write(&path, format!("  {ENV_TOKEN}  \n")).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    let got = resolve_admin_token(Some(ENV_TOKEN.to_string()), None, d.path()).unwrap();
+    assert_eq!(got, (ENV_TOKEN.to_string(), TokenSource::Env));
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        format!("  {ENV_TOKEN}  \n"),
+        "matching file must not be rewritten"
+    );
+    assert_eq!(mode(&path), 0o600);
+}
+
+/// Decision: a failure means an unwritable data dir stops the node from serving RPC
+/// when it already has a usable env token.
+#[test]
+fn env_token_still_used_when_the_token_file_cannot_be_written() {
+    let d = TempDir::new().unwrap();
+    let file = d.path().join("regular-file");
+    fs::write(&file, "x").unwrap();
+    let got = resolve_admin_token(Some(ENV_TOKEN.to_string()), None, &file.join("data")).unwrap();
+    assert_eq!(got, (ENV_TOKEN.to_string(), TokenSource::Env));
 }
 
 /// Decision: a failure means a padded env value (`export X=" tok\n"`) is either refused
@@ -111,7 +159,10 @@ fn config_token_used_when_env_absent_and_short_config_ignored() {
     let d = TempDir::new().unwrap();
     let got = resolve_admin_token(None, Some(format!("{CFG_TOKEN}\n")), d.path()).unwrap();
     assert_eq!(got, (CFG_TOKEN.to_string(), TokenSource::Config));
-    assert!(!token_path(d.path()).exists());
+    assert_eq!(
+        fs::read_to_string(token_path(d.path())).unwrap(),
+        format!("{CFG_TOKEN}\n")
+    );
 
     let d2 = TempDir::new().unwrap();
     let (tok, src) = resolve_admin_token(None, Some(SHORT_31.into()), d2.path()).unwrap();

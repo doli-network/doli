@@ -131,13 +131,26 @@ print(repr(m.admin_token(sys.argv[2])), repr(m.auth_headers(sys.argv[2])))' "$RO
   o="$(pyrun unset "$D_NONE")"; [ "$o" = "None {}" ] && pass "f py none" || fail "f py none" "$o"
   o="$(pyrun short "$D_FILE")"; [ "$o" = "$exp_f" ] && pass "j py short env → file token" || fail "j py short env → file token" "$o"
   # k. INC-I-308 P3-b — Decision: a FAIL means `--data-dir=/x` is missed, so no token is sent.
-  o="$(python3 -I -c 'import sys, types, importlib.util as u
+  # k2. send-back 1 — Decision: a FAIL means a listener whose uid does not own the token file is accepted (forged --data-dir).
+  KD="$(mktemp -d)"; printf 'x\n' > "$KD/rpc-admin.token"
+  pyport() { python3 -I -c 'import os, sys, types, importlib.util as u
 s = u.spec_from_file_location("rpc_admin_token", sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m)
+uid = os.stat(sys.argv[2] + "/rpc-admin.token").st_uid + int(sys.argv[3])
 def run(argv, **kw):
-    return types.SimpleNamespace(stdout="4242\n" if argv[0] == "lsof" else "doli-node --data-dir=/tmp/x run\n")
+    out = "4242\n" if argv[0] == "lsof" else ("%d\n" % uid if argv[2] == "uid=" else "doli-node --data-dir=%s run\n" % sys.argv[2])
+    return types.SimpleNamespace(stdout=out)
 m.subprocess.run = run
-print(m.data_dir_for_port(1))' "$ROOT/$PYHELPER" 2>&1)"
-  [ "$o" = "/tmp/x" ] && pass "k py data_dir_for_port --data-dir=/x" || fail "k py data_dir_for_port --data-dir=/x" "got: $o"
+print(m.data_dir_for_port(1))' "$ROOT/$PYHELPER" "$KD" "$1" 2>&1; }
+  o="$(pyport 0)"; [ "$o" = "$KD" ] && pass "k py data_dir_for_port --data-dir=/x" || fail "k py data_dir_for_port --data-dir=/x" "got: $o"
+  o="$(pyport 1)"; [ "$o" = "None" ] && pass "k2 py listener uid != token file uid -> rejected" || fail "k2 py listener uid != token file uid -> rejected" "got: $o"
+  shport() { (set +eu; source "$ROOT/scripts/lib/rpc-admin-token.sh"
+    local u; u=$(( $(stat -c %u "$KD/rpc-admin.token" 2>/dev/null || stat -f %u "$KD/rpc-admin.token") + $1 ))
+    lsof() { echo 4242; }
+    ps() { case "$*" in *uid=*) echo " $u" ;; *) echo "doli-node --data-dir=$KD run" ;; esac; }
+    rpc_admin_port_data_dir 1); }
+  o="$(shport 0)"; [ "$o" = "$KD" ] && pass "k3 sh listener uid owns token file -> accepted" || fail "k3 sh listener uid owns token file -> accepted" "got: $o"
+  o="$(shport 1)"; [ -z "$o" ] && pass "k4 sh listener uid != token file uid -> rejected" || fail "k4 sh listener uid != token file uid -> rejected" "got: $o"
+  rm -rf "$KD"
 else
   echo "SKIP f $PYHELPER absent"
 fi

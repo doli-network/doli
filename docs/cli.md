@@ -82,11 +82,13 @@ The node refuses its 14 admin RPC methods without `Authorization: Bearer <token>
 The CLI sends the header only on admin calls. Token resolution:
 
 1. `DOLI_RPC_ADMIN_TOKEN` (when not empty after trim).
-2. `<node data dir>/rpc-admin.token` (the node creates it, owner-only, on first start). The CLI reads this file only when `--rpc` is a loopback address. On a multi-node host, set `DOLI_DATA_DIR` to the data dir of the node you call.
+2. `<node data dir>/rpc-admin.token` (owner-only). The node always writes this file: it creates a token on first start, or writes its env/config token there. The CLI reads this file only when `--rpc` is a loopback address. It finds the data dir in this order: `DOLI_DATA_DIR`; else the `--data-dir` (or `--network` default) of the process that listens on the `--rpc` port; else the network default dir. The CLI uses the listener only if the listener's uid owns that token file (a different local user cannot get the token by listening on a free port). A non-root user cannot read a root-owned token file: run the CLI with `sudo`.
 
 `doli snap` sends only `DOLI_RPC_ADMIN_TOKEN` to remote seeds. It never sends the local token file. For remote access to your own node, use `ssh -L 8500:127.0.0.1:8500 <host>`. Do not bind the RPC to `0.0.0.0`.
 
-On `-32008`, the error has a hint line that names the env var and the token file path.
+On `-32008`, the error has a hint line that names the env var and the token file path the CLI tried.
+
+`doli snap` keeps `rpc-admin.token` when it wipes the data dir (with `keys/`, `wallet.json`, `wallet.seed.txt`, `.env`, `node_key`, `config.toml`).
 
 ---
 

@@ -261,6 +261,7 @@ fn unauthorized_hint_names_env_and_file() {
     assert!(hint.contains("DOLI_RPC_ADMIN_TOKEN"), "hint: {hint}");
     let file = dir.path().join("rpc-admin.token");
     assert!(hint.contains(&file.display().to_string()), "hint: {hint}");
+    assert!(hint.contains("run with sudo"), "hint: {hint}");
     assert_eq!(
         hint.trim_end().lines().count(),
         1,

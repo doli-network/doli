@@ -69,14 +69,21 @@ def data_dir_from_command(cmd):
 
 
 def data_dir_for_port(port):
-    """Data dir of the local process listening on TCP `port`, or None."""
+    """Data dir of the local process listening on TCP `port` whose uid owns its token file, or None."""
     try:
         pids = subprocess.run(["lsof", "-nP", "-iTCP:%d" % int(port), "-sTCP:LISTEN", "-t"],
                               capture_output=True, text=True, timeout=10).stdout.split()
         for pid in pids:
             cmd = subprocess.run(["ps", "-o", "command=", "-p", pid],
                                  capture_output=True, text=True, timeout=10).stdout
-            return data_dir_from_command(cmd)
+            uid = subprocess.run(["ps", "-o", "uid=", "-p", pid],
+                                 capture_output=True, text=True, timeout=10).stdout.strip()
+            ddir = data_dir_from_command(cmd)
+            try:  # accept only a listener whose uid owns the token file (no forged --data-dir)
+                if uid and int(uid) == os.stat(os.path.join(ddir, "rpc-admin.token")).st_uid:
+                    return ddir
+            except (OSError, ValueError):
+                pass
     except (OSError, ValueError, subprocess.SubprocessError):
         pass
     return None

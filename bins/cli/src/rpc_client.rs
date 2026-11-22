@@ -500,7 +500,8 @@ impl RpcClient {
         if !is_loopback(&self.endpoint) {
             return admin::env_token(env.as_deref());
         }
-        admin::resolve_admin_token(env.as_deref(), &local_data_dir())
+        admin::env_token(env.as_deref())
+            .or_else(|| admin::resolve_admin_token(None, &admin_data_dir(&self.endpoint)))
     }
 
     /// Create a bare RPC client without archiver fallback (used internally).
@@ -1033,11 +1034,16 @@ fn local_data_dir() -> std::path::PathBuf {
     crate::paths::resolve_base_dir(network, None)
 }
 
+/// Data dir whose token file a loopback admin call uses (see `rpc_admin_locate`).
+fn admin_data_dir(endpoint: &str) -> std::path::PathBuf {
+    crate::rpc_admin_locate::admin_data_dir(endpoint, local_data_dir)
+}
+
 fn with_admin_hint(endpoint: &str, method: &str, code: i64, err: anyhow::Error) -> anyhow::Error {
     if admin::is_admin_method(method) && code == admin::UNAUTHORIZED_CODE {
         let env = std::env::var(admin::ENV_TOKEN).ok();
         let hint = if is_loopback(endpoint) {
-            let file = local_data_dir().join(admin::TOKEN_FILE_NAME);
+            let file = admin_data_dir(endpoint).join(admin::TOKEN_FILE_NAME);
             admin::unauthorized_hint_for(env.as_deref(), &file)
         } else {
             admin::unauthorized_hint_remote(env.as_deref())

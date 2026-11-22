@@ -1790,8 +1790,11 @@ The node resolves its admin token at start:
 3. else the file `<data_dir>/rpc-admin.token` (mode 0600, 64 lowercase hex chars):
    reused when valid, otherwise created.
 
-A shorter env or config token is ignored with an error log. If the file cannot be
-written, the node refuses every admin method. For remote access, also use firewall
+With an env or config token (1, 2) the node also writes that token to
+`<data_dir>/rpc-admin.token` (mode 0600) when the file is absent or holds another token,
+so local tools find it. A failed write is logged without the token; the node still starts.
+A shorter env or config token is ignored with an error log. If no env/config token is
+set and the file cannot be written, the node refuses every admin method. For remote access, also use firewall
 rules, a VPN, or a reverse proxy.
 
 ### CORS

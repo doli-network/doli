@@ -32,15 +32,19 @@ pub fn is_usable_admin_token(token: &str) -> bool {
 
 /// Resolve the admin token: usable env, else usable config, else the token file
 /// (reused when usable, otherwise created as 64 random hex chars, mode 0600).
+/// An env or config token is also written to the token file (best effort) so local
+/// tools find the token of the node on a port without the env.
 pub fn resolve_admin_token(
     env: Option<String>,
     config: Option<String>,
     data_dir: &Path,
 ) -> std::io::Result<(String, TokenSource)> {
     if let Some(tok) = usable("DOLI_RPC_ADMIN_TOKEN env", env) {
+        materialize(data_dir, &tok);
         return Ok((tok, TokenSource::Env));
     }
     if let Some(tok) = usable("config rpc.admin_token", config) {
+        materialize(data_dir, &tok);
         return Ok((tok, TokenSource::Config));
     }
 
@@ -58,6 +62,19 @@ pub fn resolve_admin_token(
     let token = hex::encode(bytes);
     write_atomic(data_dir, &path, &token)?;
     Ok((token, TokenSource::FileCreated(path)))
+}
+
+/// Make `<data_dir>/rpc-admin.token` hold exactly `token` (mode 0600). Failure is logged
+/// without the token value and never stops the node.
+fn materialize(data_dir: &Path, token: &str) {
+    let path = token_file_path(data_dir);
+    let result = match fs::read_to_string(&path) {
+        Ok(content) if content.trim() == token => tighten_mode(&path),
+        _ => fs::create_dir_all(data_dir).and_then(|()| write_atomic(data_dir, &path, token)),
+    };
+    if let Err(e) = result {
+        error!("cannot write admin token file {}: {e}", path.display());
+    }
 }
 
 fn usable(source: &str, value: Option<String>) -> Option<String> {

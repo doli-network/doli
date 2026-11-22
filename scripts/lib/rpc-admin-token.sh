@@ -64,12 +64,15 @@ rpc_admin_cmd_data_dir() {
   printf '%s\n' "$plat"
 }
 
-# rpc_admin_port_data_dir <port> — print the data dir of the local process listening on <port>.
+# rpc_admin_port_data_dir <port> — print the data dir of the local process listening on <port>,
+# only when that process's uid owns <dir>/rpc-admin.token (a forged --data-dir on a free port is refused).
 rpc_admin_port_data_dir() {
-  local pid
+  local pid dir puid fuid
   for pid in $(lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null); do
-    rpc_admin_cmd_data_dir "$(ps -o command= -p "$pid" 2>/dev/null)"
-    return 0
+    dir="$(rpc_admin_cmd_data_dir "$(ps -o command= -p "$pid" 2>/dev/null)")"
+    puid="$(ps -o uid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+    fuid="$(stat -c %u "$dir/rpc-admin.token" 2>/dev/null || stat -f %u "$dir/rpc-admin.token" 2>/dev/null)"
+    if [ -n "$puid" ] && [ "$puid" = "$fuid" ]; then printf '%s\n' "$dir"; return 0; fi
   done
 }
 

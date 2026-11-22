@@ -37,6 +37,7 @@ mod lp_select;
 mod parsers;
 mod paths;
 mod pool_tx;
+mod rpc_admin_locate;
 mod rpc_client;
 #[cfg(test)]
 mod rpc_client_auth_tests;

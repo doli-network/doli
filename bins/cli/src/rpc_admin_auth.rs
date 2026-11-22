@@ -83,7 +83,7 @@ pub fn unauthorized_hint_for(env: Option<&str>, token_file: &Path) -> String {
             "admin RPC method refused ({UNAUTHORIZED_CODE}): {ENV_TOKEN} is set but shorter than {MIN_ADMIN_TOKEN_LEN} chars ({n} chars), so the node ignores it; the CLI then sent the token file {file}, which is missing, unreadable, or not this node's token; unset {ENV_TOKEN} or set it to the node's full token, or point DOLI_DATA_DIR at that node's data dir"
         ),
         None => format!(
-            "admin RPC method refused ({UNAUTHORIZED_CODE}): set {ENV_TOKEN} or make the node token file {file} readable; on a multi-node host point DOLI_DATA_DIR at that node's data dir"
+            "admin RPC method refused ({UNAUTHORIZED_CODE}): the CLI tried the token file {file} (of the node listening on this port, when found), which is missing, unreadable, or not this node's token; a non-root user cannot read a root-owned token file: run with sudo, or set {ENV_TOKEN}, or point DOLI_DATA_DIR at that node's data dir"
         ),
     }
 }

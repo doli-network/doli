@@ -1487,8 +1487,13 @@ This checklist helps node operators and producers secure their DOLI infrastructu
   `Authorization: Bearer <token>` from every address, loopback and private networks
   included; a missing or wrong token returns `-32008`. No address is trusted. The token
   is env `DOLI_RPC_ADMIN_TOKEN` or config `rpc.admin_token` when at least 32 chars after
-  trim; otherwise the node reuses or creates `<data_dir>/rpc-admin.token` (mode 0600,
-  64 lowercase hex chars). If that file cannot be written, every admin method is refused.
+  trim, and the node then also writes it to `<data_dir>/rpc-admin.token` (mode 0600; a
+  write failure is logged without the token and does not stop the node); otherwise the
+  node reuses or creates that file (64 lowercase hex chars). If the file cannot be
+  written and no env/config token is set, every admin method is refused. A local tool
+  (CLI, `scripts/lib/rpc-admin-token.sh`, `scripts/lib/rpc_admin_token.py`) reads the token
+  file of the process listening on the loopback port only when that process's uid owns
+  the file, so a local user who listens on a free port with a forged `--data-dir` gets no token.
   Keep the token file owner-only and never pass the token on a public command line.
 
 - [ ] **Rate limiting enabled** - Protect against DoS
