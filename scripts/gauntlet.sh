@@ -541,7 +541,7 @@ if [ "${GS016:-0}" = "1" ]; then
   # OPT-IN GS-016 finality-wedge operator escape (C-12 live drill). Mutates ONE
   # wedged node's chain across the finality MARKER via forceReorgTo, then
   # re-baselines so the window judges the RECOVERED steady state.
-  say "\n${C_R}▸ GS-016 MODE — FINALITY-WEDGE OPERATOR ESCAPE (mutates one node's chain: forceReorgTo across the finality marker)${C_0}"
+  say "\n${C_R}▸ GS-016 MODE — FINALITY-WEDGE OPERATOR ESCAPE (mutates one node's chain: forceReorgTo, across the finality marker)${C_0}"
   echo "0" > "$REJOIN_FILE"
   gs016_inject
   say "  [gs016] settling 10s, then re-baselining for a clean observation window"
