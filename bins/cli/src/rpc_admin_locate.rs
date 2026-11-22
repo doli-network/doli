@@ -1,12 +1,12 @@
 //! INC-I-308: find the data dir of the local node that listens on a loopback RPC port.
 //!
-//! Security rule: a listener is accepted only when its uid owns `<dir>/rpc-admin.token`.
-//! Without it, any local user can bind a free port with a forged `--data-dir` and make
-//! a root CLI send another node's token to it.
+//! Security rule: when a listener on the port is visible, a token file is sent only if
+//! that listener's uid owns it. Otherwise any local user who binds the port (forged
+//! `--data-dir` or not) gets a root CLI's token.
 
 use std::path::{Path, PathBuf};
 
-use doli_cli::rpc_admin_auth::TOKEN_FILE_NAME;
+use doli_cli::rpc_admin_auth::{self as admin, TOKEN_FILE_NAME};
 
 /// A process that listens on a TCP port.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,15 +17,105 @@ pub struct Listener {
     pub args: Vec<String>,
 }
 
-/// Data dir whose token file the CLI reads for a loopback `endpoint`:
-/// `DOLI_DATA_DIR`, else the accepted listener's data dir, else `fallback()`.
-pub fn admin_data_dir(endpoint: &str, fallback: impl FnOnce() -> PathBuf) -> PathBuf {
-    if let Some(dir) = std::env::var_os("DOLI_DATA_DIR").filter(|d| !d.is_empty()) {
-        return PathBuf::from(dir);
+/// Token dir for a loopback port. With a visible listener a dir counts only when
+/// every visible listener's uid owns its `rpc-admin.token`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenDir {
+    /// The visible listener's uid owns `<dir>/rpc-admin.token`.
+    Owned(PathBuf),
+    /// No listener visible: `DOLI_DATA_DIR` or the default dir, not verified.
+    Unidentified(PathBuf),
+    /// A listener is visible but owns no candidate token file: send no token.
+    Refused {
+        uid: u32,
+        file: PathBuf,
+        owner: Option<u32>,
+    },
+}
+
+impl TokenDir {
+    pub fn dir(&self) -> Option<&Path> {
+        match self {
+            TokenDir::Owned(d) | TokenDir::Unidentified(d) => Some(d),
+            TokenDir::Refused { .. } => None,
+        }
     }
-    endpoint_port(endpoint)
-        .and_then(|port| listener_data_dir(port, &fallback_default))
-        .unwrap_or_else(fallback)
+}
+
+/// A visible listener: its uid and the data dir from its argv.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeenListener {
+    pub uid: u32,
+    pub dir: PathBuf,
+}
+
+/// Candidates: `env_data_dir` alone, else the listeners' dirs then `default_dir`.
+pub fn choose_token_dir(
+    listeners: &[SeenListener],
+    env_data_dir: Option<PathBuf>,
+    default_dir: PathBuf,
+    owner_of: impl Fn(&Path) -> Option<u32>,
+) -> TokenDir {
+    let Some(first) = listeners.first() else {
+        return TokenDir::Unidentified(env_data_dir.unwrap_or(default_dir));
+    };
+    let candidates: Vec<PathBuf> = match env_data_dir {
+        Some(d) => vec![d],
+        None => listeners
+            .iter()
+            .map(|l| l.dir.clone())
+            .chain([default_dir])
+            .collect(),
+    };
+    let owned = |d: &Path| {
+        let owner = owner_of(&d.join(TOKEN_FILE_NAME));
+        owner.is_some() && listeners.iter().all(|l| Some(l.uid) == owner)
+    };
+    match candidates.iter().find(|d| owned(d)) {
+        Some(d) => TokenDir::Owned(d.clone()),
+        None => {
+            let file = candidates[0].join(TOKEN_FILE_NAME);
+            TokenDir::Refused {
+                uid: first.uid,
+                owner: owner_of(&file),
+                file,
+            }
+        }
+    }
+}
+
+/// Token dir for a loopback `endpoint` (`fallback` = the CLI's network default dir).
+pub fn admin_token_dir(endpoint: &str, fallback: impl FnOnce() -> PathBuf) -> TokenDir {
+    let env = std::env::var_os("DOLI_DATA_DIR")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from);
+    let seen = endpoint_port(endpoint).map_or_else(Vec::new, port_listeners);
+    choose_token_dir(&seen, env, fallback(), token_owner)
+}
+
+/// One-line -32008 hint for a loopback endpoint.
+pub fn loopback_hint(endpoint: &str, env: Option<&str>, td: &TokenDir) -> String {
+    let port = endpoint_port(endpoint).map_or_else(|| "?".to_string(), |p| p.to_string());
+    let code = admin::UNAUTHORIZED_CODE;
+    let short = admin::short_env_note(env);
+    let fix = format!(
+        "run with sudo, or set {}, or set DOLI_DATA_DIR to that node's data dir",
+        admin::ENV_TOKEN
+    );
+    match td {
+        TokenDir::Owned(d) => admin::unauthorized_hint_for(env, &d.join(TOKEN_FILE_NAME)),
+        TokenDir::Unidentified(d) => format!(
+            "admin RPC method refused ({code}): the CLI could not identify the node on port {port} (a non-root user cannot see a root node's sockets); it tried {}, which is not verified as that node's token file{short}; {fix}",
+            d.join(TOKEN_FILE_NAME).display()
+        ),
+        TokenDir::Refused { uid, file, owner } => {
+            let owner = owner.map_or_else(|| "file missing".to_string(), |o| format!("owner uid {o}"));
+            format!(
+                "admin RPC method refused ({code}): the process on port {port} (uid {uid}) is not owned by the owner of the token file {} ({owner}), so the CLI sent no token{short}; check that the node listens on port {port}, or {fix}",
+                file.display()
+            )
+        }
+    }
 }
 
 fn endpoint_port(endpoint: &str) -> Option<u16> {
@@ -36,24 +126,27 @@ fn fallback_default(network: &str) -> PathBuf {
     crate::paths::resolve_base_dir(network, None)
 }
 
-/// Data dir of the accepted listener on `port`, if any.
-pub fn listener_data_dir(port: u16, default_dir: &dyn Fn(&str) -> PathBuf) -> Option<PathBuf> {
-    find_listeners(port).into_iter().find_map(|l| {
-        let dir = data_dir_from_args(&l.args, default_dir);
-        accept_listener(l.uid, &dir).then_some(dir)
-    })
+/// Visible listeners on `port` with the data dir from their argv.
+pub fn port_listeners(port: u16) -> Vec<SeenListener> {
+    find_listeners(port)
+        .into_iter()
+        .map(|l| SeenListener {
+            uid: l.uid,
+            dir: data_dir_from_args(&l.args, &fallback_default),
+        })
+        .collect()
 }
 
-/// True iff `<dir>/rpc-admin.token` exists and is owned by `listener_uid`.
+/// Owner uid of `file`, if it exists.
 #[cfg(unix)]
-pub fn accept_listener(listener_uid: u32, dir: &Path) -> bool {
+pub fn token_owner(file: &Path) -> Option<u32> {
     use std::os::unix::fs::MetadataExt;
-    std::fs::metadata(dir.join(TOKEN_FILE_NAME)).is_ok_and(|m| m.uid() == listener_uid)
+    std::fs::metadata(file).ok().map(|m| m.uid())
 }
 
 #[cfg(not(unix))]
-pub fn accept_listener(_listener_uid: u32, _dir: &Path) -> bool {
-    false
+pub fn token_owner(_file: &Path) -> Option<u32> {
+    None
 }
 
 /// Node data dir from its argv, by the rule of `bins/node/src/main.rs`:

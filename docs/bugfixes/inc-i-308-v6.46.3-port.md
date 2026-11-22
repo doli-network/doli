@@ -61,9 +61,17 @@ exported the token. Four fixes:
   holds exactly the env token, mode 0600".
 - **D2 CLI** (`bins/cli/src/rpc_admin_locate.rs`): loopback lookup order is env token >
   `DOLI_DATA_DIR` > data dir of the process listening on the port (Linux `/proc/net/tcp{,6}` +
-  `/proc/<pid>/fd`; macOS `lsof` + `ps`) > network default dir. The listener is accepted only
-  when its uid owns `<dir>/rpc-admin.token`. The shell and Python helpers got the same uid check.
-  The `-32008` hint names the file tried and says to use `sudo` for a root-owned file.
+  `/proc/<pid>/fd`; macOS `lsof` + `ps`) > network default dir. When a listener on the port is
+  visible, a candidate token file (any of the three dirs) is sent only if the listener's uid owns
+  it; else no token is sent. Only with no visible listener are `DOLI_DATA_DIR` / the default dir
+  used unchecked. The shell and Python helpers got the same uid check (they never fall back).
+  The `-32008` hint names the file tried and `sudo`, or says the port's process is not owned by
+  the token file's owner, or that the CLI could not identify the node on the port.
+- **Run 737 Linux validation** (`docs/.workflow/run737-linux-validation.md`): F1 — a refused
+  listener still got the default dir's token (root's `/var/lib/doli/mainnet` token reached an
+  unprivileged fake listener); fixed by `choose_token_dir` (`bins/cli/src/rpc_admin_locate.rs`).
+  F2 — the hint named the default file as the node's when no listener was visible; fixed.
+  F3 — test 6 of `test-unit-token-tools.sh` drops to user `nobody` when run as root (else SKIP).
 - **D3 installer** (`scripts/install-services.sh`): a re-run carries an existing unit's
   `DOLI_RPC_ADMIN_TOKEN` Environment line into the new unit; `validate` hides that line.
   Test: `scripts/tests/test-installer-unit-token.sh` (red on `8e065a3a`, `FAILS: 4`; green now).

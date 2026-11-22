@@ -1,9 +1,11 @@
 //! INC-I-308 send-back 1 — locate the data dir of the node listening on a loopback port.
 //!
-//! OUTPUT CONTRACT: data_dir_from_args(args, default) -> PathBuf; accept_listener(uid, dir) -> bool;
-//!   listener_data_dir(port, default) -> Option<PathBuf>; parsers for /proc and ps text.
+//! OUTPUT CONTRACT: data_dir_from_args(args, default) -> PathBuf; token_owner(file) -> Option<u32>;
+//!   choose_token_dir(listeners, env dir, default, owner_of) -> TokenDir; admin_token_dir(endpoint,
+//!   fallback) -> TokenDir; loopback_hint(endpoint, env, TokenDir) -> one line; /proc + ps parsers.
 //! PATHS: --data-dir X | --data-dir=X | -d X | ~/X | no flag -> default(--network | -n | mainnet);
-//!   token file owned by the listener uid -> accept | other uid -> reject | absent -> reject.
+//!   listener visible: candidate {DOLI_DATA_DIR | own dir | default} owned by its uid -> Owned,
+//!   other uid / absent -> Refused (no token); no listener -> Unidentified(env | default).
 //! INPUT PARTITIONS: argv in {long flag, =form, short flag, tilde, network long/=/short, none,
 //!   flag as argv[0]}; token file in {absent, own uid, other uid}; ps line in {spaced existing
 //!   dir, non-existing dir}; /proc rows in {LISTEN on port, connected on port, LISTEN other port};
@@ -63,20 +65,135 @@ fn data_dir_from_args_follows_the_node_rule() {
     assert_eq!(d(&["--data-dir"]), net_default("mainnet"));
 }
 
-/// Decision: a failure means a local user who forges `--data-dir` on a free port gets
-/// another node's token from a root CLI (uid mismatch must reject).
+/// Decision: a failure means the uid check reads the wrong owner, so a squatter's uid can
+/// match a token file it does not own.
 #[cfg(unix)]
 #[test]
-fn listener_accepted_only_when_its_uid_owns_the_token_file() {
+fn token_owner_reads_the_file_owner() {
     let dir = TempDir::new().unwrap();
     let uid = my_uid(dir.path());
-    assert!(!accept_listener(uid, dir.path()), "no token file -> reject");
-    std::fs::write(dir.path().join("rpc-admin.token"), "t\n").unwrap();
-    assert!(accept_listener(uid, dir.path()));
-    assert!(
-        !accept_listener(uid.wrapping_add(1), dir.path()),
-        "uid mismatch"
+    let file = dir.path().join("rpc-admin.token");
+    assert_eq!(token_owner(&file), None, "no token file");
+    std::fs::write(&file, "t\n").unwrap();
+    assert_eq!(token_owner(&file), Some(uid));
+}
+
+fn seen(uid: u32, dir: &str) -> SeenListener {
+    SeenListener {
+        uid,
+        dir: PathBuf::from(dir),
+    }
+}
+
+/// owner_of over a fixed (token file -> uid) table.
+fn owners(table: &'static [(&'static str, u32)]) -> impl Fn(&Path) -> Option<u32> {
+    move |f: &Path| {
+        let f = f.parent().unwrap().to_str().unwrap().to_string();
+        table.iter().find(|(d, _)| *d == f).map(|(_, u)| *u)
+    }
+}
+
+/// INC-I-308 run 737 F1 — Decision: a failure means a visible listener of uid X gets a token
+/// file owned by uid Y (root's default-dir token reached an unprivileged fake listener on Linux).
+#[test]
+fn visible_listener_gets_only_a_token_file_its_uid_owns() {
+    let def = || PathBuf::from("/var/lib/doli/mainnet");
+    let env = || Some(PathBuf::from("/env/data"));
+    let refused = |o: Option<u32>, f: &str| TokenDir::Refused {
+        uid: 1000,
+        file: PathBuf::from(f).join("rpc-admin.token"),
+        owner: o,
+    };
+    // listener uid 1000, every candidate file owned by root (0): no token at all
+    let root_owned = owners(&[("/var/lib/doli/mainnet", 0), ("/fake", 0), ("/env/data", 0)]);
+    let got = choose_token_dir(&[seen(1000, "/fake")], None, def(), &root_owned);
+    assert_eq!(got.dir(), None, "default dir must not be sent: {got:?}");
+    assert_eq!(got, refused(Some(0), "/fake"));
+    let got = choose_token_dir(&[seen(1000, "/fake")], env(), def(), &root_owned);
+    assert_eq!(
+        got,
+        refused(Some(0), "/env/data"),
+        "DOLI_DATA_DIR is uid-checked too"
     );
+    let got = choose_token_dir(&[seen(1000, "/fake")], None, def(), owners(&[]));
+    assert_eq!(got, refused(None, "/fake"), "no token file anywhere");
+    // the listener's uid owns a candidate: that one is used
+    let mine = owners(&[
+        ("/n1", 1000),
+        ("/var/lib/doli/mainnet", 1000),
+        ("/env/data", 1000),
+    ]);
+    let got = choose_token_dir(&[seen(1000, "/n1")], None, def(), &mine);
+    assert_eq!(got, TokenDir::Owned(PathBuf::from("/n1")));
+    let got = choose_token_dir(&[seen(1000, "/n2")], None, def(), &mine);
+    assert_eq!(
+        got,
+        TokenDir::Owned(def()),
+        "default dir owned by the listener uid"
+    );
+    let got = choose_token_dir(&[seen(1000, "/n1")], env(), def(), &mine);
+    assert_eq!(got, TokenDir::Owned(PathBuf::from("/env/data")));
+    // two visible listeners of different uids: no file is owned by both
+    let got = choose_token_dir(&[seen(1000, "/n1"), seen(1001, "/n1")], None, def(), &mine);
+    assert_eq!(got.dir(), None, "mixed-uid listeners: {got:?}");
+    // no listener visible: unverified fallback, as before
+    let got = choose_token_dir(&[], None, def(), owners(&[]));
+    assert_eq!(got, TokenDir::Unidentified(def()));
+    let got = choose_token_dir(&[], env(), def(), owners(&[]));
+    assert_eq!(got, TokenDir::Unidentified(PathBuf::from("/env/data")));
+}
+
+/// INC-I-308 run 737 F1+F2 — Decision: a failure means a hint blames the wrong cause: it names
+/// the default file as the node's when no listener is visible, or hides that the port's process
+/// was refused.
+#[test]
+fn loopback_hint_names_the_cause_per_lookup_result() {
+    let url = "http://127.0.0.1:18621";
+    let file = PathBuf::from("/var/lib/doli/mainnet/rpc-admin.token");
+    let h = loopback_hint(
+        url,
+        None,
+        &TokenDir::Unidentified(file.parent().unwrap().into()),
+    );
+    assert!(
+        h.contains("could not identify the node on port 18621"),
+        "{h}"
+    );
+    assert!(h.contains("not verified as that node's token file"), "{h}");
+    assert!(!h.contains("of the node listening"), "{h}");
+    assert!(
+        h.contains("run with sudo") && h.contains("DOLI_DATA_DIR"),
+        "{h}"
+    );
+    let refused = TokenDir::Refused {
+        uid: 1000,
+        file: file.clone(),
+        owner: Some(0),
+    };
+    let h = loopback_hint(url, None, &refused);
+    assert!(
+        h.contains("process on port 18621 (uid 1000) is not owned by the owner of the token file"),
+        "{h}"
+    );
+    assert!(
+        h.contains("owner uid 0") && h.contains("sent no token"),
+        "{h}"
+    );
+    let h = loopback_hint(url, Some("short"), &refused);
+    assert!(h.contains("shorter than 32"), "{h}");
+    let h = loopback_hint(url, None, &TokenDir::Owned(file.parent().unwrap().into()));
+    assert!(
+        h.contains(&file.display().to_string()) && h.contains("run with sudo"),
+        "{h}"
+    );
+    for td in [
+        TokenDir::Owned("/a".into()),
+        TokenDir::Unidentified("/a".into()),
+        refused,
+    ] {
+        let h = loopback_hint(url, None, &td);
+        assert_eq!(h.trim_end().lines().count(), 1, "{h:?}");
+    }
 }
 
 /// Decision: a failure means a ps line with a data dir that has spaces (macOS default
@@ -140,7 +257,7 @@ fn finds_a_real_listener_and_its_data_dir() {
         .unwrap();
     let port: u16 = line.trim().parse().unwrap();
     let found = find_listeners(port);
-    let got = listener_data_dir(port, &net_default);
+    let got = choose_token_dir(&port_listeners(port), None, net_default("x"), token_owner);
     let _ = child.kill();
     let _ = child.wait();
     assert!(
@@ -149,7 +266,41 @@ fn finds_a_real_listener_and_its_data_dir() {
         child.id()
     );
     assert_eq!(
-        got.map(|p| p.canonicalize().unwrap()),
+        got.dir().map(|p| p.canonicalize().unwrap()),
         Some(dir.path().canonicalize().unwrap())
+    );
+}
+
+/// INC-I-308 run 737 F1 — Decision: a failure means a real listener refused by the uid rule
+/// still gets the fallback dir's token (red on 3508d861: `admin_data_dir` returned the fallback).
+#[cfg(unix)]
+#[test]
+fn refused_real_listener_gets_no_fallback_dir() {
+    use std::io::BufRead;
+    let own = TempDir::new().unwrap();
+    let fallback = TempDir::new().unwrap();
+    let script = "import socket,time\ns=socket.socket()\ns.bind(('127.0.0.1',0))\ns.listen(1)\nprint(s.getsockname()[1],flush=True)\ntime.sleep(30)";
+    let Ok(mut child) = std::process::Command::new("python3")
+        .args(["-c", script, "--data-dir"])
+        .arg(own.path())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+    else {
+        eprintln!("python3 not available; skipped");
+        return;
+    };
+    let mut line = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let port: u16 = line.trim().parse().unwrap();
+    let fb = fallback.path().to_path_buf();
+    let got = choose_token_dir(&port_listeners(port), None, fb, token_owner);
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(
+        got.dir(),
+        None,
+        "refused listener on port {port} -> {got:?}"
     );
 }

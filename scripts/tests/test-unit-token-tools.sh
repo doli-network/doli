@@ -7,7 +7,7 @@
 # pauses the node anyway / gets a hint that names the wrong file.
 # OUTPUT CONTRACT: per tool — exit code, stdout+stderr (no -32008, no token); node state via the
 # public getGuardianStatus (production_paused); node.log and `ps -axo command` (no token).
-# INPUT PARTITIONS: caller in {can read the token file, cannot read it (chmod 000)};
+# INPUT PARTITIONS: caller in {can read the token file, cannot read it (chmod 000; as root: user nobody)};
 #   tool in {doli guardian halt, doli guardian resume, doli chain-verify, shell helper, Python helper}.
 # SAFETY: one scratch testnet node (own temp data dir, own ports, no bootstrap, loopback shim),
 # stopped by its own PID at exit. Nothing under ~/testnet is touched.
@@ -83,13 +83,28 @@ pycall pauseProduction; [ "$(paused)" = True ] && pass "5 Python helper paused t
 pycall resumeProduction
 
 # Negative: the caller cannot read the token file (non-root user vs a root-owned file).
-if [ -e "$DATA/rpc-admin.token" ]; then chmod 000 "$DATA/rpc-admin.token"; fi
-tool neg "$CLI_BIN" -r "$URL" guardian halt --yes; rc=$?
-[ $rc != 0 ] && pass "6 unreadable token file -> halt exits non-zero" || fail "6 unreadable token file -> halt exits non-zero"
-grep -q -- -32008 "$T/out/neg" && grep -qF "$DATA/rpc-admin.token" "$T/out/neg" && grep -q "run with sudo" "$T/out/neg" \
-  && pass "6 -32008 hint names the node's token file and sudo" \
-  || fail "6 -32008 hint names the node's token file and sudo" "$(grep -m1 hint "$T/out/neg" | cut -c1-300)"
-[ "$(paused)" = False ] && pass "6 nothing paused without the token" || fail "6 nothing paused without the token"
+# Root ignores chmod 000, so as root the CLI runs as user nobody; a nobody CLI may not see
+# root's listener (Linux /proc fds), and then the hint says it could not identify the node.
+NEG_AS=(); NEG_HINT="$DATA/rpc-admin.token"; NEG_SKIP=""
+if [ "$(id -u)" = 0 ]; then
+  if command -v runuser >/dev/null 2>&1 && id nobody >/dev/null 2>&1; then NEG_AS=(runuser -u nobody --)
+  elif command -v sudo >/dev/null 2>&1 && id nobody >/dev/null 2>&1; then NEG_AS=(sudo -n -u nobody --)
+  else NEG_SKIP="running as root and no runuser/sudo + user nobody to drop privileges"; fi
+  [ -z "$NEG_SKIP" ] && ! "${NEG_AS[@]}" "$CLI_BIN" --version >/dev/null 2>&1 \
+    && NEG_SKIP="user nobody cannot run $CLI_BIN"
+fi
+if [ -n "$NEG_SKIP" ]; then
+  echo "SKIP 6 unreadable token file — $NEG_SKIP"
+else
+  if [ -e "$DATA/rpc-admin.token" ]; then chmod 000 "$DATA/rpc-admin.token"; fi
+  tool neg ${NEG_AS[@]+"${NEG_AS[@]}"} "$CLI_BIN" -r "$URL" guardian halt --yes; rc=$?
+  [ $rc != 0 ] && pass "6 unreadable token file -> halt exits non-zero" || fail "6 unreadable token file -> halt exits non-zero"
+  if [ ${#NEG_AS[@]} -gt 0 ] && ! grep -qF "$NEG_HINT" "$T/out/neg"; then NEG_HINT="could not identify the node on port $RPC"; fi
+  grep -q -- -32008 "$T/out/neg" && grep -qF "$NEG_HINT" "$T/out/neg" && grep -q "run with sudo" "$T/out/neg" \
+    && pass "6 -32008 hint names the node's token file (or the unidentified port) and sudo" \
+    || fail "6 -32008 hint names the node's token file (or the unidentified port) and sudo" "$(grep -m1 hint "$T/out/neg" | cut -c1-300)"
+  [ "$(paused)" = False ] && pass "6 nothing paused without the token" || fail "6 nothing paused without the token"
+fi
 
 kill "$PSPID" 2>/dev/null; wait "$PSPID" 2>/dev/null; PSPID=""
 grep -qF "$TOK" "$T"/out/* && fail "7 token absent from tool output" "$(grep -lF "$TOK" "$T"/out/* | xargs -n1 basename | tr '\n' ' ')" || pass "7 token absent from tool output"
