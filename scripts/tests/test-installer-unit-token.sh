@@ -5,7 +5,9 @@
 # refused), adds an entry a unit never had, or prints the token.
 # OUTPUT CONTRACT: rewritten unit text (token line present once, inside [Service], byte-equal) and
 # installer stdout/stderr (no token) for `install-services.sh mainnet` and `validate`.
-# INPUT PARTITIONS: old unit in {quoted Environment="...", unquoted Environment=..., no token line}.
+# INPUT PARTITIONS: old unit in {quoted Environment="...", unquoted Environment=..., no token line,
+# two token lines (systemd uses the LAST assignment): quoted then unquoted, unquoted then quoted,
+# token-only line then a multi-variable Environment= line}.
 # Runs the real installer with fake ssh/sudo/systemctl that act on a temp dir.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
@@ -34,6 +36,14 @@ old_unit() { printf '[Unit]\nDescription=old\n\n[Service]\nType=simple\n%s\nExec
 old_unit "$LINE_Q" > "$T/units/doli-mainnet-n1.service"
 old_unit "$LINE_U" > "$T/units/doli-mainnet-seed.service"
 old_unit "" > "$T/units/doli-mainnet-n2.service"
+OLD_TOK="0ld0verridden0000000000000000000000000000000000000000000000000000"
+EFF_TOK="eff3ct1ve000000000000000000000000000000000000000000000000000000ee"
+LINE_EFF_U="Environment=DOLI_RPC_ADMIN_TOKEN=$EFF_TOK"
+LINE_EFF_Q="Environment=\"DOLI_RPC_ADMIN_TOKEN=$EFF_TOK\""
+LINE_EFF_M="Environment=RUST_LOG=info DOLI_RPC_ADMIN_TOKEN=$EFF_TOK"
+old_unit "$(printf '%s\n%s' "Environment=\"DOLI_RPC_ADMIN_TOKEN=$OLD_TOK\"" "$LINE_EFF_U")" > "$T/units/doli-mainnet-n3.service"
+old_unit "$(printf '%s\n%s' "Environment=DOLI_RPC_ADMIN_TOKEN=$OLD_TOK" "$LINE_EFF_Q")" > "$T/units/doli-mainnet-n4.service"
+old_unit "$(printf '%s\n%s' "Environment=DOLI_RPC_ADMIN_TOKEN=$OLD_TOK" "$LINE_EFF_M")" > "$T/units/doli-mainnet-n5.service"
 
 export DOLI_AI1=u@h1 DOLI_AI2=u@h2 DOLI_AI3=u@h3 DOLI_AI4=u@h4 DOLI_AI5=u@h5
 PATH="$T/fake:$PATH" bash scripts/install-services.sh mainnet > "$T/out" 2>&1
@@ -56,7 +66,10 @@ check() {
 check doli-mainnet-n1 "$LINE_Q" "a quoted"
 check doli-mainnet-seed "$LINE_U" "b unquoted"
 check doli-mainnet-n2 "" "c none"
-if grep -qE "$TOK_Q|$TOK_U" "$T/out"; then fail "d installer output never shows a token"; else pass "d installer output never shows a token"; fi
+check doli-mainnet-n3 "$LINE_EFF_U" "f two lines, quoted then unquoted: last"
+check doli-mainnet-n4 "$LINE_EFF_Q" "g two lines, unquoted then quoted: last"
+check doli-mainnet-n5 "$LINE_EFF_M" "h two lines, last is multi-variable: last"
+if grep -qE "$TOK_Q|$TOK_U|$OLD_TOK|$EFF_TOK" "$T/out"; then fail "d installer output never shows a token"; else pass "d installer output never shows a token"; fi
 grep -q 'MISMATCH.*doli-mainnet-n1 ' "$T/out" && fail "e validate ignores the carried token line" || pass "e validate ignores the carried token line"
 
 echo "---"

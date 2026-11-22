@@ -200,9 +200,9 @@ install_remote() {
   echo "  Installed ${service_name} on ${server}"
 }
 
-# Remote: write the unit from stdin to $1, carrying the old unit's admin-token Environment line
-# into [Service]. The token moves through a shell variable and builtins only (never argv/stdout).
-UNIT_WRITE_REMOTE='f="$1"; tok=$(sudo grep -E "^[[:space:]]*Environment[=].*DOLI_RPC_ADMIN_TOKEN[=]" "$f" 2>/dev/null | head -n 1); while IFS= read -r l || [ -n "$l" ]; do printf "%s\n" "$l"; if [ "$l" = "[Service]" ] && [ -n "$tok" ]; then printf "%s\n" "$tok"; fi; done | sudo tee "$f" > /dev/null'
+# Remote: write the unit from stdin to $1, carrying the old unit's LAST admin-token Environment line
+# (systemd applies the last assignment) into [Service], once. The token moves through a shell variable and builtins only (never argv/stdout).
+UNIT_WRITE_REMOTE='f="$1"; tok=$(sudo grep -E "^[[:space:]]*Environment[=].*DOLI_RPC_ADMIN_TOKEN[=]" "$f" 2>/dev/null | tail -n 1); while IFS= read -r l || [ -n "$l" ]; do printf "%s\n" "$l"; if [ "$l" = "[Service]" ] && [ -n "$tok" ]; then printf "%s\n" "$tok"; fi; done | sudo tee "$f" > /dev/null'
 
 
 # ── SSH wrapper ───────────────────────────────────────────────────────
