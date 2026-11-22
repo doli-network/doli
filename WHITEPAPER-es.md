@@ -12,7 +12,7 @@
 
 Proponemos un sistema de efectivo electrónico peer-to-peer donde el único recurso requerido para el consenso es el tiempo — el único recurso distribuido equitativamente entre todos los participantes.
 
-La produccion de bloques es un round-robin determinista sobre la lista de productores activos congelada en cada limite de epoch — como maximo 50 productores, ordenados por antiguedad de registro y filtrados por actividad en cada epoch — y cada productor de la lista recibe el mismo numero de slots sin importar su conteo de bonds. El protocolo distribuye recompensas en cada limite de epoch a traves de un pool integrado a todos los productores calificados, proporcional al peso bondeado — sin pools de mineria externos, sin operadores, sin comisiones. La frecuencia de produccion no afecta las ganancias, y ningun productor espera su turno para ganar. Las recompensas se reinvierten en stake productivo, creando un crecimiento exponencial predecible para cada participante sin importar su tamano.
+La produccion de bloques es un round-robin determinista sobre la lista de productores activos congelada en cada limite de epoch — como maximo 50 productores, filtrados por actividad en cada epoch y asignados a sus puestos por antiguedad de registro (un cambio planificado los asigna por bond) — y cada productor de la lista recibe el mismo numero de slots sin importar su conteo de bonds. El protocolo distribuye recompensas en cada limite de epoch a traves de un pool integrado a todos los productores calificados, proporcional al peso bondeado — sin pools de mineria externos, sin operadores, sin comisiones. La frecuencia de produccion no afecta las ganancias, y ningun productor espera su turno para ganar. Las recompensas se reinvierten en stake productivo, creando un crecimiento exponencial predecible para cada participante sin importar su tamano.
 
 Un nuevo productor que recibe 10 DOLI puede reinvertir las recompensas de bloques para duplicar su stake a intervalos regulares. La tasa de duplicacion es identica para todos los participantes — uno o tres mil bonds. La presencia continua se demuestra mediante attestations de actividad on-chain — los productores que estan en linea y siguiendo la cadena califican para su parte. Sin loteria. Sin varianza. Sin pools. Solo tiempo.
 
@@ -87,7 +87,7 @@ Una transaccion es valida si:
 3. La suma de las entradas es mayor o igual a la suma de las salidas.
 4. Todos los montos son positivos.
 
-La diferencia entre entradas y salidas constituye la comision para el productor del bloque.
+La diferencia entre entradas y salidas es la comision. Las comisiones se destruyen (Seccion 10.6); no se pagan al productor del bloque.
 
 ### 2.2. Estructura de salidas
 
@@ -148,13 +148,15 @@ Condition := Signature(pubkey_hash)
            | AmountGuard(min_amount, output_index)
            | OutputTypeGuard(expected_type, output_index)
            | RecipientGuard(pubkey_hash, output_index)
+           | MaxDeltaGuard(max_change_bps, reference_amount, output_index)
+           | ReserveRatioGuard(min_ratio_bps, reserve_output_index, debt_output_index)
 ```
 
 **Codificacion:** Las condiciones se serializan en `extra_data` como un formato binario compacto. Para transferencias basicas, `extra_data` esta vacio — la condicion por defecto es `Signature(owner)`.
 
 **Costo de verificacion:** Cada condicion se resuelve en un numero fijo de operaciones criptograficas (verificaciones de firma, comparaciones de hash, comparaciones de altura). Sin bucles. Sin recursion. Sin computacion ilimitada. El costo de verificacion se conoce antes de la ejecucion.
 
-**Introspeccion de transacciones (guards).** Las ultimas tres primitivas — `AmountGuard`, `OutputTypeGuard`, `RecipientGuard` — son las unicas condiciones que leen la transaccion que *gasta* (no solo el UTXO que se gasta). Cada una inspecciona exactamente una salida de la tx gastadora, identificada por `output_index`, y verifica una propiedad: monto minimo, tipo de salida, o pubkey_hash del destinatario. Habilitan patrones que la logica de firma pura no puede: ordenes limite (`AmountGuard` exige un minimo recibido), anti-redireccion en reclamos de bridge (`OutputTypeGuard` fuerza los fondos a una forma especifica de salida), y pagos condicionales (`RecipientGuard` fija el destino). Preservan la propiedad de costo fijo sin bucles porque cada guard es una sola comparacion de campo.
+**Introspeccion de transacciones (guards).** Las ultimas cinco primitivas — `AmountGuard`, `OutputTypeGuard`, `RecipientGuard`, `MaxDeltaGuard`, `ReserveRatioGuard` — son las unicas condiciones que leen la transaccion que *gasta* (no solo el UTXO que se gasta). Cada una inspecciona salidas de la tx gastadora identificadas por indice y verifica una propiedad: monto minimo, tipo de salida, pubkey_hash del destinatario, desviacion maxima del monto de una salida respecto a un monto de referencia (en puntos basicos), o una razon minima de reserva a deuda entre dos salidas. Habilitan patrones que la logica de firma pura no puede: ordenes limite (`AmountGuard` exige un minimo recibido), anti-redireccion en reclamos de bridge (`OutputTypeGuard` fuerza los fondos a una forma especifica de salida), pagos condicionales (`RecipientGuard` fija el destino), y rebalanceo acotado (`MaxDeltaGuard`, `ReserveRatioGuard`). Preservan la propiedad de costo fijo sin bucles porque cada guard es un numero fijo de comparaciones de campo.
 
 ### 3.3. Tipos de salida nativos
 
@@ -169,7 +171,8 @@ Cada tipo de salida es un patron nombrado sobre el lenguaje de condiciones:
 | HTLC | `(Hashlock(h) AND Timelock(t)) OR TimelockExpiry(t+d)` | Canales de pago |
 | Escrow* | `Threshold(2, [buyer, seller, arbiter])` | Comercio sin confianza |
 | Vesting | `Signature(owner) AND Timelock(unlock_height)` | Asignaciones con bloqueo temporal |
-| UniqueAsset | `Condition + [token_id, content_hash]` | Tokens no fungibles |
+| UniqueAsset | `Condition + [token_id, content_hash]` | Tokens no fungibles (solo tokens existentes; ver 3.4) |
+| EncryptedContent | `[ciphertext, wrapped_key, nonce, content_hash]` | Objetos digitales privados (reemplaza las nuevas acunaciones de NFT) |
 | FungibleAsset | `Condition + [asset_id, supply, ticker]` | Tokens emitidos por usuarios |
 | BridgeHTLC | `HTLC + [target_chain, target_address]` | Puentes entre cadenas |
 
@@ -193,6 +196,8 @@ extra_data = [condition_bytes][version][token_id][content_hash_len][content_hash
 
 **Sin registro, sin contrato, sin estado global.** El NFT existe enteramente dentro del UTXO que lo porta. La indexacion es responsabilidad del lector — el protocolo valida estructura y condiciones, nada mas.
 
+**Estado actual: el contenido privado reemplaza las nuevas acunaciones.** En la cadena actual el protocolo rechaza nuevas salidas UniqueAsset. Los nuevos objetos digitales se acunan como salidas `EncryptedContent`: el contenido se almacena cifrado (ciphertext, una clave envuelta, un nonce y un hash de contenido), de modo que la cadena prueba la propiedad y la integridad sin publicar el objeto en si. El formato UniqueAsset anterior sigue definido para que las reglas de identidad y transferencia sigan siendo legibles.
+
 ### 3.5. Tokens emitidos por usuarios (FungibleAsset)
 
 Una salida FungibleAsset representa un token emitido por un usuario con suministro fijo. El campo `extra_data` almacena la condicion de gasto seguida de metadatos del activo:
@@ -205,7 +210,7 @@ extra_data = [condition_bytes][version][asset_id][total_supply][ticker_len][tick
 
 **Suministro fijo.** El suministro total se establece en la emision y se codifica en cada UTXO que porta el token. El protocolo no impone invariantes de suministro entre UTXOs — esa es responsabilidad del indexador. Lo que el protocolo impone: la estructura de `extra_data` es valida, la condicion es satisfacible, y la salida sigue las reglas estandar de UTXO.
 
-**Ticker.** Hasta 16 caracteres ASCII. `DOGEOLI`, `STBL`, `GOLD` — el ticker es metadatos para legibilidad humana, almacenado en cadena y consultable a traves del RPC.
+**Ticker.** De 1 a 12 caracteres ASCII. `DOGEOLI`, `STBL`, `GOLD` — el ticker es metadatos para legibilidad humana, almacenado en cadena y consultable a traves del RPC.
 
 **Lo que esto permite:** meme coins, stablecoins, puntos de lealtad, valores tokenizados, monedas de juegos — cualquier escenario donde se necesite un token fungible de suministro fijo. El token vive en la misma cadena que DOLI, validado por los mismos productores, a la misma velocidad. Sin sidechain, sin puente, sin wrapper.
 
@@ -214,10 +219,10 @@ extra_data = [condition_bytes][version][asset_id][total_supply][ticker_len][tick
 Una salida BridgeHTLC es un HTLC estandar con metadatos de enrutamiento para atomic swaps entre cadenas. El campo `extra_data` almacena la condicion HTLC seguida de metadatos del puente:
 
 ```
-extra_data = [condition_bytes][version][target_chain][addr_len][target_address]
+extra_data = [condition_bytes][version=2][target_chain][addr_len][target_address][counter_hash]
 ```
 
-La condicion es siempre un HTLC: `(Hashlock(h) AND Timelock(t)) OR TimelockExpiry(t+d)`. Los metadatos indican a las contrapartes en que cadena bloquear y donde.
+La condicion es siempre un HTLC: `(Hashlock(h) AND Timelock(t)) OR TimelockExpiry(t+d)`. Los metadatos indican a las contrapartes en que cadena bloquear y donde. El hashlock propio de DOLI usa un hash BLAKE3 con separacion de dominio, que otras cadenas no pueden computar en script, por lo que la salida tambien porta un `counter_hash` de 32 bytes: el hash del mismo secreto en la forma que entiende la cadena destino (SHA-256 para Bitcoin, Keccak-256 para Ethereum).
 
 **Cadenas soportadas:**
 
@@ -233,10 +238,10 @@ La condicion es siempre un HTLC: `(Hashlock(h) AND Timelock(t)) OR TimelockExpir
 **Protocolo de atomic swap:**
 
 ```
-1. Alice (DOLI) genera secreto S, computa H = BLAKE3(S)
-2. Alice bloquea X DOLI en BridgeHTLC(H, lock=L, expiry=E, chain=Bitcoin, to=Bob_BTC)
-3. Bob ve el bloqueo en la cadena DOLI, verifica H
-4. Bob bloquea Y BTC en Bitcoin HTLC con el mismo hash H, expiracion mas corta
+1. Alice (DOLI) genera secreto S, computa H = BLAKE3_hashlock(S) y H' = SHA256(S)
+2. Alice bloquea X DOLI en BridgeHTLC(H, lock=L, expiry=E, chain=Bitcoin, to=Bob_BTC, counter_hash=H')
+3. Bob ve el bloqueo en la cadena DOLI, lee H'
+4. Bob bloquea Y BTC en un HTLC de Bitcoin sobre H', expiracion mas corta
 5. Alice reclama los BTC de Bob revelando S en Bitcoin
 6. Bob lee S de Bitcoin, reclama los DOLI de Alice revelando S en DOLI
 7. Si Bob nunca bloquea → Alice reembolsa despues de E
@@ -274,9 +279,9 @@ Esto previene un problema circular: un testigo de Signature debe firmar un hash 
 - **Custodia multipartita:** Tesorias corporativas, DAOs, herencias — cualquier escenario que requiera autorizacion N-de-M.
 - **Deposito en garantia sin confianza:** Comprador, vendedor y arbitro cada uno posee una clave. Cualquier par puede liberar los fondos.
 - **Calendarios de vesting:** Salidas con bloqueo temporal para asignaciones de equipo, subvenciones u obligaciones contractuales.
-- **NFTs nativos:** Arte digital, tokens de identidad, certificados — activos unicos con condiciones de gasto componibles, sin despliegue de contratos.
+- **Objetos digitales nativos:** Arte digital, tokens de identidad, certificados — activos unicos poseidos en cadena con su contenido mantenido privado (EncryptedContent), sin despliegue de contratos.
 - **Tokens emitidos por usuarios:** Meme coins, stablecoins, puntos de lealtad — tokens de suministro fijo en la capa base, sin necesidad de sidechain.
-- **Puentes entre cadenas:** Atomic swaps sin confianza con Bitcoin, Ethereum, Monero, Litecoin y Cardano. Sin comite de puente, sin tokens envueltos, sin riesgo custodial.
+- **Puentes entre cadenas:** Atomic swaps sin confianza con Bitcoin, Ethereum, Monero, Litecoin, Cardano y BSC. Sin comite de puente, sin tokens envueltos, sin riesgo custodial.
 
 **Sin estado mutable compartido:**
 
@@ -284,7 +289,7 @@ Cada salida es independiente. Gastar una salida no puede afectar a otra. No hay 
 
 ### 3.9. Primitivos DeFi nativos
 
-DOLI implementa operaciones DeFi centrales como tipos de transaccion nativos en lugar de contratos ejecutados en una VM. Los creadores de mercado automatizados (CreatePool, AddLiquidity, RemoveLiquidity, Swap), prestamos (CreateLoan, RepayLoan, LiquidateLoan, LendingDeposit, LendingWithdraw) y fraccionalizacion de NFTs (FractionalizeNft, RedeemNft) estan compilados en el binario del nodo como transiciones de estado validadas.
+DOLI implementa operaciones DeFi centrales como tipos de transaccion nativos en lugar de contratos ejecutados en una VM. Los creadores de mercado automatizados (CreatePool, AddLiquidity, RemoveLiquidity, Swap) estan compilados en el binario del nodo como transiciones de estado validadas y estan activos en la cadena actual. Los prestamos (CreateLoan, RepayLoan, LiquidateLoan, LendingDeposit, LendingWithdraw) y la fraccionalizacion de NFTs (FractionalizeNft, RedeemNft) fueron retirados: sus tipos de transaccion estan marcados como tombstone y no pueden construirse.
 
 **MEV — divulgacion honesta.** El protocolo no afirma estar libre de MEV.
 
@@ -297,13 +302,13 @@ DOLI implementa operaciones DeFi centrales como tipos de transaccion nativos en 
 - *Techo de rendimiento por pool.* Solo un Swap contra un UTXO de pool dado puede entrar por bloque. Los pools con trafico alto se serializan en ~8,640 swaps/dia por pool en la Era 0. El sharding mediante multiples UTXOs de pool por par o la liquidacion L2 es la respuesta arquitectonica.
 - *Sin replace-by-fee.* Una transaccion atascada no puede ser reemplazada por una version con tarifa mas alta. Child-pays-for-parent (CPFP) funciona como solucion parcial.
 
-**Liquidacion L2.** Para aplicaciones que requieren computacion arbitraria, DOLI soporta liquidacion de rollups L2 sin permisos mediante transacciones `ZKSettle` que verifican pruebas de conocimiento cero contra una `verifying_key` comprometida en una salida `ZKRollup`. Cada rollup es su propio dominio de confianza — sin registro gobernado por maintainers.
+**Liquidacion L2 (planificada).** Para aplicaciones que requieren computacion arbitraria, DOLI define liquidacion de rollups L2 sin permisos mediante transacciones `ZKSettle` que verifican pruebas de conocimiento cero contra una `verifying_key` comprometida en una salida `ZKRollup`. Cada rollup es su propio dominio de confianza — sin registro gobernado por maintainers. La interfaz y la especificacion estan publicadas; la liquidacion permanece desactivada hasta que se seleccione un sistema de pruebas y se fije una altura de activacion.
 
 ### 3.10. Lo que esto no permite
 
 Las salidas de DOLI no pueden mantener estado compartido persistente entre transacciones. No hay almacenamiento en cadena, no hay bucles, no hay computacion arbitraria. Esto es deliberado. Las aplicaciones que requieren estado compartido complejo mas alla de los primitivos nativos anteriores pertenecen a cadenas L2 que liquidan en DOLI mediante el mecanismo ZKSettle.
 
-La capa base proporciona: **transferencia de valor, ordenamiento anclado al tiempo, condiciones de gasto programables, activos nativos, liquidacion entre cadenas sin confianza, AMM/prestamos nativos y verificacion de rollups L2.** Todo lo demas se construye encima.
+La capa base proporciona: **transferencia de valor, ordenamiento anclado al tiempo, condiciones de gasto programables, activos nativos, liquidacion entre cadenas sin confianza y pools AMM nativos — con verificacion de rollups L2 planificada.** Todo lo demas se construye encima.
 
 ---
 
@@ -395,7 +400,7 @@ Input: prev_hash ∥ slot ∥ producer_key
 La red define el tiempo de la siguiente manera:
 
 ```
-GENESIS_TIME = 2026-04-22T05:58:30Z (UTC)
+GENESIS_TIME = 2026-07-22T10:45:00Z (UTC)
 ```
 
 Un slot es 10 segundos. Un numero de slot se deriva deterministicamente de la marca de tiempo:
@@ -455,22 +460,15 @@ Un bloque *B* es valido si:
 
 ### 6.2. Sincronizacion de reloj
 
-El consenso depende de que los nodos tengan relojes razonablemente sincronizados. Los nodos se sincronizan mediante:
+El consenso depende de que los nodos tengan relojes razonablemente sincronizados. El nodo lee el reloj del sistema operativo; los operadores mantienen ese reloj sincronizado con NTP a nivel del sistema. El protocolo no promedia los relojes de los pares — un par no puede arrastrar la nocion de tiempo de un nodo.
 
-- Servidores NTP
-- Desplazamiento mediano de los pares conectados
-
-```
-network_time = local_clock + median(peer_offsets)
-```
-
-Los bloques con marcas de tiempo fuera de la ventana aceptable son rechazados.
+La deriva permitida es estrecha (`MAX_DRIFT` = 1 segundo). Los bloques con marcas de tiempo fuera de la ventana aceptable son rechazados; un bloque que esta solo ligeramente adelantado respecto al reloj local se retiene y se vuelve a verificar cuando llega su momento en lugar de descartarse.
 
 ### 6.3. Rendimiento
 
 Con tiempos de bloque de 10 segundos y un tamano base de bloque de 2 MB (duplicandose cada era, con tope en 32 MB):
 
-| Metrica              | Era 1          | Era 2          | Era 4 (tope)   |
+| Metrica              | Era 1          | Era 2          | Era 5+ (tope)  |
 |----------------------|----------------|----------------|----------------|
 | Tiempo de bloque     | 10 segundos    | 10 segundos    | 10 segundos    |
 | Tamano maximo de bloque | 2 MB        | 4 MB           | 32 MB          |
@@ -506,10 +504,9 @@ output = HASH^T(input)    where T = T_REGISTER_BASE = 1,000 iterations
 
 Un registro es valido si:
 
-1. La prueba de retardo se verifica correctamente con `T_REGISTER_BASE` iteraciones.
-2. El epoch es el actual o el anterior.
-3. La clave publica no esta ya registrada.
-4. El bond de activacion esta incluido.
+1. La prueba de retardo se verifica correctamente con `T_REGISTER_BASE` iteraciones sobre la entrada anterior.
+2. La clave publica no esta ya registrada ni pendiente de activacion.
+3. El bond de activacion esta incluido.
 
 Desde su altura de activacion, un `Registration`, un `AddBond` o un `RequestWithdrawal` es valido solo con la firma del productor que nombra. Un tercero no puede registrar la clave de otro, agregar bonds a nombre de otro productor ni retirar el bond de otro productor, asi que nadie puede forzar la salida de un productor del conjunto.
 
@@ -551,7 +548,7 @@ MIN_STAKE = 1 × BOND_UNIT (10 DOLI)
 MAX_STAKE = 3,000 × BOND_UNIT (30,000 DOLI)
 ```
 
-La produccion de bloques utiliza scheduling round-robin determinista sobre la lista de productores activos congelada en cada limite de epoch (como maximo 50 productores, ordenados por antiguedad de registro, filtrados por actividad en cada epoch). Cada productor de la lista recibe el mismo numero de slots sin importar su conteo de bonds. Los bonds no cambian la frecuencia de produccion; definen la participacion de cada productor en el pool de recompensas del epoch (Seccion 10.2), que se distribuye a todos los productores calificados en cada limite de epoch — asi ningun productor espera su turno para ganar.
+La produccion de bloques utiliza scheduling round-robin determinista sobre la lista de productores activos congelada en cada limite de epoch (como maximo 50 productores, filtrados por actividad en cada epoch; hoy los 50 puestos se asignan por antiguedad de registro, y un cambio planificado los llena por bond — Seccion 8.1). Cada productor de la lista recibe el mismo numero de slots sin importar su conteo de bonds. Los bonds no cambian la frecuencia de produccion; definen la participacion de cada productor en el pool de recompensas del epoch (Seccion 10.2), que se distribuye a todos los productores calificados en cada limite de epoch — asi ningun productor espera su turno para ganar.
 
 **Ejemplo (3 productores, 10 bonds totales):**
 
@@ -637,16 +634,19 @@ El protocolo utiliza un filtro de actividad basado en attestations aplicado en l
 
 **Filtrado por attestation.** En el limite de epoch, los productores que atestiguaron en cualquiera de los 3 epochs anteriores se retienen en el conjunto activo. Los productores con cero attestations en los 3 epochs son excluidos de la rotacion del siguiente epoch.
 
-**Piso de seguridad anti-deadlock.** Si el filtro de attestation dejaria menos de 2/3 de los productores activos, el filtro se omite y todos los productores se incluyen — previniendo la muerte de la cadena durante eventos masivos (caida de red, deploy coordinado).
+**Piso de seguridad anti-deadlock.** Si el filtro de attestation dejaria menos de 3 productores (`MIN_PRODUCERS_FLOOR`), el filtro recurre a una lista acotada — la lista del epoch anterior cuando es suficientemente grande, o si no los productores registrados en orden de antiguedad — nunca mas de `ACTIVE_PRODUCERS_CAP` — previniendo la muerte de la cadena durante eventos masivos (caida de red, deploy coordinado).
 
-**Promocion por tier.** Cuando el conjunto activo excede el `ACTIVE_PRODUCERS_CAP` (50), los productores se ordenan por tiempo de registro (mas antiguos primero). Los productores por debajo del umbral de attestation para el epoch recien completado son degradados y reemplazados por attestors calificados.
+**Seleccion de puestos (promocion por tier).** Cuando mas productores pasan el filtro que el `ACTIVE_PRODUCERS_CAP` (50), solo los productores con al menos 30 minutos de attestation (la mitad de los 60) en el epoch recien completado compiten por los 50 puestos. Hoy los puestos se llenan por tiempo de registro (mas antiguos primero). Los demas siguen siendo attestors: siguen atestiguando y siguen ganando sus recompensas de epoch ponderadas por bonds (Seccion 10.2), y entran a la lista cuando se abre un puesto. Si la seleccion de puestos dejaria menos de un tercio de los productores activos, todos los productores activos se programan para ese epoch.
+
+**Planificado: puestos por bond.** Un cambio de consenso planificado, en una altura de activacion futura, llena los 50 puestos por stake en lugar de antiguedad: entre los productores que pasan el filtro de 30 minutos, los 50 con mas bonds entran a la lista. El orden dentro de la lista sigue siendo por antiguedad, y cada productor de la lista sigue recibiendo exactamente un slot por rotacion — los bonds deciden quien ocupa un puesto, nunca cuantos slots recibe un puesto. Hasta que se fije la altura de activacion, aplica la seleccion por antiguedad.
 
 | Evento | Efecto |
 |--------|--------|
 | Limite de epoch | Lista activa reconstruida desde lookback de attestation de 3 epochs |
 | Productor atestigua en cualquiera de 3 epochs | Retenido en conjunto activo |
-| Cero attestations en 3 epochs | Excluido del siguiente epoch |
-| Filtro deja < 2/3 productores | Bypass: incluir todos (piso de seguridad) |
+| Cero attestations en 3 epochs | Excluido del siguiente epoch; vuelve con la siguiente attestation |
+| Filtro deja < 3 productores | Respaldo acotado a la lista anterior (piso de seguridad) |
+| Mas de 50 productores activos | 50 puestos: ≥ 30 minutos de attestation, luego antiguedad (por bonds: planificado) |
 
 El filtro de actividad es determinista: cada nodo computa el mismo `EpochState` en la misma altura de limite. El `EpochState` — incluyendo la lista activa, el snapshot de bonds y los acumuladores de attestation — se persiste atomicamente y se incluye en el state root para verificacion cross-nodo.
 
@@ -673,25 +673,17 @@ Cuando existen multiples cadenas validas, los nodos deben acordar cual seguir.
 
 ### 9.1. Eleccion de fork basada en peso
 
-La cadena canonica es la que tiene el mayor peso acumulado de productores:
+La cadena canonica es la rama respaldada por la mayor cantidad de stake bondeado. Cuando dos ramas compiten, cada una se pesa desde su ancestro comun:
 
 ```
-accumulated_weight(block) = accumulated_weight(parent) + producer_weight
+branch_weight = Σ bonds(p)  for each distinct producer p that supports the branch
 ```
 
-El peso del productor se deriva de la antiguedad:
+Un productor respalda una rama al producir uno de sus bloques o al atestiguar uno de ellos. Cada respaldante se cuenta **una sola vez**, sin importar cuantos bloques o attestations aporte — producir mas bloques en un fork privado no agrega peso, y dividir el stake entre muchas claves nuevas no agrega nada que los mismos bonds no agregarian bajo una sola clave. La eleccion de fork y la finalidad usan esta misma unidad.
 
-| Anos activo | Peso |
-|-------------|------|
-| 0           | 1.00 |
-| 1           | 1.75 |
-| 2           | 2.50 |
-| 3           | 3.25 |
-| 4+          | 4.00 |
+Anteriormente en la cadena actual, antes de la altura de activacion de esta regla, el peso de la rama se acumulaba por bloque a partir de la antiguedad del productor en pasos enteros: 1 para el primer ano de actividad, 2 para el segundo, 3 para el tercero, y 4 a partir de los tres anos.
 
-El peso sigue una formula continua: `peso = 1.0 + min(anos, 4) × 0.75`.
-
-Esto previene ataques donde un atacante crea muchos bloques de nuevos productores para superar una cadena construida por productores establecidos.
+Ambas reglas previenen ataques donde un atacante crea muchos bloques de nuevos productores para superar una cadena construida por productores establecidos.
 
 ---
 
@@ -747,16 +739,18 @@ La mitad BLS omite el slot a proposito: todo atestiguador de un bloque debe firm
 
 Las attestations se difunden por gossip. Cada productor registra un **bitfield** — un bit por productor — y una **firma BLS agregada** en el cuerpo del bloque, mas un compromiso de 32 bytes (`presence_root`) en la cabecera que enlaza ambos.
 
-Ese enlace solo se verifica a partir de `inc_i_178_attestation_bls_activation_height`, hoy sin fijar en ninguna red. Por debajo, el bitfield lo declara el productor y solo queda comprometido por hash: la cadena registra la afirmacion, no su veracidad. Por encima, el bit `i` se pone solo si ese productor firmo el hash del bloque padre y el agregado cubre exactamente esas firmas; cada validador vuelve a derivar el compromiso y lo verifica contra las claves BLS en cadena de los bits puestos. Un bit puesto que nadie firmo hace fallar la verificacion, y el bloque es rechazado.
+Ese enlace se verifica a partir de la altura de activacion de BLS en attestations, y esa altura ya paso en mainnet. Los bloques por debajo de ella llevan un bitfield declarado por el productor que solo queda comprometido por hash: la cadena registra la afirmacion, no su veracidad. A partir de ella, el bit `i` se pone solo si ese productor firmo el hash del bloque padre y el agregado cubre exactamente esas firmas; cada validador vuelve a derivar el compromiso y lo verifica contra las claves BLS en cadena de los bits puestos. Un bit puesto que nadie firmo hace fallar la verificacion, y el bloque es rechazado.
 
 La omision queda sin demostrar: el agregado respalda cada bit puesto pero no dice nada de uno dejado en cero, asi que un productor todavia puede borrar el bit de un par que si atestiguo — una brecha que se rastrea aparte.
 
 En el limite de epoch, cada nodo escanea los bitfields registrados en los bloques del epoch y cuenta los minutos de attestation por productor. Cada epoch abarca 60 minutos de attestation (uno por cada 6 slots). Dos umbrales distintos aplican:
 
 1. **Calificacion para recompensas de epoch (90%):** Un productor debe atestiguar en al menos 54 de 60 minutos para calificar para la distribucion de recompensas de ese epoch. Los no calificados no reciben nada; su parte se redistribuye a los productores calificados.
-2. **Retencion en el conjunto activo (50%):** Un productor debe mantener una tasa de presencia de al menos 50% para permanecer en el conjunto activo de productores. Los productores que caen por debajo de este umbral son removidos del conjunto y deben re-registrarse para reincorporarse.
+2. **Puesto de produccion (50%):** Cuando hay mas productores activos que los 50 puestos de la lista de produccion, un productor debe atestiguar en al menos 30 de 60 minutos del epoch recien completado para ocupar un puesto (Seccion 8.1). Un productor por debajo de esta linea sigue registrado y sigue atestiguando; simplemente espera fuera de la lista.
 
-Ambos umbrales son deterministas: cada nodo lee la misma cadena, computa los mismos conteos, coincide en las mismas decisiones de calificacion y retencion.
+Por separado, un productor con cero attestations en 3 epochs sale de la rotacion y vuelve con su siguiente attestation — no se necesita re-registro (Seccion 8.1).
+
+Estas reglas son deterministas: cada nodo lee la misma cadena, computa los mismos conteos, coincide en las mismas decisiones de calificacion y de puestos.
 
 ### 10.4. Diseno de doble clave
 
@@ -793,7 +787,7 @@ Cada productor participa automaticamente. Las recompensas se distribuyen proporc
 fee = sum(inputs) - sum(outputs)
 ```
 
-La comision va al productor del bloque. Una tarifa minima previene el spam.
+Toda transaccion paga al menos una comision base de 1 unidad base, mas 0.01 unidades base por byte de `extra_data` de salida (bonds, activos, estado de pools, contenido cifrado). La comision **no** va al productor del bloque: se destruye. La unica excepcion es la parte por byte, que el coinbase del bloque puede acreditar al pool de recompensas del epoch — nunca directamente al productor. Como el productor no gana nada con las comisiones, no gana nada reordenando o censurando transacciones por comisiones.
 
 ### 10.7. Madurez de recompensas
 
@@ -845,11 +839,11 @@ El productor pierde la oportunidad del slot. El bond permanece intacto.
 
 ### 11.2. Inactividad
 
-Si un productor falla en producir cuando es seleccionado durante 50 slots consecutivos:
+La inactividad se mide por attestation, no por slots perdidos. Un productor con cero attestations en 3 epochs consecutivos:
 
-- Es removido del conjunto activo
-- El bond permanece bloqueado (sin penalizacion por inactividad)
-- Puede reactivarse con una nueva prueba de retardo de registro
+- Sale de la rotacion de produccion en el siguiente limite de epoch (Seccion 8.1)
+- Mantiene su bond bloqueado (sin penalizacion por inactividad)
+- Vuelve automaticamente con su siguiente attestation — no se necesita un nuevo registro
 
 La inactividad no se castiga — se tolera. Un productor que se desconecta pierde ingresos (recompensas de bloque perdidas) pero no capital (el bond permanece intacto). Esta es una eleccion de diseno deliberada: penalizar el tiempo de inactividad desalentaria a los operadores pequenos con infraestructura menos confiable.
 
@@ -918,9 +912,9 @@ El deficit es monotonamente no decreciente. Anadir hardware paralelo permite com
 
 **Contraste con Proof of Work:** En PoW, un atacante con >50% de hashpower reduce el deficit probabilisticamente porque los intentos de hash son paralelizables. En Prueba de Tiempo, la dependencia secuencial *h_{i+1} = H(h_i)* hace que cada cadena sea inherentemente serial. El deficit del atacante esta acotado inferiormente por su valor inicial, independientemente del presupuesto.
 
-El unico vector de ataque es controlar >50% de los productores en el conjunto activo, lo que requiere:
+El unico vector de ataque es controlar >50% del stake bondeado que respalda la cadena (Seccion 9.1), lo que requiere:
 
-1. *BOND_UNIT* de capital bloqueado por identidad (costo lineal, sujeto a slashing)
+1. *BOND_UNIT* de capital bloqueado por bond (costo lineal, sujeto a slashing)
 2. Prueba de retardo *T_registration* por identidad (anti-grinding, vinculada al epoch)
 3. 100% de riesgo de perdida de bond si se detecta doble produccion
 
@@ -935,7 +929,7 @@ Lo que DOLI agrega mas alla de PoS puro:
 1. **Capital en riesgo:** *BOND_UNIT* bloqueado por identidad, con slashing del 100% por doble produccion y penalizaciones de vesting por retiro anticipado.
 2. **Anti-grinding:** La VDF de registro (1,000 iteraciones) vincula la prueba a un epoch especifico y una clave publica, previniendo la precomputacion de pruebas de registro entre epochs futuros.
 3. **Costo operativo continuo:** Cada identidad requiere attestation de actividad continua (90% de uptime por epoch). Mantener *M* identidades a este umbral tiene un costo operativo compuesto — una maquina por identidad, indefinidamente.
-4. **Desventaja de antiguedad:** Las nuevas identidades reciben peso 1.0; los productores establecidos acumulan hasta 4.0. Un atacante que parte de cero necesita ~3 anos antes de que su peso de antiguedad iguale al de los participantes honestos establecidos.
+4. **Las identidades no agregan peso:** La eleccion de fork cuenta los bonds de cada respaldante distinto una sola vez (Seccion 9.1). Dividir el mismo capital entre muchas identidades no agrega peso respecto a mantenerlo bajo una sola clave, y producir mas bloques en una rama privada tampoco agrega ninguno.
 
 Comparemos con PoW: un atacante con *M* ASICs obtiene *Mx* hashpower inmediatamente, sin bloqueo de capital por identidad. En DOLI, cada identidad requiere capital bloqueado que puede ser destruido ante mal comportamiento.
 
@@ -943,30 +937,23 @@ El sistema no reclama inmunidad ante adversarios adinerados — ningun sistema p
 
 ### 12.4. Teorema de seguridad
 
-**Teorema.** Sea *n* = total de productores en el conjunto activo. Un atacante que controla *f* < *n/2* productores no puede producir una cadena mas pesada que la red honesta sobre cualquier intervalo de *k* >= 1 epochs.
+**Teorema.** Sea *B_h* los bonds en poder de los productores honestos y *B_a* los bonds en poder de un atacante. Si *B_a* < *B_h* y los productores honestos siguen la rama honesta, el atacante no puede hacer que su rama sea mas pesada que la rama honesta, sin importar cuanto tiempo trabaje en ella.
 
-**Demostracion.** Definimos por epoch *e*:
-
-- *S_h(e)* = conjunto de slots asignados a productores honestos
-- *S_a(e)* = conjunto de slots asignados a productores atacantes
-- *w(p)* = peso de antiguedad del productor *p* perteneciente a [1.0, 4.0]
-
-El calendario es una funcion pura de `(slot, ActiveSet(epoch), LivenessFilter)` — ningun contenido de bloque lo influencia. Bajo scheduling round-robin, cada productor de la lista activa recibe asignaciones de slots iguales: *|S_h(e)| + |S_a(e)| = total slots*, distribuidos en proporcion al numero de posiciones honestas y atacantes en la lista.
-
-El peso acumulado de la cadena sobre *k* epochs:
+**Demostracion.** Por la Seccion 9.1, el peso de una rama desde el ancestro comun es la suma de los bonds de sus respaldantes distintos, cada uno contado una sola vez:
 
 ```
-W_h(k) = Σ_{e=1}^{k} Σ_{s ∈ S_h(e)} w(producer(s))
-W_a(k) = Σ_{e=1}^{k} Σ_{s ∈ S_a(e)} w(producer(s))
+W(branch) = Σ_{p ∈ supporters(branch)} bonds(p)
 ```
 
-Dado que *f < n/2*, tenemos *|S_a(e)| < |S_h(e)|* para todo *e*. Adicionalmente, la ponderacion por antiguedad (Seccion 9.1) penaliza las nuevas identidades: *w(nuevo) = 1* mientras *w(establecido) <= 4*. Por lo tanto *W_h(k) > W_a(k)* para todo *k* >= 1.
+Cada productor honesto respalda la rama honesta produciendo en ella o atestiguandola, asi que *W_h ≥ B_h*. Una clave atacante agrega sus bonds a la rama atacante una sola vez, sin importar cuantos bloques produzca alli, y los productores honestos firman solo la rama que siguen, por lo que no agregan nada a la del atacante: *W_a ≤ B_a*. Por lo tanto *W_a ≤ B_a < B_h ≤ W_h*.
+
+Una clave atacante que respalda ambas ramas firmando dos bloques para el mismo slot entrega a todos una prueba de equivocacion y pierde todo su bond (Seccion 11.3).
 
 Por el Teorema del Deficit Secuencial (12.2), el atacante no puede compensar computando mas rapido — la dependencia secuencial de la cadena de hash previene la aceleracion paralela. QED
 
-**Corolario.** Un atacante que parte de cero necesita ~3 anos de presencia sostenida antes de que su peso de antiguedad iguale al de un productor honesto establecido, incluso con conteo de bonds igual. La ventana de ataque esta por lo tanto acotada no solo por capital sino por tiempo calendario.
+**Corolario.** El conteo de productores, el conteo de identidades y el conteo de bloques no importan para el ataque — solo el stake bondeado. El atacante necesita mas bonds que el conjunto honesto, bloqueados bajo slashing.
 
-**Limitacion.** La antiguedad protege contra atacantes *tardios* — aquellos que intentan unirse y dominar una red establecida. No protege contra atacantes *tempranos y pacientes* que se registran durante la infancia de la red y acumulan antiguedad legitimamente junto a los productores honestos. Esto se mitiga por: (1) el costo de capital sigue escalando linealmente con el conteo de bonds, (2) riesgo de perdida del 100% del bond por doble produccion, y (3) el requisito de attestation — mantener *M* identidades al 90% de uptime durante anos tiene un costo operativo compuesto. Ningun sistema de consenso puede distinguir un adversario paciente de un participante legitimo; la defensa es hacer que la deshonestidad sostenida sea costosa, no imposible.
+**Limitacion.** La eleccion de fork ponderada por bonds protege contra atacantes que tienen menos stake que el conjunto honesto; no protege contra un adversario que acumula una mayoria del stake bondeado. Esto se mitiga por: (1) el costo de capital escala linealmente con el conteo de bonds, (2) riesgo de perdida del 100% del bond por doble produccion, y (3) el requisito de attestation — mantener *M* identidades al 90% de uptime durante anos tiene un costo operativo compuesto. Ningun sistema de consenso puede distinguir un adversario paciente de un participante legitimo; la defensa es hacer que la deshonestidad sostenida sea costosa, no imposible.
 
 ---
 
@@ -1058,18 +1045,18 @@ Cada version requiere firmas de 3 de 5 mantenedores. Una sola clave comprometida
 
 ### 18.2. Periodo de veto
 
-Cuando se publica una nueva version, los productores tienen 7 dias para revisarla. Cualquier productor puede votar en contra. Si el 40% o mas vota en contra, la actualizacion es rechazada.
+Cuando se publica una nueva version, los productores tienen un periodo de veto para revisarla — 5 minutos en mainnet hoy, un valor dimensionado para una red temprana con un conjunto pequeno de mantenedores. Cualquier productor puede votar en contra. Si el 40% o mas de los productores activos vota en contra, la actualizacion es rechazada.
 
 | Votos de veto | Resultado |
 |---------------|-----------|
 | < 40%         | Aprobada  |
 | >= 40%        | Rechazada |
 
-El umbral esta ponderado por stake y antiguedad (bonds x multiplicador de antiguedad). Un atacante no puede crear muchos nodos nuevos para forzar la aprobacion de una actualizacion.
+El umbral cuenta productores, un voto cada uno — no esta ponderado por stake ni por antiguedad. Un productor puede votar solo cuando su registro tiene al menos 30 dias de antiguedad, asi que un atacante no puede registrar muchos nodos nuevos para inclinar una votacion.
 
 ### 18.3. Adopcion
 
-Despues de la aprobacion, los productores tienen 1 hora para actualizar. Los nodos que ejecutan versiones obsoletas no pueden producir bloques. Esto no es un castigo — es proteccion. Una vulnerabilidad en codigo antiguo afecta a toda la red.
+Despues de la aprobacion, los productores tienen un periodo de gracia para actualizar (2 minutos en mainnet hoy). Los nodos que ejecutan versiones obsoletas no pueden producir bloques. Esto no es un castigo — es proteccion. Una vulnerabilidad en codigo antiguo afecta a toda la red.
 
 La eleccion es simple: participar en el consenso con software actual, o no participar.
 
@@ -1149,7 +1136,7 @@ No hay estimacion de gas. No hay race de nonce. Para transacciones de transferen
 
 ### 19.4. Transacciones tipadas
 
-DOLI expone 24 tipos de transaccion explicitos — `Transfer`, `Registration`, `AddBond`, `DelegateBond`, `RequestWithdrawal`, `Swap`, `AddLiquidity`, `NftMint`, `BridgeLock`, entre otros — en lugar de un campo `data` opaco que lleva calldata codificado en ABI. Algunos de estos tipos se rechazan hasta su altura de activacion.
+DOLI expone 24 tipos de transaccion explicitos — `Transfer`, `Registration`, `AddBond`, `DelegateBond`, `RequestWithdrawal`, `CreatePool`, `Swap`, `AddLiquidity`, `MintAsset`, entre otros — en lugar de un campo `data` opaco que lleva calldata codificado en ABI. Algunos de estos tipos se rechazan hasta su altura de activacion.
 
 Cada tipo tiene sus propias reglas de validacion, sus propias respuestas de error estructuradas y un modelo de costo fijo. Un agente no necesita un ABI de contrato para interpretar una transaccion; el tipo mismo describe lo que la transaccion hace.
 
@@ -1164,7 +1151,7 @@ No hay subasta de lider, no hay race MEV y no hay seleccion probabilistica. Un a
 
 ### 19.6. Introspeccion de estado
 
-El nodo expone 47 metodos JSON-RPC que cubren estado de la cadena, mempool, peers, schedules, productores, bonds, pools DeFi, prestamos, NFTs y storage. Varios estan orientados especificamente al diagnostico impulsado por agentes:
+El nodo expone 55 metodos JSON-RPC que cubren estado de la cadena, mempool, peers, schedules, productores, bonds, pools DeFi, activos y storage. Varios estan orientados especificamente al diagnostico impulsado por agentes:
 
 - `getStateRootDebug` retorna los componentes que forman el state root actual, permitiendo a un agente localizar una divergencia en un subsistema especifico.
 - `getUtxoDiff` superficia la diferencia exacta del conjunto UTXO contra un nodo peer.
@@ -1196,7 +1183,7 @@ Una blockchain es tan depurable como los snapshots y rollbacks que soporta. DOLI
 
 - **Rollback basado en undo.** Cada bloque aplicado escribe un registro undo estructurado. Revertir un bloque no requiere replay desde el genesis.
 - **Checkpoints en caliente de RocksDB.** `createCheckpoint` produce un snapshot consistente a la altura actual via hard-links, sin detener el nodo.
-- **Checkpoint embebido en el binario.** Cada binario de release contiene un `CHECKPOINT_HEIGHT`, `CHECKPOINT_HASH` y `CHECKPOINT_STATE_ROOT`. Los nodos nuevos verifican que estan en la cadena canonica antes de procesar transacciones.
+- **Checkpoint embebido en el binario.** Los binarios de release llevan un `CHECKPOINT_HEIGHT`, `CHECKPOINT_HASH` y `CHECKPOINT_STATE_ROOT` que los nodos nuevos verifican antes de procesar transacciones. En la cadena actual el checkpoint sigue en la altura 0 (genesis), asi que la verificacion esta en su lugar pero todavia no fija un bloque posterior.
 - **Recuperacion determinista de forks.** Cuando un nodo detecta que esta en una cadena minoritaria, una maquina de estados interna planifica y ejecuta el reorg sin intervencion del operador. Cada paso queda registrado con los datos que un agente necesita para reconstruir lo que ocurrio.
 
 ### 19.10. CLI scriptable
@@ -1209,7 +1196,7 @@ Las actualizaciones de protocolo ocurren a traves de votos firmados broadcastead
 
 - Un `Vote {Approve | Veto}` lleva `version`, `vote`, `producer_id`, `timestamp` y una firma sobre el mensaje canonico de votacion.
 - `submitVote` acepta estos votos de cualquier cliente, incluyendo agentes que actuan en nombre de un productor.
-- Un umbral de veto ponderado por antiguedad (40% del stake ponderado) bloquea actualizaciones que el conjunto de productores rechaza.
+- Un umbral de veto del 40%, un voto por productor con una antiguedad minima de registro de 30 dias, bloquea actualizaciones que el conjunto de productores rechaza.
 - Un `HardForkSchedule` lista cada cambio de consenso con su altura de activacion — los agentes pueden predecir exactamente cuando cambiara el comportamiento.
 - El `UpdateWatchdog` del nodo hace rollback automaticamente si un release nuevo crashea mas del umbral configurado dentro de su ventana.
 
@@ -1224,7 +1211,7 @@ Un agente operando un productor puede monitorear `getUpdateStatus`, evaluar un r
 | Informacion de stage | Ninguna — el revert podria estar en cualquier llamada anidada | Explicita: `deserialization`, `mempool`, `mempool_validation` |
 | Modelo de estado | Basado en cuentas (implicito, requiere simulacion) | UTXO (explicito, direccionable individualmente) |
 | Scheduling | Probabilistico (MEV, subastas de gas) | Determinista (slot schedule consultable) |
-| Formato de transaccion | Bytes de calldata arbitrarios | 27 transacciones tipadas con validacion fija |
+| Formato de transaccion | Bytes de calldata arbitrarios | 24 transacciones tipadas con validacion fija |
 | Flujo de eventos en vivo | Filtros de logs especificos del proveedor | Eventos WebSocket etiquetados en cada nodo |
 | Adaptable retroactivamente? | Extremadamente dificil — miles de contratos desplegados | Construido desde el genesis |
 
@@ -1242,7 +1229,7 @@ Esto no es una funcionalidad. Es una posicion.
 
 DOLI no es una propuesta. La red descrita en este documento esta operativa.
 
-A mayo de 2026, la red principal esta en su **fase de crecimiento** — operativa con 38 productores registrados en 11 servidores geograficamente distribuidos. El codigo fuente es abierto, el estado de la cadena es verificable publicamente, y productores externos operan de forma independiente. La cadena paso por multiples resets de genesis durante el arranque; las metricas a continuacion reflejan la cadena actual (genesis: 2026-04-22).
+A noviembre de 2026, la red principal esta en su **fase de crecimiento** — operativa con 131 productores activos, respaldados por 12 nodos estructurales. El codigo fuente es abierto, el estado de la cadena es verificable publicamente, y productores externos operan de forma independiente. La cadena paso por multiples resets de genesis durante el arranque (marzo–julio de 2026); las metricas a continuacion reflejan la cadena actual (genesis: 2026-07-22), que ha funcionado sin reset desde entonces.
 
 | Metrica | Valor |
 |---------|-------|
@@ -1256,16 +1243,30 @@ A mayo de 2026, la red principal esta en su **fase de crecimiento** — operativ
 
 El conteo actual de productores refleja el crecimiento temprano. Las propiedades de seguridad del protocolo se fortalecen a medida que productores independientes se unen — cada operador adicional aumenta el costo de un ataque >50% del conteo de productores y reduce la dependencia del conjunto fundador.
 
-**Evolucion post-lanzamiento del protocolo.** Los siguientes mecanismos fueron agregados despues del lanzamiento mediante hard forks activados forward-only (sin resets de genesis):
+**Evolucion post-lanzamiento del protocolo.** Los siguientes mecanismos fueron agregados durante el arranque mediante hard forks activados forward-only. En la cadena actual estan activos desde el bloque 0:
 
-- **EpochState en state root** (h=2750): El state root ahora incluye el estado completo del scheduler de epoch (snapshot de bonds, lista de productores, acumuladores de attestation). La divergencia entre nodos es detectable en 10 segundos en lugar de esperar al limite de epoch.
+- **EpochState en state root**: El state root ahora incluye el estado completo del scheduler de epoch (snapshot de bonds, lista de productores, acumuladores de attestation). La divergencia entre nodos es detectable en 10 segundos en lugar de esperar al limite de epoch.
 - **Chain commitment incremental**: Cada bloque actualiza un commitment BLAKE3 rodante — `commitment[h] = BLAKE3(commitment[h-1] || block_hash[h])`. La verificacion de integridad es O(1) por bloque en lugar de un scan O(n) de toda la cadena.
 - **Recuperacion de bloques en tres capas**: (1) Gossip entrega bloques via push, (2) ORPHAN_CHASE solicita bloques faltantes directamente al peer que envio un bloque dependiente — causal, determinista, sin heuristicas, (3) Silence pull solicita bloques proactivamente cuando gossip esta en silencio por 30 segundos.
 - **Entrega directa de attestations**: Las attestations se envian punto-a-punto al productor del siguiente slot via el protocolo sync, evitando dependencias de timing del mesh gossip.
 - **Fingerprints de estado**: Cada bloque registra hashes de 7 componentes de estado para diagnostico instantaneo de divergencia entre nodos.
 
+Desde el genesis actual, las nuevas reglas de consenso se activan forward-only en una altura fijada, sin reset de genesis:
+
+| Altura | Regla |
+|--------|-------|
+| 332,664 | Respaldo acotado del piso de seguridad (nunca mas de 50 productores programados) |
+| 409,000 | Bitfields de attestation verificados con BLS; autoridad unica de eleccion de fork |
+| 418,000 | Limite de pago de la penalizacion de vesting en retiros |
+| 457,855 | Rotacion de claves BLS |
+| 475,000 | Seleccion de puestos solo por minutos de attestation |
+| 806,859 | Bloques firmados, transacciones de bond autorizadas por el productor, slashing por equivocacion, desvinculacion bloqueada en un paso |
+| 881,800 | Eleccion de fork por bond de respaldantes distintos |
+
+Planificado, aun no fijado: los 50 puestos de produccion llenados por bond en lugar de antiguedad (Seccion 8.1).
+
 ```
-Genesis:    2026-04-22 (cadena actual)
+Genesis:    2026-07-22 (cadena actual)
 Consensus:  Proof of Time (delay proof heartbeat + deterministic round-robin scheduling)
 Status:     Live
 Source:     https://github.com/doli-network/doli
@@ -1283,8 +1284,12 @@ Creemos que la honestidad sobre lo que funciona y lo que no es mas valiosa que u
 - Ciclo de vida de bonds: apilamiento y retiro con penalizaciones de vesting FIFO; retiro en un paso con bloqueo desde su altura de activacion
 - Atomic swaps entre cadenas (HTLC) con BSC (BEP-20 USDT)
 - Filtro de actividad con lookback de 3 epochs y piso de seguridad
-- Seleccion de fork basada en peso con antiguedad
+- Eleccion de fork por bond de respaldantes distintos
+- Slashing por equivocacion
 - Registro de productores con bonds de activacion
+- Delegacion de bonds (DelegateBond, RevokeDelegation)
+- Tokens emitidos por usuarios (FungibleAsset, MintAsset, BurnAsset) y objetos digitales privados (EncryptedContent)
+- Pools AMM nativos (CreatePool, AddLiquidity, RemoveLiquidity, Swap) — activos desde el bloque 0 de la cadena actual
 - Explorador de bloques y panel de monitoreo de red
 - Marketplace para swaps entre cadenas
 - Faucet para nuevos participantes (via Discord)
@@ -1295,18 +1300,17 @@ Creemos que la honestidad sobre lo que funciona y lo que no es mas valiosa que u
 
 **Descrito en este documento pero aun no en produccion:**
 
-- NFTs nativos (tipo de salida UniqueAsset) — implementado en el nodo, aun no utilizado en produccion
-- Tokens emitidos por usuarios (FungibleAsset) — implementado, aun no utilizado en produccion
-- Pools AMM nativos (CreatePool, Swap, AddLiquidity) — implementado, aun no activado
-- Primitivos de prestamo (CreateLoan, RepayLoan, LiquidateLoan) — implementado, aun no activado
-- Liquidacion de rollups ZK (ZKSettle) — disenado, aun no implementado
-- Escalamiento Tier 2/3 (attestors y delegacion) — disenado, aun no implementado
+- Puestos de produccion llenados por bond (Seccion 8.1) — planificado; aplica la antiguedad hasta que se fije una altura de activacion
+- Liquidacion de rollups ZK (ZKSettle) — interfaz y especificacion publicadas; ningun sistema de pruebas seleccionado, liquidacion desactivada
+- Oraculo de precios (PriceAttestation) — implementado, congelado hasta que se fije una altura de activacion
+- Primitivos de prestamo (CreateLoan, RepayLoan, LiquidateLoan, LendingDeposit, LendingWithdraw) y fraccionalizacion de NFTs (FractionalizeNft, RedeemNft) — retirados; estos tipos de transaccion estan marcados como tombstone y no pueden construirse
+- Escalamiento Tier 2 (nodos attestor dedicados que nunca producen bloques) — disenado, aun no implementado
 - Escrow via condiciones Multisig/Threshold — el lenguaje de condiciones existe, el patron escrow aun no ha sido ejercido
 - Swaps entre cadenas con Bitcoin, Monero, Litecoin, Cardano — el protocolo los soporta, el tooling de contraparte aun no esta construido
 
 **Limitaciones conocidas:**
 
-- **Conjunto pequeno de productores.** 38 productores son suficientes para operar pero estan por debajo del umbral donde las garantias de seguridad se vuelven robustas contra atacantes bien financiados. Necesitamos mas operadores independientes.
+- **Conjunto pequeno de productores.** 131 productores activos son suficientes para operar pero aun estan por debajo del umbral donde las garantias de seguridad se vuelven robustas contra atacantes bien financiados. Necesitamos mas operadores independientes.
 - **Concentracion geografica.** La mayoria de los nodos operan en un numero reducido de proveedores de hosting. La diversidad geografica y de infraestructura es una prioridad.
 - **Sin auditoria formal.** El codigo no ha sido auditado por una firma de seguridad externa. El codigo fuente esta abierto para que cualquiera lo revise.
 - **Datos de una sola era.** La red esta en la Era 1. El comportamiento de halving, las transiciones de era y la economia a largo plazo no han sido probados en mainnet.
@@ -1328,11 +1332,11 @@ Ethereum usa Proof of Stake — los validadores bloquean 32 ETH (~$100K+) y son 
 
 **"Que impide que un atacante rico compre el 51% de los productores?"**
 
-Capital. Cada identidad de productor requiere 10 DOLI bloqueados como bond (Seccion 12.3). Controlar el 51% de los productores significa bloquear el 51% del capital en bonds — y arriesgar una perdida del 100% si se detecta doble produccion. Ademas, las nuevas identidades comienzan con peso de antiguedad 1.0 mientras los productores establecidos acumulan hasta 4.0, lo que significa que un atacante necesita ~3 anos antes de que el peso de su cadena iguale al de los participantes honestos establecidos. Ningun sistema de consenso es inmune a un adversario suficientemente rico, pero DOLI hace que el ataque sea costoso, lento y detectable.
+Capital. Cada identidad de productor requiere 10 DOLI bloqueados como bond (Seccion 12.3). La eleccion de fork pesa una rama por los bonds de los productores distintos que la respaldan (Seccion 9.1), asi que el conteo de productores por si solo no compra nada: para superar en peso a la cadena honesta un atacante debe tener mas stake bondeado que los respaldantes honestos — y arriesga perder el 100% de el si se detecta doble produccion. Ningun sistema de consenso es inmune a un adversario suficientemente rico, pero DOLI hace que el ataque sea costoso, lento y detectable.
 
-**"Por que deberia confiar en una red con solo 38 productores?"**
+**"Por que deberia confiar en una red con solo 131 productores?"**
 
-No deberias — no ciegamente. Deberias verificar. El codigo fuente es abierto. El estado de la cadena es consultable publicamente. Cada bloque, cada transaccion, cada attestation esta en cadena y es auditable. 38 productores es un numero de etapa temprana, y somos transparentes al respecto (Seccion 19.1). Las propiedades de seguridad se fortalecen con cada productor independiente que se une. Si esto te preocupa, la respuesta mas productiva es ejecutar un nodo y convertirte en el productor numero 39.
+No deberias — no ciegamente. Deberias verificar. El codigo fuente es abierto. El estado de la cadena es consultable publicamente. Cada bloque, cada transaccion, cada attestation esta en cadena y es auditable. 131 productores es un numero de etapa temprana, y somos transparentes al respecto (Seccion 20.1). Las propiedades de seguridad se fortalecen con cada productor independiente que se une. Si esto te preocupa, la respuesta mas productiva es ejecutar un nodo y convertirte en el productor numero 132.
 
 **"Hay preminado o asignacion para insiders?"**
 
