@@ -98,3 +98,27 @@ exported the token. Four fixes:
 Tests: `scripts/tests/test-unit-token-tools.sh <doli-node> <doli>` (scratch node, end to end),
 `scripts/tests/test-rpc-admin-token.sh` k2-k4,
 `admin_token::tests`, `rpc_admin_locate::tests`, `cmd_snap_wipe::tests`.
+
+## Send-back 2 — verifier findings on `9cb7144e`
+
+- **INV-RPC-003 proofs** (P1): row 831 (`test-rpc-admin-token.sh`) guards only the shell and
+  Python helpers; its description now says so (KILLED against `scripts/lib/rpc-admin-token.sh` +
+  `rpc_admin_token.py`). The Rust files have their own KILLED rows: `server.rs` (row 828
+  `r2_every_admin_method_needs_the_token_from_every_address`), `rpc_client.rs` (new row,
+  `rpc_client_auth_tests::admin_call_carries_bearer_header`), `startup.rs` and `admin_token.rs`
+  (new rows, `startup_admin_token_tests`). `start_rpc` now calls `provision_admin_token`, the same
+  code moved out of the method (behavior identical) so that a unit test reaches it.
+- **Installer last token line** (P1, `scripts/install-services.sh`): systemd uses the last
+  assignment of a variable, so a re-run now carries the LAST `DOLI_RPC_ADMIN_TOKEN` Environment
+  line (was the first), once. Test: `test-installer-unit-token.sh` f, g, h (two-line units,
+  quoted/unquoted, multi-variable last line); red on `9cb7144e` (`FAILS: 6`).
+- **Listener data dir** (P2, `bins/cli/src/rpc_admin_locate.rs` `node_data_dir`): the CLI now
+  follows `bins/node/src/main.rs` for the process on the port: `--data-dir`/`-d` (tilde in the
+  node's home) > the node process's `DOLI_DATA_DIR` > the platform default if it exists > the
+  legacy `<node home>/.doli/<net>` if it exists > the platform default. The node env comes from
+  `/proc/<pid>/environ` (Linux) or `ps -E -ww` (macOS); both are readable only by root or the
+  same uid, else the env is treated as empty. The node home is its `HOME`, else its uid's passwd
+  home (`/etc/passwd` on Linux, `id -P` on macOS), as `dirs::home_dir` does. The uid check is
+  unchanged. The shell and Python helpers are NOT changed (each data-dir function is 20-30
+  lines); they still use the caller's `DOLI_DATA_DIR` for a listener without `--data-dir`, and the
+  uid check still refuses a wrong dir. Tests: `rpc_admin_locate::tests::node_data_dir_*`.
