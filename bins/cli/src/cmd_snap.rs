@@ -124,46 +124,15 @@ pub(crate) async fn cmd_snap(
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
 
-    // 3. Wipe data directory (preserve wallet, keys, config)
+    // 3. Wipe data directory (preserve wallet, keys, config, admin token)
     // CRITICAL: wallet.json contains private keys. Never delete it.
     println!("Wiping chain data...");
     if data_dir.exists() {
-        let preserve = [
-            "keys",
-            ".env",
-            "node_key",
-            "wallet.json",
-            "wallet.seed.txt",
-            "config.toml",
-        ];
-        if let Ok(entries) = std::fs::read_dir(&data_dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if !preserve.contains(&name.as_str()) {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        if let Err(e) = std::fs::remove_dir_all(&path) {
-                            eprintln!("  Warning: failed to remove {:?}: {}", path, e);
-                        }
-                    } else {
-                        let _ = std::fs::remove_file(&path);
-                    }
-                }
-            }
-        }
-
-        // Force-remove RocksDB directories. Stale .sst/.log files from a previous
-        // chain corrupt the database when reopened with different chain data.
-        for dir_name in ["state_db", "blocks"] {
-            let dir = data_dir.join(dir_name);
-            if dir.exists() {
-                let _ = std::fs::remove_dir_all(&dir);
-            }
-        }
+        crate::cmd_snap_wipe::wipe_chain_data(&data_dir);
     } else {
         std::fs::create_dir_all(&data_dir)?;
     }
-    println!("  Done (preserved keys/, wallet.json, .env, node_key)");
+    println!("  Done (preserved keys/, wallet.json, .env, node_key, rpc-admin.token)");
 
     // 4. Download snapshot (retry up to 3 times if seed advances between check and download)
     let max_retries = 3;
