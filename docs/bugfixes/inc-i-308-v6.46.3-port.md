@@ -66,10 +66,10 @@ exported the token. Four fixes:
   The `-32008` hint names the file tried and says to use `sudo` for a root-owned file.
 - **D3 installer** (`scripts/install-services.sh`): a re-run carries an existing unit's
   `DOLI_RPC_ADMIN_TOKEN` Environment line into the new unit; `validate` hides that line.
-  NOT COMMITTED: the commit gate refuses any change to `install-services.sh` on this branch,
-  because INV-DEPLOY-003 links the test `crates/storage/tests/inv_deploy_003_rocksdb_memory_caps.rs`,
-  which exists only on later branches (run 721). The change and its test
-  (`scripts/tests/test-installer-unit-token.sh`) wait for an owner ruling.
+  Test: `scripts/tests/test-installer-unit-token.sh` (red on `8e065a3a`, `FAILS: 4`; green now).
+- **Brought test (owner ruling)**: `crates/storage/tests/inv_deploy_003_rocksdb_memory_caps.rs`
+  + its `[[test]]` entry, byte-equal from `e20c9ed1` (run 721), test-only: INV-DEPLOY-003 lists
+  `install-services.sh` and the gate needs its linked test mutation-proved (KILLED) on this branch.
 - **D4 snap** (`bins/cli/src/cmd_snap_wipe.rs`): `rpc-admin.token` is in the preserve list.
 - **D5** `scripts/gauntlet-gs016.sh` `_gs016_rpc` uses `rpc_admin_header_for`.
 
