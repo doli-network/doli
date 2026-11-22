@@ -226,7 +226,7 @@ Two other nodes take part:
 - **Source**: a node that has the full range. `backfillFromPeer` copies blocks from it.
 - **Verifier**: a different node that holds the range from its own header-first sync, where it applied every block in the range. Never use the source as the verifier, and never use a node that received the range by a backfill, a `restore` or a snap sync. Steps 4 and 5 prove that the repaired node agrees with the verifier's copy. They do not re-validate either copy.
 
-Run the commands on the repaired node's host. `backfillFromPeer` and `verifyChainIntegrity` are admin methods; `getBlockRaw` is not. Send admin requests to `127.0.0.1` only: a loopback request needs no token. Run the verifier's commands on the verifier's host over ssh, also against its own `127.0.0.1`. Never send `Authorization: Bearer <admin-token>` over plain `http://` to an address that is not loopback. The RPC server has no TLS, so anyone on the path can read the token and replay it against every admin method. The source needs no token: backfill reads it with `getBlockRaw`. On mainnet, `backfillFromPeer` refuses a URL whose host is a private, loopback or link-local IP literal, so give the source as a DNS name. Set these once (the verifier host needs `curl` and `jq`):
+Run the commands on the repaired node's host. `backfillFromPeer` and `verifyChainIntegrity` are admin methods; `getBlockRaw` is not. Send admin requests to `127.0.0.1` only, with `Authorization: Bearer <token>` (every address needs the token; the node keeps it in `<data_dir>/rpc-admin.token`). Run the verifier's commands on the verifier's host over ssh, also against its own `127.0.0.1`. Never send `Authorization: Bearer <admin-token>` over plain `http://` to an address that is not loopback. The RPC server has no TLS, so anyone on the path can read the token and replay it against every admin method. The source needs no token: backfill reads it with `getBlockRaw`. On mainnet, `backfillFromPeer` refuses a URL whose host is a private, loopback or link-local IP literal, so give the source as a DNS name. Set these once (the verifier host needs `curl` and `jq`):
 
 ```bash
 PORT=8500                                     # RPC port of the node to repair (this host)
@@ -358,7 +358,12 @@ Unlike `getBlockByHeight` (JSON — lossy for signatures/VDF proofs), `getBlockR
 
 ### backfillFromPeer
 
-Starts a background task to fill block-store gaps from a remote node's RPC. Params: `rpc_url` (required) and `skip_divergence_check` (optional, default `false`). It writes the block store only, never the archive directory. Procedure: §5.3.
+Starts a background task to fill block-store gaps from a remote node's RPC. Params: `rpc_url` (required), `skip_divergence_check` (optional, default `false`; skips the tip preflight only) and `peer_token` (optional). It writes the block store only, never the archive directory. Procedure: §5.3.
+
+- It stores a peer block at height h only where our chain commits to its hash (top-down from `best_hash`, then the `prev_hash` of the trusted block at h+1). Signature and body are checked before every write.
+- A chain break (hash mismatch, fetch failure, no anchor) stops the pass. `backfillStatus.error` reads `stopped at height <h>: <reason>; <imported> of <total> stored`. `imported` counts stored blocks only.
+- With no gaps, the divergence check is report-only: `divergence_check` is `"ok"`, `"diverged: …; not repaired"` or `"skipped: <reason>"`. The `message` says `chain is complete` only for `"ok"`; otherwise `chain not verified against the peer (…)`.
+- `repairArchiveFromPeer` uses the same rule for the archive: a block is written only if its hash equals the canonical index hash at h, or the `prev_hash` of the stored block at h+1. Refused heights count in `errors`.
 
 **Request:**
 ```json

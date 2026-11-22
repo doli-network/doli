@@ -30,9 +30,11 @@ _gs024_cfg() {
 
 _gs024_num() { case "${1:-}" in '' | *[!0-9]*) return 1 ;; esac; }
 
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/rpc-admin-token.sh"
+
 # gs024_rpc URL METHOD [PARAMS] — raw JSON-RPC reply of URL on stdout (one attempt; seed calls).
 gs024_rpc() {
-    curl -s --max-time "${GS024_RPC_TIMEOUT:-10}" -X POST "$1" -H 'Content-Type: application/json' \
+    curl -s --max-time "${GS024_RPC_TIMEOUT:-10}" -X POST "$1" -H 'Content-Type: application/json' -H @<(rpc_admin_header_for "$2" "$1") \
         -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$2\",\"params\":${3:-[]}}" 2>/dev/null
 }
 
@@ -42,7 +44,7 @@ gs024_irpc() {
     { _gs024_num "$tries" && [ "$tries" -ge 1 ]; } || tries=5
     while [ "$n" -lt "$tries" ]; do
         n=$((n + 1))
-        if out="$(curl -s --max-time "${GS024_RPC_TIMEOUT:-30}" -X POST "$1" -H 'Content-Type: application/json' \
+        if out="$(curl -s --max-time "${GS024_RPC_TIMEOUT:-30}" -X POST "$1" -H 'Content-Type: application/json' -H @<(rpc_admin_header_for "$2" "$1") \
             -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$2\",\"params\":${3:-[]}}" 2>/dev/null)" && [ -n "$out" ]; then
             printf '%s\n' "$out"
             return 0

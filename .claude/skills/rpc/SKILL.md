@@ -23,12 +23,12 @@ PATTERNS: lines 260-315
 **Context struct**: `crates/rpc/src/methods/context.rs:41` — `RpcContext` holds all shared state.
 **Types module**: `crates/rpc/src/types/` (was single file) — split into `block.rs`, `chain.rs`, `producer.rs`, `protocol.rs` (JSON-RPC envelope: `crates/rpc/src/types/protocol.rs:10,24`).
 
-**Admin auth** (`crates/rpc/src/server.rs:31-49, 189-241`):
-- Admin methods require `Authorization: Bearer <token>` from public IPs.
-- Loopback (127.x) and RFC-1918 private IPs are always trusted — no token needed.
+**Admin auth** (`crates/rpc/src/server.rs:31-52, 188-217`):
+- Admin methods require `Authorization: Bearer <token>` from EVERY address (loopback and RFC-1918 too). No usable token configured = every admin call refused.
+- Token is usable only if >=32 chars after trim (`admin_token.rs:13,29-31`). The node resolves it: env `DOLI_RPC_ADMIN_TOKEN` > config > `<data_dir>/rpc-admin.token` (auto-created, 64 hex, mode 0600); an env/config token is also written to that file (`materialize`). CLI loopback lookup (`bins/cli/src/rpc_admin_locate.rs`): env > `DOLI_DATA_DIR` > data dir of the port's listener (accepted only if its uid owns the token file) > network default.
 - Constant-time comparison (`constant_time_eq`, `server.rs:244`) prevents timing side-channels.
-- `trusted_proxies: Vec<IpAddr>` (ISSUE-174 fix): when the immediate TCP peer is a configured trusted reverse proxy, `X-Real-IP`/`X-Forwarded-For` (leftmost) is resolved to the real client IP before the trust check (`resolve_client_ip`, `server.rs:269`). Default empty = headers ignored, peer IP used directly — an untrusted caller cannot forge trust by setting its own XFF.
-- Admin set (13 methods, `server.rs:31-49`): `pauseProduction`, `resumeProduction`, `createCheckpoint`, `pruneBlocks`, `backfillFromPeer`, `enterRecoveryMode`, `exitRecoveryMode`, `bridgeFromArchive`, `getUtxoDiff`, `getStateSnapshot`, `getStateRootDebug`, `verifyChainIntegrity`, `repairArchiveFromPeer` (added post-ISSUE-174 — outbound HTTP fetcher, SSRF risk if left unauthenticated).
+- `trusted_proxies: Vec<IpAddr>` (ISSUE-174 fix): when the immediate TCP peer is a configured trusted reverse proxy, `X-Real-IP`/`X-Forwarded-For` (leftmost) is resolved to the real client IP for the log line (`resolve_client_ip`, `server.rs:269`). Default empty = headers ignored, peer IP used directly — the token check does not depend on the IP.
+- Admin set (14 methods, `server.rs:31-52`): `pauseProduction`, `resumeProduction`, `createCheckpoint`, `pruneBlocks`, `backfillFromPeer`, `enterRecoveryMode`, `exitRecoveryMode`, `bridgeFromArchive`, `getUtxoDiff`, `getStateSnapshot`, `getStateRootDebug`, `verifyChainIntegrity`, `repairArchiveFromPeer` (added post-ISSUE-174 — outbound HTTP fetcher, SSRF risk if left unauthenticated), `forceReorgTo` (INC-I-204; also in `OPERATOR_TOKEN_METHODS`).
 
 ## OPERATIONS
 
@@ -41,7 +41,7 @@ PATTERNS: lines 260-315
 | List spendable UTXOs | 1. POST `getUtxos` with `spendable_only` | `getUtxos` | `{address, spendable_only}` | array of `UtxoResponse` incl. pending mempool outputs |
 | Inspect a producer | 1. POST `getProducer` (single) or `getProducers` (all) | `getProducer`, `getProducers` | `{public_key}` or `{active_only}` | `ProducerResponse` (status, bonds, delegations) |
 | Inspect bond vesting | 1. POST `getBondDetails` | `getBondDetails` | `{public_key}` | per-bond FIFO list with penalty_pct/vested/maturation_slot |
-| Authenticate an admin call | 1. Call from loopback/private IP (no token needed) OR 2. Set `Authorization: Bearer <admin_token>` header from a public IP | any method in `ADMIN_METHODS` | admin_token configured server-side | 200 OK; else `-32008 unauthorized` |
+| Authenticate an admin call | Set `Authorization: Bearer <admin_token>` header from any address (loopback too) | any method in `ADMIN_METHODS` | usable admin_token (>=32 chars) on the node: env `DOLI_RPC_ADMIN_TOKEN` > config > `<data_dir>/rpc-admin.token` | 200 OK; else `-32008 unauthorized` |
 | Halt/resume production (Guardian) | 1. `pauseProduction` (admin) 2. verify via `getGuardianStatus` 3. `resumeProduction` (admin) | `pauseProduction`, `resumeProduction`, `getGuardianStatus` | none | `{status:"paused"/"resumed"}` |
 | Diagnose state divergence across nodes | 1. `getStateRootDebug` on all nodes, compare `stateRoot`/`csHash`/`utxoHash`/`psHash` 2. if `utxoHash` differs: `getUtxoDiff` (admin) full-dump on A, feed `referenceHashes` to B | `getStateRootDebug`, `getUtxoDiff` | none / `{referenceHashes}` | per-component hash comparison narrows divergence to CS/UTXO/PS |
 | Repair a gapped/forked chain | 1. `enterRecoveryMode` (admin) 2. `bridgeFromArchive` (admin, optional `force`) 3. `backfillFromPeer` (admin) for remaining gaps 4. `verifyChainIntegrity` 5. `exitRecoveryMode` (admin) + restart node | `enterRecoveryMode`, `bridgeFromArchive`, `backfillFromPeer`, `verifyChainIntegrity`, `exitRecoveryMode` | archive dir / peer RPC URL | `verifyChainIntegrity` returns `complete:true`, `missingCount:0` |
@@ -119,7 +119,7 @@ PATTERNS: lines 260-315
 
 ### Backfill & Integrity Methods (`crates/rpc/src/methods/backfill.rs`)
 
-**`backfillFromPeer`** (line 76) — **ADMIN** — `{rpc_url,skip_divergence_check}` → `{started,gaps,total}` or `{started:false,message}`. SSRF-blocked private IPs on mainnet; tip-agreement preflight (bypass via `skip_divergence_check` post-genesis-reset); spawns background task; polls via `backfillStatus`; per-block BLAKE3 verify; also detects+repairs divergent (forked) blocks via reverse fork-point scan, not just gaps.
+**`backfillFromPeer`** (line 76) — **ADMIN** — `{rpc_url,skip_divergence_check,peer_token}` → `{started,gaps,total}` or `{started:false,message,divergence_check}`. SSRF-blocked private IPs on mainnet; tip-agreement preflight (bypass via `skip_divergence_check` post-genesis-reset); spawns background task; polls via `backfillStatus`; top-down anchor rule (INC-I-308 M9, `backfill_anchor.rs`): stores a peer block at h only if its hash = our `best_hash` (tip) or `prev_hash` of the trusted block at h+1; signature + body checked before every write; a chain break stops the pass (`backfillStatus.error`); `imported` = stored blocks only; no-gap divergence check is report-only (`"diverged: …; not repaired"`), message says `chain not verified` unless `divergence_check == "ok"`.
 **`backfillStatus`** (line 461) — none → `{running,imported,total,pct,error}`.
 **`verifyChainIntegrity`** (line 485) — **ADMIN** — `[]`/`[up_to_height]`/`{up_to_height,from_height}` → `{complete,tip,scanned,fromHeight,missing[],missingCount,chainCommitment}`. Uses persisted commitment (O(1) fast path) when it covers the requested range; else full BLAKE3 chain-scan.
 
@@ -166,7 +166,7 @@ Read-only consumers of `OraclePrice` UTXO (OutputType=15) + `PriceAttestation` t
 
 **Read path (queries)**:
 1. HTTP POST → `handle_rpc()` in `server.rs:299`
-2. `check_admin_auth()` (`server.rs:189`) — resolves effective client IP via `resolve_client_ip()` if peer is a trusted proxy, then trust/token check
+2. `check_admin_auth()` (`server.rs:188`) — resolves effective client IP via `resolve_client_ip()` (log only), then bearer token check for every address
 3. `RpcContext::handle_request()` → dispatches by method name (`dispatch.rs`, 53-arm match)
 4. Handler reads from: `chain_state` (RwLock), `utxo_set` (RwLock), `producer_set` (RwLock, Option), `mempool` (RwLock), `block_store` (Arc), `state_db` (Arc, Option)
 5. Returns `JsonRpcResponse::success(id, value)` or `JsonRpcResponse::error(id, rpc_error)`
@@ -232,7 +232,7 @@ Read-only consumers of `OraclePrice` UTXO (OutputType=15) + `PriceAttestation` t
 - `vesting_quarter_slots`: mainnet = 3,153,600, testnet = 2,160
 - `oracle_activation_height`: **u64::MAX on every variant** — Phase 2.1 oracle frozen (see CLAUDE.md)
 
-**Admin method auth** (`server.rs:31-49, 189-241`): non-private-IP callers need `Authorization: Bearer <token>`; `admin_token:None` disables admin methods from public IPs; loopback+RFC-1918 always trusted; trusted-proxy header resolution is opt-in (empty `trusted_proxies` = no header trust, closes the historical "Nginx makes every request look like 127.0.0.1" bypass, ISSUE-174).
+**Admin method auth** (`server.rs:31-52, 188-217`): every caller (loopback and RFC-1918 too) needs `Authorization: Bearer <token>`; no usable token (>=32 chars after trim) = every admin call refused; the node auto-creates `<data_dir>/rpc-admin.token` (64 hex, 0600) when env and config give none; trusted-proxy header resolution is opt-in (empty `trusted_proxies` = no header trust, closes the historical "Nginx makes every request look like 127.0.0.1" bypass, ISSUE-174).
 
 **Backfill SSRF protection** (`backfill.rs:17-72`): mainnet blocks private/loopback/link-local/broadcast/unspecified IP literals; testnet/devnet allow all IPs (single-server localhost backfill); URL must be `http://`/`https://`. Shared by `backfillFromPeer` and `repairArchiveFromPeer` (`super::backfill::validate_backfill_url`).
 

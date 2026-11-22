@@ -219,3 +219,51 @@ COMMIT;
 --   INC-I-052            — creator_hash immutability auth rule
 -- v_gauntlet_coverage lists these as scenarios=NULL; that is the intended,
 -- documented gap — the gauntlet does not fabricate coverage for non-dynamics bugs.
+
+-- ── INC-I-308 M4 (run 732): RPC admin access rows (audit docs/audits/security-audit-rpc-2026-11-21.md
+-- §GS-056). STANDALONE ONLY: scripts/gauntlet.sh skips their tokens; run one with
+-- `.claude/scripts/gauntlet-run.sh <db> --mechanism gauntlet-gs05X` from the repo root.
+-- GS-059 and GS-060 (proposed by the same audit) are not registered here.
+BEGIN;
+INSERT INTO gauntlet_scenarios (scenario_id, name, description, incident_ids, assertions, scale_params, runner, status, expect_fail)
+VALUES ('GS-056', 'rpc-admin-gate-by-source',
+  'OBSERVATIONAL over the running local fleet (ps, lsof, token-file existence and length, never the value). Per doli-node: no RPC socket on a non-loopback address unless a token is set (env DOLI_RPC_ADMIN_TOKEN or <data_dir>/rpc-admin.token >= 32 chars); the read-only admin probe getUtxoDiff {} sent with NO token to the host non-loopback address on the node RPC port returns -32008 or no connection. INFO only: the same probe on 127.0.0.1 (a pre-INC-I-308 binary answers it: the gate is open from loopback). Never restarts, stops or writes to a node. scripts/gauntlet-gs056.sh.',
+  '["INC-I-308"]',
+  'gs056-no-open-nonloopback,gs056-probe-nonloopback',
+  '{"live_testnet":true,"writes":false,"probe":"getUtxoDiff"}',
+  'bash scripts/gauntlet-gs056.sh', 'active', 0)
+ON CONFLICT(scenario_id) DO UPDATE SET incident_ids=excluded.incident_ids, description=excluded.description, assertions=excluded.assertions, scale_params=excluded.scale_params, runner=excluded.runner, expect_fail=excluded.expect_fail, status='active';
+INSERT INTO gauntlet_scenarios (scenario_id, name, description, incident_ids, assertions, scale_params, runner, status, expect_fail)
+VALUES ('GS-057', 'rpc-relay-does-not-launder-loopback',
+  'INJECTS on a SCRATCH node only (own data dir under $TMPDIR, own ports, --no-dht/--no-discv5, no bootstrap, loopback bind shim; END binary = GA_BIN). A throwaway python relay on 127.0.0.1 forwards the JSON body without Authorization (explorer server.js style). Asserts: getChainInfo through the relay answers (relay works); every ADMIN_METHODS name through the relay returns -32008; the node log names 127.0.0.1 as the refused source. Before INC-I-308 the loopback source was trusted, so the relay laundered anonymous callers into admin callers. Relay and node stopped by PID. scripts/gauntlet-gs057.sh.',
+  '["INC-I-308"]',
+  'gs057-relay-forwards,gs057-admin-refused,gs057-node-saw-loopback',
+  '{"scratch_nodes":1,"helper_processes":1,"live_testnet":false,"ports":{"rpc":8592,"p2p":30392,"metrics":9092,"relay":8597}}',
+  'bash scripts/gauntlet-gs057.sh', 'active', 0)
+ON CONFLICT(scenario_id) DO UPDATE SET incident_ids=excluded.incident_ids, description=excluded.description, assertions=excluded.assertions, scale_params=excluded.scale_params, runner=excluded.runner, expect_fail=excluded.expect_fail, status='active';
+INSERT INTO gauntlet_scenarios (scenario_id, name, description, incident_ids, assertions, scale_params, runner, status, expect_fail)
+VALUES ('GS-058', 'rpc-admin-gate-scratch-node',
+  'INJECTS on a SCRATCH node only (as GS-057; binary GA_BIN, default target/release/doli-node). From loopback: every ADMIN_METHODS name (parsed from crates/rpc/src/server.rs) with no token and with a wrong 64-hex token returns -32008 and getGuardianStatus is unchanged; getChainInfo and getGuardianStatus answer with no token; <data_dir>/rpc-admin.token exists, mode 600, 64 chars, not on argv; with the valid token every name returns NOT -32008 (pause/resume and enter/exitRecoveryMode are paired and undone; the rest get {}). Control: a pre-INC-I-308 binary FAILS it (0/14 refused). scripts/gauntlet-gs058.sh.',
+  '["INC-I-308"]',
+  'gs058-no-token-refused,gs058-wrong-token-refused,gs058-valid-token-passes,gs058-guardian-unchanged,gs058-public-unchanged,gs058-token-file-0600',
+  '{"scratch_nodes":1,"live_testnet":false,"ports":{"rpc":8591,"p2p":30391,"metrics":9091}}',
+  'bash scripts/gauntlet-gs058.sh', 'active', 0)
+ON CONFLICT(scenario_id) DO UPDATE SET incident_ids=excluded.incident_ids, description=excluded.description, assertions=excluded.assertions, scale_params=excluded.scale_params, runner=excluded.runner, expect_fail=excluded.expect_fail, status='active';
+INSERT INTO gauntlet_scenarios (scenario_id, name, description, incident_ids, assertions, scale_params, runner, status, expect_fail)
+VALUES ('GS-061', 'rpc-bind-and-token-census',
+  'OBSERVATIONAL, sends no RPC. Per running doli-node: --rpc-bind, the real listen address, token source (env|file|none) and length; FAIL on a non-loopback listen with no token, or the token (env form, flag form or the token-file value) on any argv. Per live launchd plist (~/Library/LaunchAgents/*doli*) and repo installer (scripts/install-services.sh, install-local-services.sh, install.ps1, testnetlinux/scripts/install-services.sh, inc-i-300-repair-restart.sh): rpc-bind values listed; FAIL on a literal token value in the file. A non-loopback installer bind is INFO: from INC-I-308 M1 the node creates its own token file. scripts/gauntlet-gs061.sh.',
+  '["INC-I-308"]',
+  'gs061-proc-bind-token,gs061-no-token-on-argv,gs061-units-no-token',
+  '{"live_testnet":true,"writes":false}',
+  'bash scripts/gauntlet-gs061.sh', 'active', 0)
+ON CONFLICT(scenario_id) DO UPDATE SET incident_ids=excluded.incident_ids, description=excluded.description, assertions=excluded.assertions, scale_params=excluded.scale_params, runner=excluded.runner, expect_fail=excluded.expect_fail, status='active';
+-- INC-I-308 M11 (run 734): anchor rule R-1/R-2 on a real snap gap. GS-059, GS-060, GS-062 stay audit proposals.
+INSERT INTO gauntlet_scenarios (scenario_id, name, description, incident_ids, assertions, scale_params, runner, status, expect_fail)
+VALUES ('GS-063', 'backfill-hostile-peer-snap-gap',
+  'INJECTS on a SCRATCH victim only (own data dir under $TMPDIR, own ports, loopback bind shim, --no-dht, bootstrap = local testnet P2P ports, snap sync ON; binary GA_BIN). The victim snap-syncs and so has a gap below snap_h; the precondition finds snap_h by bisect over (tip/2, tip] and walks down from snap_h-1 to check K+10 empty heights (orphan chase may store h=1). A python stdlib hostile peer (scripts/gauntlet-gs063-proxy.py) answers the tip preflight with the victim own hash and tampers one height: swap (real block from h-5), flip_header (prev_hash byte), flip_tail (last body byte) at the gap top, then swap at top-K after K honest blocks. Asserts each pass ends with backfillStatus.error set and the victim holds no block or the honest bytes at the tampered height; the mid-walk pass stores exactly the K honest blocks; then backfillFromPeer from the honest testnet node starts, reports no error within GS063_FILL_SECS and the sampled heights hold the honest bytes (METRIC imported, rate, projected_secs). ~/testnet nodes are only READ. h=1 and gap middle are covered in-process (r1_backfill_refuses_forged_*). scripts/gauntlet-gs063.sh.',
+  '["INC-I-308"]',
+  'gs063-hostile-refused,gs063-honest-prefix,gs063-honest-fills',
+  '{"scratch_nodes":1,"helper_processes":1,"live_testnet":true,"writes":false,"ports":{"rpc":8663,"p2p":30463,"metrics":9163,"proxy":8667}}',
+  'bash scripts/gauntlet-gs063.sh', 'active', 0)
+ON CONFLICT(scenario_id) DO UPDATE SET incident_ids=excluded.incident_ids, description=excluded.description, assertions=excluded.assertions, scale_params=excluded.scale_params, runner=excluded.runner, expect_fail=excluded.expect_fail, status='active';
+COMMIT;

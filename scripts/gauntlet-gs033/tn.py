@@ -22,6 +22,9 @@ import sys
 import time
 import urllib.request
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../lib"))
+import rpc_admin_token  # noqa: E402
+
 HOME = os.path.expanduser("~")
 TN = os.environ.get("TESTNET_HOME") or os.path.join(HOME, "testnet")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -111,8 +114,9 @@ def fwd_port(m, j):
 # ---------------------------------------------------------------------------------- RPC
 def rpc(i, method, params=None, timeout=4):
     body = json.dumps({"jsonrpc": "2.0", "method": method, "params": params or {}, "id": 1}).encode()
-    req = urllib.request.Request("http://127.0.0.1:%d" % NODES[i]["rpc"], body,
-                                 {"Content-Type": "application/json"})
+    hdr = {"Content-Type": "application/json"}
+    hdr.update(rpc_admin_token.headers_for(method, data_dir=NODES[i]["datadir"]))
+    req = urllib.request.Request("http://127.0.0.1:%d" % NODES[i]["rpc"], body, hdr)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         d = json.loads(r.read())
     if d.get("error"):

@@ -14,7 +14,7 @@ impl RpcContext {
     /// Optionally verifies that an archive directory contains blocks
     /// up to the prune height before deleting.
     ///
-    /// Params: `[keep_last_n]` — number of recent blocks to keep (default: 2000).
+    /// Params: `[keep_last_n, force]` — blocks to keep (default: 2000); `force` prunes without a covering archive.
     ///         If `keep_last_n` < 2000, it is clamped to 2000.
     pub(super) async fn prune_blocks(&self, params: Option<Value>) -> Result<Value, RpcError> {
         let chain_tip = {
@@ -29,13 +29,12 @@ impl RpcContext {
         }
 
         // Parse keep_last_n from params (default 2000)
-        let keep_last_n = if let Some(Value::Array(arr)) = &params {
-            arr.first()
-                .and_then(|v| v.as_u64())
-                .unwrap_or(2000)
-                .max(2000) // Floor at 2000
+        let (keep_last_n, force) = if let Some(Value::Array(arr)) = &params {
+            let keep = arr.first().and_then(|v| v.as_u64()).unwrap_or(2000);
+            let force = arr.get(1).and_then(|v| v.as_bool()).unwrap_or(false);
+            (keep.max(2000), force)
         } else {
-            2000
+            (2000, false)
         };
 
         let cutoff = chain_tip.saturating_sub(keep_last_n);
@@ -51,8 +50,12 @@ impl RpcContext {
         }
 
         // Optionally check archive coverage
-        let archive_verified = if let Some(ref data_dir) = self.data_dir {
-            let archive_dir = data_dir.join("archive");
+        let archive_dir = self.archive_dir.clone().or_else(|| {
+            self.data_dir
+                .as_ref()
+                .map(|data_dir| data_dir.join("archive"))
+        });
+        let archive_verified = if let Some(archive_dir) = archive_dir {
             if archive_dir.exists() {
                 match storage::archiver::manifest_height(&archive_dir) {
                     Some(archived_height) if archived_height >= cutoff => {
@@ -64,7 +67,7 @@ impl RpcContext {
                     }
                     Some(archived_height) => {
                         warn!(
-                            "[PRUNE] Archive only covers height {} but prune cutoff is {} — pruning anyway (blocks will be lost)",
+                            "[PRUNE] Archive only covers height {} but prune cutoff is {}",
                             archived_height, cutoff
                         );
                         false
@@ -77,6 +80,18 @@ impl RpcContext {
         } else {
             false
         };
+
+        if !archive_verified && !force {
+            return Err(RpcError::internal_error(format!(
+                "Archive does not cover prune cutoff {cutoff}; pass [keep_last_n, true] to force"
+            )));
+        }
+        if !archive_verified {
+            warn!(
+                "[PRUNE] Forced prune below {} without a covering archive",
+                cutoff
+            );
+        }
 
         // Execute pruning
         let (deleted, lowest_remaining) = self

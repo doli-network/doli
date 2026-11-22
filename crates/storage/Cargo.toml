@@ -62,3 +62,9 @@ path = "tests/inc_i_236_m2_archive_import.rs"
 [[test]]
 name = "inc_i_256_m1_snapshot_index_test"
 path = "tests/inc_i_256_m1_snapshot_index_test.rs"
+
+# INV-DEPLOY-003 coverage (per-node RocksDB memory caps). Own binary for the
+# mutation prover: it builds one `--test` target per mutant.
+[[test]]
+name = "inv_deploy_003_rocksdb_memory_caps"
+path = "tests/inv_deploy_003_rocksdb_memory_caps.rs"

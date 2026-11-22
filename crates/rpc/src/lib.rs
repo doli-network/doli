@@ -67,6 +67,7 @@
 //! }
 //! ```
 
+pub mod admin_token;
 pub mod error;
 pub mod methods;
 pub mod server;

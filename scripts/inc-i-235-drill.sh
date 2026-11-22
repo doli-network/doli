@@ -124,9 +124,10 @@ fi
 command -v python3 >/dev/null || die "python3 is required"
 
 # ── RPC helpers ─────────────────────────────────────────────────────────────
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/rpc-admin-token.sh"
 rpc() {
     local port="$1" method="$2" params="${3:-[]}"
-    curl -s --max-time 4 -X POST -H 'content-type: application/json' \
+    curl -s --max-time 4 -X POST -H 'content-type: application/json' -H @<(rpc_admin_header_for "$method" "$port") \
         -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$method\",\"params\":$params}" \
         "http://$HOST:$port" 2>/dev/null
 }

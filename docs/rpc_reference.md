@@ -1611,6 +1611,7 @@ Returns the per-component state root hashes. Compare these across nodes at the s
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $DOLI_RPC_ADMIN_TOKEN" \
     -d '{"jsonrpc":"2.0","method":"getStateRootDebug","params":{},"id":1}'
 ```
 
@@ -1686,6 +1687,7 @@ Where `type`: 0=Normal, 1=Bond. `cb`/`er`: 0=false, 1=true. `ed`: extra_data hex
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $DOLI_RPC_ADMIN_TOKEN" \
     -d '{"jsonrpc":"2.0","method":"getUtxoDiff","params":{},"id":1}'
 ```
 
@@ -1693,6 +1695,7 @@ curl -X POST http://127.0.0.1:8500 \
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $DOLI_RPC_ADMIN_TOKEN" \
     -d '{"jsonrpc":"2.0","method":"getUtxoDiff","params":{"referenceHashes":["abc123...","def456..."]},"id":1}'
 ```
 
@@ -1777,10 +1780,22 @@ listen_addr = "0.0.0.0:8500"
 
 ### Authentication
 
-No built-in authentication. Use:
-- Firewall rules
-- Reverse proxy with auth (nginx, caddy)
-- VPN for remote access
+Public methods need no authentication. The 14 admin methods (`ADMIN_METHODS` in
+`crates/rpc/src/server.rs`) need `Authorization: Bearer <token>` from every address,
+loopback and private networks included. A missing or wrong token returns `-32008`.
+
+The node resolves its admin token at start:
+1. env `DOLI_RPC_ADMIN_TOKEN`, if at least 32 chars after trim;
+2. else config `rpc.admin_token`, if at least 32 chars after trim;
+3. else the file `<data_dir>/rpc-admin.token` (mode 0600, 64 lowercase hex chars):
+   reused when valid, otherwise created.
+
+With an env or config token (1, 2) the node also writes that token to
+`<data_dir>/rpc-admin.token` (mode 0600) when the file is absent or holds another token,
+so local tools find it. A failed write is logged without the token; the node still starts.
+A shorter env or config token is ignored with an error log. If no env/config token is
+set and the file cannot be written, the node refuses every admin method. For remote access, also use firewall
+rules, a VPN, or a reverse proxy.
 
 ### CORS
 
@@ -1876,13 +1891,20 @@ Trigger hot backfill of missing blocks from a remote seed/archive node. Admin-ga
 
 **Parameters:**
 - `rpc_url` (string, required) — RPC URL of the source node, never a peer ID (e.g., `"http://<source-hostname>:8500"`). On mainnet, a URL whose host is a private, loopback or link-local IP literal is refused; use a DNS name.
-- `skip_divergence_check` (bool, optional, default `false`) — skip the tip check. By default the call fails with `Tip divergence detected` when the local tip hash differs from the source's block at that height. Set `true` only after a genesis reset.
+- `skip_divergence_check` (bool, optional, default `false`) — skip the tip preflight only. By default the call fails with `Tip divergence detected` when the local tip hash differs from the source's block at that height. It never skips the anchor rule below. Set `true` only after a genesis reset.
+- `peer_token` (string, optional) — the SOURCE node's admin token. It is sent only as `Authorization: Bearer` on the source's `verifyChainIntegrity` call. Without it, an admin-gated source refuses that call and the reply carries `divergence_check: "skipped: …"`. The local node's own token is never forwarded.
 
 **Behavior:**
-- Scans every height 1..tip of the local block store and fetches each missing one. There is no range parameter. When nothing is missing and the source answers `verifyChainIntegrity` with a different `chainCommitment`, it re-fetches the divergent heights from the tip down.
-- Fetches with `getBlockRaw` and checks the BLAKE3 checksum that the same source supplies. This detects accidental corruption only: it is not an authenticity check, and it is skipped when the source sends no checksum. Backfill does not apply the blocks and runs no VDF check. It skips (logs `Backfill: rejected block at height …`) a block whose producer signature fails at or above the signature activation height, or whose body does not match its header (merkle root, and presence root at that height); run it again with another source to fill such a height.
+- Scans every height 1..tip of the local block store. A height is to do when it is missing, or when the stored block at the next height does not link to it. There is no range parameter.
+- **Anchor rule (top-down):** the walk starts at our tip and goes down. It stores a peer block at height h only if the block hash equals the hash our chain commits to at h: `best_hash` at the tip, else the `prev_hash` of the trusted block at h+1 (stored, or accepted earlier in the same walk).
+- **Chain break = error:** a peer block whose hash is not our chain's hash, a fetch failure (also a height the source lacks), or a missing anchor block stops the pass. `backfillStatus.error` then reads `stopped at height <h>: <reason>; <imported> of <total> stored`. Blocks below a break are not stored.
+- The signature and `body_matches_header` are checked before every write. A block that fails them is not stored (log `Backfill: rejected block at height …`). Its hash matched our chain, so the walk continues below it with its `prev_hash`; the honest blocks below are still stored. Run it again with another source to fill the rejected height.
+- **Write-time re-check:** before each write the anchor for h is derived again from the CURRENT chain (`best_hash` at the tip, else the `prev_hash` of the stored block at h+1; if h+1 holds a block this walk rejected, its `prev_hash`, but only while the current chain still commits to that rejected block's hash), under the `chain_state` read lock. If a reorg changed it during the fetch, nothing is written or removed and the pass stops with `chain moved at h <h>`.
+- `imported` (in `backfillStatus`) counts stored blocks only.
+- **Phase 2 (divergence check) is report-only.** With no gaps, the node compares its `chainCommitment` with the source's `verifyChainIntegrity`. It never repairs a difference. The reply carries `divergence_check`: `"ok"`; `"diverged: peer differs from h=<h>; not repaired"` (or `"diverged: commitment differs, no block divergence found; not repaired"`); or `"skipped: <reason>"` when the source was unreachable, refused `verifyChainIntegrity` (pass `peer_token`), or sent no `chainCommitment`.
+- The no-gap `message` says `chain is complete` only when `divergence_check` is `"ok"`. Otherwise it says `chain not verified against the peer (<divergence_check>)`.
+- Fetches with `getBlockRaw`. Backfill does not apply the blocks and runs no VDF check.
 - Writes the block store only. It does not apply state and never writes the `--archive-to` directory (one node restart refills it from the block store).
-- A height the source lacks is skipped with a log warning; `backfillStatus.error` stays `null`.
 - Verify the result against a second node that is not the source: `verifyChainIntegrity [H]` compares the header hashes 1..H, and a per-height `getBlockRaw` `blake3` compare proves the block bytes (header and body). Runbook: [archiver.md §5.3](./archiver.md#53-hot-backfill-fill-and-verify-a-height-hole).
 
 **Response:**
@@ -1893,7 +1915,17 @@ Trigger hot backfill of missing blocks from a remote seed/archive node. Admin-ga
   "total": 977
 }
 ```
-With no gaps: `{"started": false, "message": "No gaps detected — chain is complete."}`
+With no gaps: `{"started": false, "message": "No gaps detected — chain is complete.", "divergence_check": "ok"}`. With no gaps and no `"ok"` check: `"message": "No gaps detected — chain not verified against the peer (<divergence_check>)."`.
+
+### `repairArchiveFromPeer`
+
+Fetch missing archive `.block` files from a peer. Admin-gated.
+
+- The loop is clamped to the local tip; heights above it are not fetched.
+- A block from a different genesis aborts the call with `Block at h=N has wrong genesis_hash — peer is on a different chain`.
+- A block is archived only if its hash equals the hash our chain commits to at that height: the canonical index hash at h, else the `prev_hash` of the stored block at h+1. If the two differ, the height is refused (`local store contradicts itself`). The signature and `body_matches_header` are checked before every write, also when the hash is equal.
+- A height with no trusted hash is refused (`no trusted hash for h=<h>; run backfillFromPeer first`). Refused heights count in `errors`; the pass continues. Admitted blocks go to the archive only, never to the store. To fill refused heights, first restore the blocks into the store with `backfillFromPeer`, then run the repair.
+- Reply: `{"status": "ok", "fetched": <stored files>, "already_present": <n>, "errors": <n>, "peer_tip": <h>}`. `fetched` counts written blocks only.
 
 ### `backfillStatus`
 
@@ -2022,6 +2054,7 @@ Returns a full state snapshot (chain state, UTXO set, producer set) as hex-encod
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $DOLI_RPC_ADMIN_TOKEN" \
     -d '{"jsonrpc":"2.0","method":"getStateSnapshot","params":{},"id":1}'
 ```
 
@@ -2251,6 +2284,7 @@ Pause block production on this node. The node remains running (serving RPC, sync
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $DOLI_RPC_ADMIN_TOKEN" \
     -d '{"jsonrpc":"2.0","method":"pauseProduction","params":[],"id":1}'
 ```
 
@@ -2272,6 +2306,7 @@ Resume block production on this node. Clears the explicit production block set b
 ```bash
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $DOLI_RPC_ADMIN_TOKEN" \
     -d '{"jsonrpc":"2.0","method":"resumeProduction","params":[],"id":1}'
 ```
 
@@ -2297,11 +2332,13 @@ Create a RocksDB checkpoint (hot backup) of the state database and block store. 
 # Default path (data_dir/checkpoints/)
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $DOLI_RPC_ADMIN_TOKEN" \
     -d '{"jsonrpc":"2.0","method":"createCheckpoint","params":[],"id":1}'
 
 # Custom path
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $DOLI_RPC_ADMIN_TOKEN" \
     -d '{"jsonrpc":"2.0","method":"createCheckpoint","params":["/backup/doli"],"id":1}'
 ```
 
@@ -2357,7 +2394,7 @@ curl -X POST http://127.0.0.1:8500 \
 
 Arm a single-shot, audited reorganization onto the branch tip named by the operator. This is the replacement for the unaudited poison-rollback bypass (LB-4) and is the only supported way out of a `tip == finality` wedge that does not destroy history.
 
-**Admin-gated.** `forceReorgTo` is in `ADMIN_METHODS` and requires the bearer token (loopback and RFC-1918 callers are auto-trusted, as for `pauseProduction`).
+**Operator token required from every address.** `forceReorgTo` is in `ADMIN_METHODS` and in `OPERATOR_TOKEN_METHODS` (`crates/rpc/src/server.rs`). Like every admin method, every call must carry `Authorization: Bearer <token>`, where the token is the node's admin token (see §15 Authentication: env `DOLI_RPC_ADMIN_TOKEN`, config, or `<data_dir>/rpc-admin.token`). A missing or wrong token returns `-32008` (`Unauthorized: admin token required`).
 
 The call does not perform a reorg. It arms a directive that the node evaluates on its next periodic tick. The directive is:
 
@@ -2445,9 +2482,9 @@ curl -s -X POST http://127.0.0.1:8500 \
 
 Prune old blocks below a given retention depth to reclaim disk space. Removes block headers, bodies, transaction indexes, address indexes, and slot indexes for pruned heights. Runs RocksDB compaction after deletion to actually free disk.
 
-**Safety:** Enforces a minimum retention of 2000 blocks from the chain tip (block-store floor — independent of `UNDO_KEEP_DEPTH`, which gates per-block UTXO undo records at depth 100). If an archive directory exists at `{data_dir}/archive/`, verifies archive coverage before pruning (advisory — pruning proceeds regardless).
+**Safety:** Enforces a minimum retention of 2000 blocks from the chain tip (block-store floor — independent of `UNDO_KEEP_DEPTH`, which gates per-block UTXO undo records at depth 100). Without `force`, pruning is refused unless the archive manifest (the `--archive-to` directory, or `{data_dir}/archive/`) covers the prune cutoff; the error is `Archive does not cover prune cutoff <cutoff>; pass [keep_last_n, true] to force`.
 
-**Parameters:** `[keep_last_n]` — Number of recent blocks to keep (default: 2000, minimum: 2000).
+**Parameters:** `[keep_last_n, force]` — `keep_last_n`: recent blocks to keep (default 2000; values below 2000 are clamped to 2000). `force` (default `false`): `true` prunes without a covering archive.
 
 **Response:**
 ```json
@@ -2466,11 +2503,13 @@ Prune old blocks below a given retention depth to reclaim disk space. Removes bl
 # Prune keeping last 5000 blocks
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $DOLI_RPC_ADMIN_TOKEN" \
     -d '{"jsonrpc":"2.0","method":"pruneBlocks","params":[5000],"id":1}'
 
 # Prune with minimum retention (2000 blocks)
 curl -X POST http://127.0.0.1:8500 \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $DOLI_RPC_ADMIN_TOKEN" \
     -d '{"jsonrpc":"2.0","method":"pruneBlocks","params":[],"id":1}'
 ```
 

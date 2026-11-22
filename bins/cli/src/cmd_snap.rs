@@ -5,6 +5,7 @@ use doli_cli::cmd_snap_maintainer::{
     agree_maintainer_digest, query_maintainer_answers, retired_keys_height,
     write_snap_maintainer_state, SnapMaintainerOutcome,
 };
+use doli_cli::rpc_admin_auth as admin;
 
 use crate::cmd_snap_service::{restart_matching_service, stop_doli_service};
 
@@ -123,46 +124,15 @@ pub(crate) async fn cmd_snap(
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
 
-    // 3. Wipe data directory (preserve wallet, keys, config)
+    // 3. Wipe data directory (preserve wallet, keys, config, admin token)
     // CRITICAL: wallet.json contains private keys. Never delete it.
     println!("Wiping chain data...");
     if data_dir.exists() {
-        let preserve = [
-            "keys",
-            ".env",
-            "node_key",
-            "wallet.json",
-            "wallet.seed.txt",
-            "config.toml",
-        ];
-        if let Ok(entries) = std::fs::read_dir(&data_dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if !preserve.contains(&name.as_str()) {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        if let Err(e) = std::fs::remove_dir_all(&path) {
-                            eprintln!("  Warning: failed to remove {:?}: {}", path, e);
-                        }
-                    } else {
-                        let _ = std::fs::remove_file(&path);
-                    }
-                }
-            }
-        }
-
-        // Force-remove RocksDB directories. Stale .sst/.log files from a previous
-        // chain corrupt the database when reopened with different chain data.
-        for dir_name in ["state_db", "blocks"] {
-            let dir = data_dir.join(dir_name);
-            if dir.exists() {
-                let _ = std::fs::remove_dir_all(&dir);
-            }
-        }
+        crate::cmd_snap_wipe::wipe_chain_data(&data_dir);
     } else {
         std::fs::create_dir_all(&data_dir)?;
     }
-    println!("  Done (preserved keys/, wallet.json, .env, node_key)");
+    println!("  Done (preserved keys/, wallet.json, .env, node_key, rpc-admin.token)");
 
     // 4. Download snapshot (retry up to 3 times if seed advances between check and download)
     let max_retries = 3;
@@ -419,8 +389,7 @@ async fn query_state_root(rpc_url: &str) -> Result<(u64, String)> {
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
 
-    let body: serde_json::Value = client
-        .post(rpc_url)
+    let body: serde_json::Value = with_env_admin_token(client.post(rpc_url))
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "method": "getStateRootDebug",
@@ -432,6 +401,7 @@ async fn query_state_root(rpc_url: &str) -> Result<(u64, String)> {
         .json()
         .await?;
 
+    check_admin_refusal(&body, "getStateRootDebug")?;
     let r = body.get("result").ok_or_else(|| anyhow!("No result"))?;
     Ok((
         r["height"].as_u64().ok_or_else(|| anyhow!("No height"))?,
@@ -449,8 +419,7 @@ async fn download_snapshot(rpc_url: &str) -> Result<serde_json::Value> {
         .timeout(std::time::Duration::from_secs(120)) // large payload
         .build()?;
 
-    let body: serde_json::Value = client
-        .post(rpc_url)
+    let body: serde_json::Value = with_env_admin_token(client.post(rpc_url))
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "method": "getStateSnapshot",
@@ -463,6 +432,7 @@ async fn download_snapshot(rpc_url: &str) -> Result<serde_json::Value> {
         .json()
         .await?;
 
+    check_admin_refusal(&body, "getStateSnapshot")?;
     if let Some(err) = body.get("error") {
         anyhow::bail!("RPC error: {}", err);
     }
@@ -470,4 +440,24 @@ async fn download_snapshot(rpc_url: &str) -> Result<serde_json::Value> {
     body.get("result")
         .cloned()
         .ok_or_else(|| anyhow!("No result"))
+}
+
+/// Remote seeds get only the env token, never this node's token file.
+fn with_env_admin_token(req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    match admin::env_token(std::env::var(admin::ENV_TOKEN).ok().as_deref()) {
+        Some(token) => req.bearer_auth(token),
+        None => req,
+    }
+}
+
+fn check_admin_refusal(body: &serde_json::Value, method: &str) -> Result<()> {
+    if body["error"]["code"].as_i64() == Some(admin::UNAUTHORIZED_CODE) {
+        let short = admin::short_env_note(std::env::var(admin::ENV_TOKEN).ok().as_deref());
+        anyhow::bail!(
+            "seed refused {method} ({}): set {} to that seed's full admin token{short} (the local token file is never sent to a remote seed)",
+            admin::UNAUTHORIZED_CODE,
+            admin::ENV_TOKEN
+        );
+    }
+    Ok(())
 }

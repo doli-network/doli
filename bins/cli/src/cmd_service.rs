@@ -402,6 +402,7 @@ fn install_systemd(
     println!("  Unit file: {}", unit_path);
     println!("  Logs:      doli service logs --follow");
     println!("  Status:    doli service status --name {}", service_name);
+    crate::service_rpc_guidance::print(&dd.join("rpc-admin.token"));
 
     Ok(())
 }
@@ -503,6 +504,8 @@ fn install_launchd(
     println!("  Plist: {}", plist_path.display());
     println!("  Logs:  tail -f {}/{}.log", log_dir, network);
     println!("  Status: doli service status");
+    let dd = crate::paths::resolve_base_dir(network, data_dir.as_deref());
+    crate::service_rpc_guidance::print(&dd.join("rpc-admin.token"));
 
     Ok(())
 }

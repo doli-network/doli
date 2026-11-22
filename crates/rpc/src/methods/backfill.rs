@@ -4,15 +4,19 @@ use std::net::IpAddr;
 use std::sync::atomic::Ordering;
 
 use serde_json::Value;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crypto::{Hash, Hasher};
-use doli_core::validation::verify_block_signature_at;
 
 use crate::error::RpcError;
 use crate::types::*;
 
 use super::context::RpcContext;
+
+#[path = "backfill_anchor.rs"]
+mod anchor;
+#[path = "backfill_peer_commitment.rs"]
+mod peer_commitment;
 
 /// Check if an IP address is in a private/reserved range (SSRF protection).
 fn is_private_ip(ip: &IpAddr) -> bool {
@@ -78,17 +82,14 @@ impl RpcContext {
         let params: BackfillParams =
             serde_json::from_value(params).map_err(|e| RpcError::invalid_params(e.to_string()))?;
 
-        // Validate URL to prevent SSRF attacks
         validate_backfill_url(&params.rpc_url, &self.network)?;
 
-        // Check if already running
         if self.backfill_state.running.load(Ordering::SeqCst) {
             return Err(RpcError::internal_error(
                 "Backfill already in progress. Use backfillStatus to check progress.",
             ));
         }
 
-        // Find the gap: look for the lowest existing block
         let (tip_height, tip_hash) = {
             let cs = self.chain_state.read().await;
             (cs.best_height, cs.best_hash)
@@ -97,21 +98,10 @@ impl RpcContext {
             return Err(RpcError::internal_error("Node has no blocks yet"));
         }
 
-        // Fix #3 (2026-04-15): preflight tip agreement check.
-        // backfillFromPeer only fills block_store gaps — it does NOT reapply state.
-        // If our tip hash differs from the peer's block at our tip height, we have a
-        // state divergence (e.g. from a rollback cascade). Running backfill in that
-        // case fills "holes" but leaves bond_snapshot / accumulators / UTXO diverged,
-        // producing a FALSE integrity signal ("chain complete") while consensus
-        // state is still wrong. Prevent that here.
-        //
-        // INC-I-055: Skip when `skip_divergence_check=true`. After a genesis reset,
-        // the local tip hash will ALWAYS differ from the peer's. The per-block BLAKE3
-        // checksum verification in the fetch loop is still enforced.
+        // Preflight only saves time; the anchor walk is the safety gate (INC-I-308 R-1).
         if params.skip_divergence_check {
             info!("Backfill: skip_divergence_check=true — bypassing tip agreement preflight");
-        }
-        if !params.skip_divergence_check {
+        } else {
             let client = reqwest::Client::new();
             match client
                 .post(&params.rpc_url)
@@ -157,147 +147,68 @@ impl RpcContext {
             }
         }
 
-        // Full scan: find ALL missing heights AND divergent blocks.
-        // Phase 1: detect gaps (missing block data)
-        // Phase 2: compare chain commitment with peer — if different,
-        //          find divergent heights by comparing block hashes.
+        // Scan: missing heights, plus stored heights whose child does not link to them.
         let block_store_scan = self.block_store.clone();
         let peer_url = params.rpc_url.clone();
-        let (missing_heights, local_commitment) = tokio::task::spawn_blocking(move || {
-            let mut missing = Vec::new();
+        let (todo, local_commitment) = tokio::task::spawn_blocking(move || {
+            let mut todo = Vec::new();
             let mut commitment = crypto::Hash::default();
+            let mut last: Option<(u64, Hash)> = None;
             for h in 1..=tip_height {
                 match block_store_scan.get_block_by_height(h) {
                     Ok(Some(blk)) => {
                         let hash = blk.hash();
+                        if let Some((ph, phash)) = last {
+                            if ph + 1 == h && blk.header.prev_hash != phash {
+                                todo.push(ph);
+                            }
+                        }
+                        last = Some((h, hash));
                         let mut hasher = Hasher::new();
                         hasher.update(commitment.as_bytes());
                         hasher.update(hash.as_bytes());
                         commitment = hasher.finalize();
                     }
-                    _ => {
-                        missing.push(h);
-                    }
+                    _ => todo.push(h),
                 }
             }
-            (missing, commitment)
+            if let Some((lh, lhash)) = last {
+                if lh == tip_height && lhash != tip_hash {
+                    todo.push(tip_height);
+                }
+            }
+            todo.sort_unstable();
+            todo.dedup();
+            (todo, commitment)
         })
         .await
         .map_err(|e| RpcError::internal_error(e.to_string()))?;
 
-        // Phase 2: check peer commitment — if different, find divergent heights
-        let mut repair_heights: Vec<u64> = Vec::new();
-        if missing_heights.is_empty() {
-            let client = reqwest::Client::new();
-            if let Ok(resp) = client
-                .post(&peer_url)
-                .json(&serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "method": "verifyChainIntegrity",
-                    "params": [],
-                    "id": 1
-                }))
-                .send()
-                .await
-            {
-                if let Ok(body) = resp.json::<serde_json::Value>().await {
-                    let peer_commitment = body["result"]["chainCommitment"].as_str().unwrap_or("");
-                    let local_hex = hex::encode(local_commitment.as_bytes());
-                    if !peer_commitment.is_empty() && peer_commitment != local_hex {
-                        info!(
-                            "Backfill: commitment mismatch (local={:.16} peer={:.16}), scanning for divergent blocks",
-                            local_hex, peer_commitment
-                        );
-                        // Reverse scan: walk backwards from tip to find the fork point.
-                        // Most forks are recent — this finds divergence in O(depth) not O(n).
-                        // Once we find a matching block, everything below is identical.
-                        let block_store_repair = self.block_store.clone();
-                        let mut fork_point = tip_height + 1;
-                        for h in (1..=tip_height).rev() {
-                            if let Ok(Some(local_block)) = block_store_repair.get_block_by_height(h)
-                            {
-                                if let Ok(resp) = client
-                                    .post(&peer_url)
-                                    .json(&serde_json::json!({
-                                        "jsonrpc": "2.0",
-                                        "method": "getBlockByHeight",
-                                        "params": [h],
-                                        "id": h
-                                    }))
-                                    .send()
-                                    .await
-                                {
-                                    if let Ok(body) = resp.json::<serde_json::Value>().await {
-                                        let peer_hash =
-                                            body["result"]["hash"].as_str().unwrap_or("");
-                                        let local_hash = local_block.hash().to_hex();
-                                        if peer_hash.is_empty() {
-                                            continue;
-                                        }
-                                        if peer_hash == local_hash {
-                                            break;
-                                        }
-                                        fork_point = h;
-                                    }
-                                }
-                            }
-                        }
-                        if fork_point <= tip_height {
-                            info!(
-                                "Backfill repair: fork diverges at h={}, refetching h={}..={}",
-                                fork_point, fork_point, tip_height
-                            );
-                            repair_heights.extend(fork_point..=tip_height);
-                        }
-                        if repair_heights.is_empty() {
-                            info!("Backfill: commitment differs but no individual block divergence found (height difference)");
-                        }
-                    }
-                }
-            }
-        }
-
-        let all_heights: Vec<u64> = {
-            let mut combined = missing_heights.clone();
-            combined.extend(&repair_heights);
-            combined.sort_unstable();
-            combined.dedup();
-            combined
-        };
-
-        if all_heights.is_empty() {
+        if todo.is_empty() {
+            let token = params.peer_token.as_deref();
+            let check = peer_commitment::report(
+                &self.block_store,
+                &peer_url,
+                token,
+                local_commitment,
+                tip_height,
+            )
+            .await;
+            let message = if check == "ok" {
+                "No gaps detected — chain is complete.".to_string()
+            } else {
+                format!("No gaps detected — chain not verified against the peer ({check}).")
+            };
             return Ok(serde_json::json!({
                 "started": false,
-                "message": "No gaps detected — chain is complete."
+                "message": message,
+                "divergence_check": check
             }));
         }
 
-        let missing_heights = all_heights;
+        let total_to_fetch = todo.len() as u64;
+        let gaps_str = anchor::format_ranges(&todo);
 
-        let total_to_fetch = missing_heights.len() as u64;
-
-        // Format gap ranges for response
-        let gaps_str = {
-            let mut ranges = Vec::new();
-            let mut i = 0;
-            while i < missing_heights.len() {
-                let start = missing_heights[i];
-                let mut end = start;
-                while i + 1 < missing_heights.len() && missing_heights[i + 1] == end + 1 {
-                    i += 1;
-                    end = missing_heights[i];
-                }
-                if start == end {
-                    ranges.push(format!("{}", start));
-                } else {
-                    ranges.push(format!("{}-{}", start, end));
-                }
-                i += 1;
-            }
-            ranges.join(", ")
-        };
-
-        // Reset state
         self.backfill_state.imported.store(0, Ordering::SeqCst);
         self.backfill_state
             .total
@@ -305,166 +216,21 @@ impl RpcContext {
         *self.backfill_state.error.write().await = None;
         self.backfill_state.running.store(true, Ordering::SeqCst);
 
-        // Spawn background task
-        let block_store = self.block_store.clone();
-        let state = self.backfill_state.clone();
-        let rpc_url = params.rpc_url.clone();
-        let sig_ah = self.inc_i_236_block_signature_activation_height;
-        let bls_ah = self.inc_i_178_attestation_bls_activation_height;
-
-        tokio::spawn(async move {
-            info!(
-                "Backfill started: fetching {} missing blocks from {}",
-                total_to_fetch, rpc_url
-            );
-
-            let client = reqwest::Client::new();
-            let mut imported = 0u64;
-            let mut skipped = 0u64;
-
-            for &h in &missing_heights {
-                // Fetch block from peer
-                let resp = match client
-                    .post(&rpc_url)
-                    .json(&serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "method": "getBlockRaw",
-                        "params": { "height": h },
-                        "id": h
-                    }))
-                    .send()
-                    .await
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        let msg = format!("HTTP error at height {}: {}", h, e);
-                        warn!("Backfill failed: {}", msg);
-                        *state.error.write().await = Some(msg);
-                        state.running.store(false, Ordering::SeqCst);
-                        return;
-                    }
-                };
-
-                let body: serde_json::Value = match resp.json().await {
-                    Ok(v) => v,
-                    Err(e) => {
-                        let msg = format!("JSON parse error at height {}: {}", h, e);
-                        warn!("Backfill failed: {}", msg);
-                        *state.error.write().await = Some(msg);
-                        state.running.store(false, Ordering::SeqCst);
-                        return;
-                    }
-                };
-
-                let block_result = match body.get("result") {
-                    Some(r) => r,
-                    None => {
-                        warn!("Backfill: peer missing block {}, skipping", h);
-                        skipped += 1;
-                        continue;
-                    }
-                };
-
-                let b64_data = match block_result.get("block").and_then(|v| v.as_str()) {
-                    Some(s) => s,
-                    None => {
-                        warn!("Backfill: no block data at height {}, skipping", h);
-                        skipped += 1;
-                        continue;
-                    }
-                };
-
-                let expected_checksum = block_result
-                    .get("blake3")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-
-                // Decode and verify
-                use base64::Engine;
-                let data = match base64::engine::general_purpose::STANDARD.decode(b64_data) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        let msg = format!("Base64 decode error at height {}: {}", h, e);
-                        warn!("Backfill failed: {}", msg);
-                        *state.error.write().await = Some(msg);
-                        state.running.store(false, Ordering::SeqCst);
-                        return;
-                    }
-                };
-
-                if !expected_checksum.is_empty() {
-                    let actual = crypto::hash::hash(&data).to_string();
-                    if actual != expected_checksum {
-                        let msg = format!("BLAKE3 mismatch at height {}", h);
-                        warn!("Backfill failed: {}", msg);
-                        *state.error.write().await = Some(msg);
-                        state.running.store(false, Ordering::SeqCst);
-                        return;
-                    }
-                }
-
-                let block: doli_core::Block =
-                    match doli_core::transaction::legacy::deserialize_block_compat(&data) {
-                        Some(b) => b,
-                        None => {
-                            let msg = format!(
-                                "Deserialize error at height {} (tried current and legacy formats)",
-                                h
-                            );
-                            warn!("Backfill failed: {}", msg);
-                            *state.error.write().await = Some(msg);
-                            state.running.store(false, Ordering::SeqCst);
-                            return;
-                        }
-                    };
-
-                if let Err(e) = verify_block_signature_at(&block.header, h, sig_ah) {
-                    error!("Backfill: rejected block at height {}: {}", h, e);
-                    skipped += 1;
-                    continue;
-                }
-                if !block.body_matches_header(bls_ah, Some(h)) {
-                    error!(
-                        "Backfill: rejected block at height {}: body does not match its header",
-                        h
-                    );
-                    skipped += 1;
-                    continue;
-                }
-                if let Err(e) = block_store.put_block_canonical(&block, h) {
-                    let msg = format!("Store error at height {}: {}", h, e);
-                    warn!("Backfill failed: {}", msg);
-                    *state.error.write().await = Some(msg);
-                    state.running.store(false, Ordering::SeqCst);
-                    return;
-                }
-
-                imported += 1;
-                state.imported.store(imported, Ordering::SeqCst);
-
-                if imported.is_multiple_of(500) {
-                    info!("Backfill progress: {}/{} blocks", imported, total_to_fetch);
-                }
-
-                // Yield every 100 blocks to avoid starving other tasks
-                if imported.is_multiple_of(100) {
-                    tokio::task::yield_now().await;
-                }
-            }
-
-            if skipped > 0 {
-                warn!(
-                    "Backfill done: {} imported, {} skipped (peer missing or rejected). Run again with a different peer to fill remaining gaps.",
-                    imported, skipped
-                );
-            } else {
-                info!(
-                    "Backfill complete: {} blocks imported, chain filled",
-                    imported
-                );
-            }
-            state.running.store(false, Ordering::SeqCst);
-        });
+        let walk = anchor::Walk {
+            store: self.block_store.clone(),
+            chain: self.chain_state.clone(),
+            state: self.backfill_state.clone(),
+            url: params.rpc_url.clone(),
+            tip_height,
+            tip_hash,
+            sig_ah: self.inc_i_236_block_signature_activation_height,
+            bls_ah: self.inc_i_178_attestation_bls_activation_height,
+        };
+        info!(
+            "Backfill started: {} heights to check from {}",
+            total_to_fetch, params.rpc_url
+        );
+        tokio::spawn(walk.run(todo));
 
         Ok(serde_json::json!({
             "started": true,

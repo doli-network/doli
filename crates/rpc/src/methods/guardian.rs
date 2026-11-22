@@ -10,6 +10,9 @@ use crate::error::RpcError;
 
 use super::context::RpcContext;
 
+#[path = "guardian_repair_check.rs"]
+mod repair_check;
+
 impl RpcContext {
     /// Pause block production on this node.
     ///
@@ -406,7 +409,7 @@ impl RpcContext {
     ///
     /// INC-I-055: Replaces the manual tar+scp relay between seeds. Given a peer's
     /// RPC URL, scans the local archive directory for missing .block files up to
-    /// the peer's chain tip, fetches each missing block via `getBlockRaw`, verifies
+    /// min(peer tip, local tip), fetches each missing block via `getBlockRaw`, verifies
     /// the BLAKE3 checksum, validates genesis_hash, and writes the file to the
     /// local archive directory.
     ///
@@ -468,10 +471,13 @@ impl RpcContext {
         };
 
         // Read local genesis hash for validation
-        let local_genesis = {
+        let (local_genesis, local_tip) = {
             let cs = self.chain_state.read().await;
-            cs.genesis_hash
+            (cs.genesis_hash, cs.best_height)
         };
+        let store_bg = self.block_store.clone();
+        let sig_ah = self.inc_i_236_block_signature_activation_height;
+        let bls_ah = self.inc_i_178_attestation_bls_activation_height;
 
         // Spawn background task to fetch missing blocks
         let archive_dir_bg = archive_dir.clone();
@@ -487,7 +493,7 @@ impl RpcContext {
             let mut skipped = 0u64;
             let mut errors = 0u64;
 
-            for h in 1..=peer_tip {
+            for h in 1..=peer_tip.min(local_tip) {
                 let block_path = archive_dir_bg.join(format!("{:010}.block", h));
                 let checksum_path = archive_dir_bg.join(format!("{:010}.blake3", h));
 
@@ -567,15 +573,18 @@ impl RpcContext {
                     continue;
                 }
 
-                // Validate genesis_hash
-                if let Some(block) = doli_core::transaction::legacy::deserialize_block_compat(&data)
-                {
-                    if block.header.genesis_hash != local_genesis {
+                if let Some(b) = doli_core::transaction::legacy::deserialize_block_compat(&data) {
+                    if b.header.genesis_hash != local_genesis {
                         return Err(format!(
                             "Block at h={} has wrong genesis_hash — peer is on a different chain",
                             h
                         ));
                     }
+                }
+                if let Err(why) = repair_check::admissible(&store_bg, &data, h, sig_ah, bls_ah) {
+                    tracing::warn!("[REPAIR_ARCHIVE] Refused h={}: {}", h, why);
+                    errors += 1;
+                    continue;
                 }
 
                 // Write .block file (atomic via tmp rename)
@@ -614,7 +623,7 @@ impl RpcContext {
                 fetched,
                 skipped,
                 errors,
-                peer_tip
+                peer_tip.min(local_tip)
             );
 
             Ok((fetched, skipped, errors, peer_tip))

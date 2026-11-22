@@ -69,6 +69,27 @@ All commands support these options:
 | Testnet | 18500 | `--rpc http://127.0.0.1:18500` |
 | Devnet | 28500 | `--rpc http://127.0.0.1:28500` |
 
+### RPC Admin Token
+
+The node refuses its 14 admin RPC methods without `Authorization: Bearer <token>` and answers `-32008 Unauthorized`. These CLI commands call admin methods:
+
+| Command | Admin method |
+|---------|--------------|
+| `doli guardian halt` / `resume` / `checkpoint` | `pauseProduction` / `resumeProduction` / `createCheckpoint` |
+| `doli chain-verify` | `verifyChainIntegrity` |
+| `doli snap` | `getStateRootDebug`, `getStateSnapshot` (on remote seeds) |
+
+The CLI sends the header only on admin calls. Token resolution:
+
+1. `DOLI_RPC_ADMIN_TOKEN` (when not empty after trim).
+2. `<node data dir>/rpc-admin.token` (owner-only). The node always writes this file: it creates a token on first start, or writes its env/config token there. The CLI reads this file only when `--rpc` is a loopback address. It picks the data dir in this order: `DOLI_DATA_DIR`; else the data dir of the process that listens on the `--rpc` port, resolved by the node's own rule (its `--data-dir`, else its own `DOLI_DATA_DIR` env, else its platform default, else its legacy `~/.doli/<network>` in the node user's home; the CLI can read another process's env only as root or as the same user); else the network default dir. When the CLI can see a process listening on the port, it sends a token file only if that process's uid owns that file — this applies to all three dirs. If no candidate file is owned by that uid, the CLI sends no token and the `-32008` hint says that the process on the port is not owned by the token file's owner (a different local user cannot get a token by listening on the port). On Linux, when a LISTEN socket on the port is in `/proc/net/tcp{,6}` but the CLI cannot identify its owner process (a non-root CLI and a root node, or a root CLI without `CAP_SYS_PTRACE` in a container or a hardened unit, for any node, root-owned included), the CLI sends no token; the hint says that it found a listener on the port but could not identify its owner process: run with `sudo` on the host, or set `DOLI_RPC_ADMIN_TOKEN`. The ownership check uses the process uid, not the socket uid in `/proc/net/tcp`: the socket uid is the uid that created the socket, so a socket made by root and kept by a process that dropped privileges, or passed to it, would pass. Only when no listener is visible on the port (macOS `lsof` sees none, or no LISTEN socket on Linux) does the CLI use `DOLI_DATA_DIR` or the default dir without the check; the hint then says that the CLI could not identify the node on the port. A non-root user cannot read a root-owned token file: run the CLI with `sudo`.
+
+`doli snap` sends only `DOLI_RPC_ADMIN_TOKEN` to remote seeds. It never sends the local token file. For remote access to your own node, use `ssh -L 8500:127.0.0.1:8500 <host>`. Do not bind the RPC to `0.0.0.0`.
+
+On `-32008`, the error has a hint line that names the env var and the token file path the CLI tried.
+
+`doli snap` keeps `rpc-admin.token` when it wipes the data dir (with `keys/`, `wallet.json`, `wallet.seed.txt`, `.env`, `node_key`, `config.toml`).
+
 ---
 
 ## Agent Safety Rules

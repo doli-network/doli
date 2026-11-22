@@ -196,9 +196,14 @@ install_remote() {
     return
   fi
 
-  echo "$content" | do_ssh "$server" "sudo tee /etc/systemd/system/${service_name}.service > /dev/null"
+  echo "$content" | do_ssh "$server" "sh -c $(printf %q "$UNIT_WRITE_REMOTE") _ /etc/systemd/system/${service_name}.service"
   echo "  Installed ${service_name} on ${server}"
 }
+
+# Remote: write the unit from stdin to $1, carrying the old unit's LAST admin-token Environment line
+# (systemd applies the last assignment) into [Service], once. The token moves through a shell variable and builtins only (never argv/stdout).
+UNIT_WRITE_REMOTE='f="$1"; tok=$(sudo grep -E "^[[:space:]]*Environment[=].*DOLI_RPC_ADMIN_TOKEN[=]" "$f" 2>/dev/null | tail -n 1); while IFS= read -r l || [ -n "$l" ]; do printf "%s\n" "$l"; if [ "$l" = "[Service]" ] && [ -n "$tok" ]; then printf "%s\n" "$tok"; fi; done | sudo tee "$f" > /dev/null'
+
 
 # ── SSH wrapper ───────────────────────────────────────────────────────
 do_ssh() {
@@ -346,7 +351,8 @@ validate_service() {
   local server="$1" service_name="$2" expected="$3" label="$4"
 
   local deployed
-  deployed=$(do_ssh "$server" "cat /etc/systemd/system/${service_name}.service 2>/dev/null") || deployed=""
+  # the carried admin-token line is expected and must never be printed in a diff
+  deployed=$(do_ssh "$server" "cat /etc/systemd/system/${service_name}.service 2>/dev/null | grep -v DOLI_RPC_ADMIN_TOKEN") || deployed=""
 
   if [[ -z "$deployed" ]]; then
     echo -e "  \033[0;31mMISSING\033[0m ${label} — ${service_name} not found on ${server}"
@@ -554,3 +560,9 @@ if [[ "${1:-}" != "validate" ]]; then
       ;;
   esac
 fi
+
+echo ""
+echo "=== Admin RPC token ==="
+echo "Each node creates <data_dir>/rpc-admin.token (owner-only); admin RPC methods need it from every address."
+echo "A re-run keeps a unit's existing admin-token Environment line; the node writes that token to rpc-admin.token."
+echo "Reach RPC safely: ssh -L 8500:127.0.0.1:8500 <host>, or send 'Authorization: Bearer <token>'."

@@ -28,9 +28,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+source "$(dirname "${BASH_SOURCE[0]}")/lib/rpc-admin-token.sh"
+
 rpc_call() {
   local endpoint="$1" method="$2"
-  curl -sf --max-time 5 -X POST "http://${endpoint}" \
+  curl -sf --max-time 5 -X POST "http://${endpoint}" -H @<(rpc_admin_header_for "$method" "$endpoint") \
     -H "Content-Type: application/json" \
     -d "{\"jsonrpc\":\"2.0\",\"method\":\"${method}\",\"params\":[],\"id\":1}" 2>/dev/null
 }

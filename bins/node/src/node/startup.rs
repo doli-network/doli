@@ -305,10 +305,11 @@ impl Node {
     pub async fn start_rpc(&self) -> Result<()> {
         let listen_addr: SocketAddr = self.config.rpc.listen_addr.parse()?;
 
-        // Wire admin_token from env var (DOLI_RPC_ADMIN_TOKEN) or config
-        let admin_token = std::env::var("DOLI_RPC_ADMIN_TOKEN")
-            .ok()
-            .or_else(|| self.config.rpc.admin_token.clone());
+        let admin_token = provision_admin_token(
+            std::env::var("DOLI_RPC_ADMIN_TOKEN").ok(),
+            self.config.rpc.admin_token.clone(),
+            &self.config.data_dir,
+        );
 
         // ISSUE-174 #1: trusted reverse-proxy IPs. Env var overrides config.
         // Format: comma-separated list of IPs ("127.0.0.1,10.0.0.5").
@@ -675,3 +676,34 @@ impl Node {
         Some(attestation)
     }
 }
+
+/// INC-I-308: the admin token the RPC server enforces (env > config > token file), or
+/// `None` (admin RPC off) when the token file cannot be written.
+pub(crate) fn provision_admin_token(
+    env: Option<String>,
+    config: Option<String>,
+    data_dir: &std::path::Path,
+) -> Option<String> {
+    use rpc::admin_token::{resolve_admin_token, token_file_path, TokenSource};
+    match resolve_admin_token(env, config, data_dir) {
+        Ok((token, source)) => {
+            let src = match &source {
+                TokenSource::Env => "env DOLI_RPC_ADMIN_TOKEN".to_string(),
+                TokenSource::Config => "config rpc.admin_token".to_string(),
+                TokenSource::FileReused(p) => format!("file reused {}", p.display()),
+                TokenSource::FileCreated(p) => format!("file created {}", p.display()),
+            };
+            tracing::info!("RPC admin token source: {}", src);
+            Some(token)
+        }
+        Err(e) => {
+            let path = token_file_path(data_dir);
+            tracing::error!("admin RPC disabled: cannot write {}: {}", path.display(), e);
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "startup_admin_token_tests.rs"]
+mod admin_token_tests;

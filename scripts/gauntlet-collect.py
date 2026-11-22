@@ -24,6 +24,9 @@ import re
 import sys
 import urllib.request
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import rpc_admin_token  # noqa: E402
+
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 # Event patterns — deliberately match ACTIONS/events, not telemetry field names.
@@ -49,7 +52,8 @@ def rpc(port, method, params=None):
     body = json.dumps({"jsonrpc": "2.0", "method": method,
                        "params": params or {}, "id": 1}).encode()
     req = urllib.request.Request("http://127.0.0.1:%s" % port, data=body,
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json",
+                                          **rpc_admin_token.headers_for(method, port=port)})
     with urllib.request.urlopen(req, timeout=4) as r:
         return json.loads(r.read()).get("result")
 

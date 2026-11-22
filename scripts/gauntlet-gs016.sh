@@ -58,12 +58,17 @@ GS016_GAP_MAX="${GS016_GAP_MAX:-50}"
 # ── helpers ─────────────────────────────────────────────────────────────────
 
 # _gs016_rpc <port> <method> [params-json] — raw JSON-RPC POST, empty on failure.
+# From v6.46.3 (INC-I-308) every admin method needs the operator token from EVERY
+# address (loopback included); a caller without it gets -32008 (unauthorized).
 _gs016_rpc() {
     local port="$1" method="$2" params="${3:-}"
     [ -n "$params" ] || params='{}'
-    curl -sf --max-time 15 -X POST "http://127.0.0.1:$port" \
-        -H 'Content-Type: application/json' \
-        -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$method\",\"params\":$params}" 2>/dev/null
+    local body="{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$method\",\"params\":$params}"
+    # env token, else the token file of the node listening on the port; never on argv
+    # shellcheck source=lib/rpc-admin-token.sh
+    . "$(dirname "${BASH_SOURCE[0]}")/lib/rpc-admin-token.sh"
+    curl -sf --max-time 15 -X POST "http://127.0.0.1:$port" -H 'Content-Type: application/json' \
+        -H @<(rpc_admin_header_for "$method" "127.0.0.1:$port") -d "$body" 2>/dev/null
 }
 
 # _gs016_jq <expr> — read stdin JSON, print `eval(expr)` on the parsed dict `d`.
