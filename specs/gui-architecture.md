@@ -686,7 +686,7 @@ doli-core = { workspace = true, default-features = false }
 
 build-gui-linux:
   name: Build GUI Linux x86_64
-  runs-on: ubuntu-latest
+  runs-on: ubuntu-24.04  # pinned: ubuntu-26.04 GCC breaks bundled RocksDB 8.10
   # Needs: Node.js, Rust, webkit2gtk, libappindicator (Tauri deps)
   # Produces: .AppImage, .deb
 
