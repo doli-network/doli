@@ -1,11 +1,12 @@
 //! INC-I-308 send-back 1 — locate the data dir of the node listening on a loopback port.
 //!
 //! OUTPUT CONTRACT: data_dir_from_args(args, default) -> PathBuf; token_owner(file) -> Option<u32>;
-//!   choose_token_dir(listeners, env dir, default, owner_of) -> TokenDir; admin_token_dir(endpoint,
+//!   choose_token_dir(listeners, hidden, env dir, default, owner_of) -> TokenDir; admin_token_dir(endpoint,
 //!   fallback) -> TokenDir; loopback_hint(endpoint, env, TokenDir) -> one line; /proc + ps parsers.
 //! PATHS: --data-dir X | --data-dir=X | -d X | ~/X | no flag -> default(--network | -n | mainnet);
 //!   listener visible: candidate {DOLI_DATA_DIR | own dir | default} owned by its uid -> Owned,
-//!   other uid / absent -> Refused (no token); no listener -> Unidentified(env | default).
+//!   other uid / absent -> Refused (no token); LISTEN socket whose owner process is unknown ->
+//!   UnknownOwner (no token); no socket -> Unidentified(env | default).
 //! INPUT PARTITIONS: argv in {long flag, =form, short flag, tilde, network long/=/short, none,
 //!   flag as argv[0]}; token file in {absent, own uid, other uid}; ps line in {spaced existing
 //!   dir, non-existing dir}; /proc rows in {LISTEN on port, connected on port, LISTEN other port};
@@ -106,16 +107,16 @@ fn visible_listener_gets_only_a_token_file_its_uid_owns() {
     };
     // listener uid 1000, every candidate file owned by root (0): no token at all
     let root_owned = owners(&[("/var/lib/doli/mainnet", 0), ("/fake", 0), ("/env/data", 0)]);
-    let got = choose_token_dir(&[seen(1000, "/fake")], None, def(), &root_owned);
+    let got = choose_token_dir(&[seen(1000, "/fake")], false, None, def(), &root_owned);
     assert_eq!(got.dir(), None, "default dir must not be sent: {got:?}");
     assert_eq!(got, refused(Some(0), "/fake"));
-    let got = choose_token_dir(&[seen(1000, "/fake")], env(), def(), &root_owned);
+    let got = choose_token_dir(&[seen(1000, "/fake")], false, env(), def(), &root_owned);
     assert_eq!(
         got,
         refused(Some(0), "/env/data"),
         "DOLI_DATA_DIR is uid-checked too"
     );
-    let got = choose_token_dir(&[seen(1000, "/fake")], None, def(), owners(&[]));
+    let got = choose_token_dir(&[seen(1000, "/fake")], false, None, def(), owners(&[]));
     assert_eq!(got, refused(None, "/fake"), "no token file anywhere");
     // the listener's uid owns a candidate: that one is used
     let mine = owners(&[
@@ -123,24 +124,56 @@ fn visible_listener_gets_only_a_token_file_its_uid_owns() {
         ("/var/lib/doli/mainnet", 1000),
         ("/env/data", 1000),
     ]);
-    let got = choose_token_dir(&[seen(1000, "/n1")], None, def(), &mine);
+    let got = choose_token_dir(&[seen(1000, "/n1")], false, None, def(), &mine);
     assert_eq!(got, TokenDir::Owned(PathBuf::from("/n1")));
-    let got = choose_token_dir(&[seen(1000, "/n2")], None, def(), &mine);
+    let got = choose_token_dir(&[seen(1000, "/n2")], false, None, def(), &mine);
     assert_eq!(
         got,
         TokenDir::Owned(def()),
         "default dir owned by the listener uid"
     );
-    let got = choose_token_dir(&[seen(1000, "/n1")], env(), def(), &mine);
+    let got = choose_token_dir(&[seen(1000, "/n1")], false, env(), def(), &mine);
     assert_eq!(got, TokenDir::Owned(PathBuf::from("/env/data")));
     // two visible listeners of different uids: no file is owned by both
-    let got = choose_token_dir(&[seen(1000, "/n1"), seen(1001, "/n1")], None, def(), &mine);
+    let got = choose_token_dir(
+        &[seen(1000, "/n1"), seen(1001, "/n1")],
+        false,
+        None,
+        def(),
+        &mine,
+    );
     assert_eq!(got.dir(), None, "mixed-uid listeners: {got:?}");
     // no listener visible: unverified fallback, as before
-    let got = choose_token_dir(&[], None, def(), owners(&[]));
+    let got = choose_token_dir(&[], false, None, def(), owners(&[]));
     assert_eq!(got, TokenDir::Unidentified(def()));
-    let got = choose_token_dir(&[], env(), def(), owners(&[]));
+    let got = choose_token_dir(&[], false, env(), def(), owners(&[]));
     assert_eq!(got, TokenDir::Unidentified(PathBuf::from("/env/data")));
+}
+
+/// INC-I-308 run 737 F4 — Decision: a failure means a root CLI without CAP_SYS_PTRACE, which sees
+/// the LISTEN socket in /proc/net/tcp but cannot read its owner's /proc/<pid>/fd, sends the
+/// unverified DOLI_DATA_DIR / default dir token to that unknown listener ("5d with-auth=4").
+#[test]
+fn visible_socket_with_unknown_owner_gets_no_token_dir() {
+    let def = || PathBuf::from("/var/lib/doli/mainnet");
+    let env = || Some(PathBuf::from("/env/data"));
+    let root_owned = owners(&[("/var/lib/doli/mainnet", 0), ("/env/data", 0)]);
+    let got = choose_token_dir(&[], true, None, def(), &root_owned);
+    assert_eq!(got, TokenDir::UnknownOwner, "default dir sent: {got:?}");
+    let got = choose_token_dir(&[], true, env(), def(), &root_owned);
+    assert_eq!(got, TokenDir::UnknownOwner, "DOLI_DATA_DIR sent: {got:?}");
+    // one identified listener and one socket with no known owner on the same port
+    let got = choose_token_dir(
+        &[seen(0, "/var/lib/doli/mainnet")],
+        true,
+        None,
+        def(),
+        &root_owned,
+    );
+    assert_eq!(got.dir(), None, "unowned second socket: {got:?}");
+    // no socket at all: the unverified fallback stays
+    let got = choose_token_dir(&[], false, None, def(), &root_owned);
+    assert_eq!(got, TokenDir::Unidentified(def()));
 }
 
 /// INC-I-308 run 737 F1+F2 — Decision: a failure means a hint blames the wrong cause: it names
@@ -186,7 +219,21 @@ fn loopback_hint_names_the_cause_per_lookup_result() {
         h.contains(&file.display().to_string()) && h.contains("run with sudo"),
         "{h}"
     );
+    let h = loopback_hint(url, None, &TokenDir::UnknownOwner);
+    assert!(
+        h.contains("found a listener on port 18621 but could not identify its owner process"),
+        "{h}"
+    );
+    assert!(
+        h.contains("sent no token") && !h.contains("rpc-admin.token"),
+        "{h}"
+    );
+    assert!(
+        h.contains("run with sudo on the host") && h.contains("DOLI_RPC_ADMIN_TOKEN"),
+        "{h}"
+    );
     for td in [
+        TokenDir::UnknownOwner,
         TokenDir::Owned("/a".into()),
         TokenDir::Unidentified("/a".into()),
         refused,
@@ -256,8 +303,11 @@ fn finds_a_real_listener_and_its_data_dir() {
         .read_line(&mut line)
         .unwrap();
     let port: u16 = line.trim().parse().unwrap();
-    let found = find_listeners(port);
-    let got = choose_token_dir(&port_listeners(port), None, net_default("x"), token_owner);
+    let (found, _) = find_listeners(port);
+    let got = {
+        let (seen, hidden) = port_listeners(port);
+        choose_token_dir(&seen, hidden, None, net_default("x"), token_owner)
+    };
     let _ = child.kill();
     let _ = child.wait();
     assert!(
@@ -295,7 +345,10 @@ fn refused_real_listener_gets_no_fallback_dir() {
         .unwrap();
     let port: u16 = line.trim().parse().unwrap();
     let fb = fallback.path().to_path_buf();
-    let got = choose_token_dir(&port_listeners(port), None, fb, token_owner);
+    let got = {
+        let (seen, hidden) = port_listeners(port);
+        choose_token_dir(&seen, hidden, None, fb, token_owner)
+    };
     let _ = child.kill();
     let _ = child.wait();
     assert_eq!(

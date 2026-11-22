@@ -25,6 +25,8 @@ pub enum TokenDir {
     Owned(PathBuf),
     /// No listener visible: `DOLI_DATA_DIR` or the default dir, not verified.
     Unidentified(PathBuf),
+    /// A LISTEN socket on the port has no identified owner process: send no token.
+    UnknownOwner,
     /// A listener is visible but owns no candidate token file: send no token.
     Refused {
         uid: u32,
@@ -37,7 +39,7 @@ impl TokenDir {
     pub fn dir(&self) -> Option<&Path> {
         match self {
             TokenDir::Owned(d) | TokenDir::Unidentified(d) => Some(d),
-            TokenDir::Refused { .. } => None,
+            TokenDir::Refused { .. } | TokenDir::UnknownOwner => None,
         }
     }
 }
@@ -50,12 +52,17 @@ pub struct SeenListener {
 }
 
 /// Candidates: `env_data_dir` alone, else the listeners' dirs then `default_dir`.
+/// `hidden`: a LISTEN socket on the port has no identified owner process.
 pub fn choose_token_dir(
     listeners: &[SeenListener],
+    hidden: bool,
     env_data_dir: Option<PathBuf>,
     default_dir: PathBuf,
     owner_of: impl Fn(&Path) -> Option<u32>,
 ) -> TokenDir {
+    if hidden {
+        return TokenDir::UnknownOwner;
+    }
     let Some(first) = listeners.first() else {
         return TokenDir::Unidentified(env_data_dir.unwrap_or(default_dir));
     };
@@ -89,8 +96,9 @@ pub fn admin_token_dir(endpoint: &str, fallback: impl FnOnce() -> PathBuf) -> To
     let env = std::env::var_os("DOLI_DATA_DIR")
         .filter(|d| !d.is_empty())
         .map(PathBuf::from);
-    let seen = endpoint_port(endpoint).map_or_else(Vec::new, port_listeners);
-    choose_token_dir(&seen, env, fallback(), token_owner)
+    let (seen, hidden) =
+        endpoint_port(endpoint).map_or_else(|| (Vec::new(), false), port_listeners);
+    choose_token_dir(&seen, hidden, env, fallback(), token_owner)
 }
 
 /// One-line -32008 hint for a loopback endpoint.
@@ -103,6 +111,10 @@ pub fn loopback_hint(endpoint: &str, env: Option<&str>, td: &TokenDir) -> String
         admin::ENV_TOKEN
     );
     match td {
+        TokenDir::UnknownOwner => format!(
+            "admin RPC method refused ({code}): the CLI found a listener on port {port} but could not identify its owner process, so the CLI sent no token{short}; run with sudo on the host, or set {}",
+            admin::ENV_TOKEN
+        ),
         TokenDir::Owned(d) => admin::unauthorized_hint_for(env, &d.join(TOKEN_FILE_NAME)),
         TokenDir::Unidentified(d) => format!(
             "admin RPC method refused ({code}): the CLI could not identify the node on port {port} (a non-root user cannot see a root node's sockets); it tried {}, which is not verified as that node's token file{short}; {fix}",
@@ -126,15 +138,18 @@ fn fallback_default(network: &str) -> PathBuf {
     crate::paths::resolve_base_dir(network, None)
 }
 
-/// Visible listeners on `port` with the data dir from their argv.
-pub fn port_listeners(port: u16) -> Vec<SeenListener> {
-    find_listeners(port)
+/// Visible listeners on `port` with the data dir from their argv, and whether a LISTEN
+/// socket on `port` has no identified owner process.
+pub fn port_listeners(port: u16) -> (Vec<SeenListener>, bool) {
+    let (found, hidden) = find_listeners(port);
+    let seen = found
         .into_iter()
         .map(|l| SeenListener {
             uid: l.uid,
             dir: data_dir_from_args(&l.args, &fallback_default),
         })
-        .collect()
+        .collect();
+    (seen, hidden)
 }
 
 /// Owner uid of `file`, if it exists.
@@ -211,8 +226,10 @@ pub fn args_from_ps_command(cmd: &str) -> Vec<String> {
     out
 }
 
+/// Listeners on `port`, and `true` when a LISTEN socket on it has no identified owner
+/// (no CAP_SYS_PTRACE for another uid's /proc/<pid>/fd, hidepid).
 #[cfg(target_os = "linux")]
-pub fn find_listeners(port: u16) -> Vec<Listener> {
+pub fn find_listeners(port: u16) -> (Vec<Listener>, bool) {
     let mut inodes = Vec::new();
     for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
         if let Ok(text) = std::fs::read_to_string(table) {
@@ -220,13 +237,14 @@ pub fn find_listeners(port: u16) -> Vec<Listener> {
         }
     }
     if inodes.is_empty() {
-        return Vec::new();
+        return (Vec::new(), false);
     }
     let wanted: Vec<String> = inodes.iter().map(|i| format!("socket:[{i}]")).collect();
     let Ok(procs) = std::fs::read_dir("/proc") else {
-        return Vec::new();
+        return (Vec::new(), true);
     };
     let mut out = Vec::new();
+    let mut owned = vec![false; wanted.len()];
     for p in procs.flatten() {
         let Some(pid) = p.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
             continue;
@@ -234,11 +252,14 @@ pub fn find_listeners(port: u16) -> Vec<Listener> {
         let Ok(fds) = std::fs::read_dir(p.path().join("fd")) else {
             continue;
         };
-        let owns = fds.flatten().any(|fd| {
-            std::fs::read_link(fd.path())
-                .is_ok_and(|t| wanted.iter().any(|w| t.as_os_str() == w.as_str()))
-        });
-        if !owns {
+        let mine: Vec<usize> = fds
+            .flatten()
+            .filter_map(|fd| {
+                let t = std::fs::read_link(fd.path()).ok()?;
+                wanted.iter().position(|w| t.as_os_str() == w.as_str())
+            })
+            .collect();
+        if mine.is_empty() {
             continue;
         }
         let uid = std::fs::read_to_string(p.path().join("status"))
@@ -247,9 +268,10 @@ pub fn find_listeners(port: u16) -> Vec<Listener> {
         let args = std::fs::read(p.path().join("cmdline")).map(|b| split_cmdline(&b));
         if let (Some(uid), Ok(args)) = (uid, args) {
             out.push(Listener { pid, uid, args });
+            mine.iter().for_each(|&i| owned[i] = true);
         }
     }
-    out
+    (out, owned.contains(&false))
 }
 
 /// Socket inodes in LISTEN state (`st` 0A) on `port` from a /proc/net/tcp{,6} table.
@@ -289,7 +311,12 @@ pub fn split_cmdline(raw: &[u8]) -> Vec<String> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn find_listeners(port: u16) -> Vec<Listener> {
+pub fn find_listeners(port: u16) -> (Vec<Listener>, bool) {
+    (lsof_listeners(port), false)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn lsof_listeners(port: u16) -> Vec<Listener> {
     let Some(out) = run(&[
         "lsof",
         "-nP",

@@ -66,12 +66,22 @@ exported the token. Four fixes:
   it; else no token is sent. Only with no visible listener are `DOLI_DATA_DIR` / the default dir
   used unchecked. The shell and Python helpers got the same uid check (they never fall back).
   The `-32008` hint names the file tried and `sudo`, or says the port's process is not owned by
-  the token file's owner, or that the CLI could not identify the node on the port.
+  the token file's owner, or that the CLI found a listener but could not identify its owner
+  process (Linux, F4 below), or that the CLI could not identify the node on the port.
 - **Run 737 Linux validation** (`docs/.workflow/run737-linux-validation.md`): F1 — a refused
   listener still got the default dir's token (root's `/var/lib/doli/mainnet` token reached an
   unprivileged fake listener); fixed by `choose_token_dir` (`bins/cli/src/rpc_admin_locate.rs`).
   F2 — the hint named the default file as the node's when no listener was visible; fixed.
   F3 — test 6 of `test-unit-token-tools.sh` drops to user `nobody` when run as root (else SKIP).
+  F4 (re-run at `0bc1c11c`) — a root CLI without `CAP_SYS_PTRACE` saw the LISTEN socket in
+  `/proc/net/tcp` but not its owner's `/proc/<pid>/fd`, so it fell back to the unverified
+  default dir token ("5d requests=4 with-auth=4"). Final rule: on Linux a LISTEN socket on the
+  port with no identified owner process gets no token (`TokenDir::UnknownOwner`); the hint says
+  the CLI found a listener on port P but could not identify its owner process (sudo on the host,
+  or `DOLI_RPC_ADMIN_TOKEN`). The check uses the process uid, not the socket uid: a socket
+  created by root and kept by a privilege-dropped or socket-activated process carries uid 0.
+  Unchecked `DOLI_DATA_DIR` / default dir remains only when no listener is visible (macOS
+  `lsof` sees none, or no LISTEN socket). Test: `visible_socket_with_unknown_owner_gets_no_token_dir`.
 - **D3 installer** (`scripts/install-services.sh`): a re-run carries an existing unit's
   `DOLI_RPC_ADMIN_TOKEN` Environment line into the new unit; `validate` hides that line.
   Test: `scripts/tests/test-installer-unit-token.sh` (red on `8e065a3a`, `FAILS: 4`; green now).
