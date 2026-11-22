@@ -5,13 +5,13 @@
 //! `--data-dir` or not) gets a root CLI's token.
 
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use doli_cli::rpc_admin_auth::{self as admin, TOKEN_FILE_NAME};
 
 /// A process that listens on a TCP port.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listener {
-    #[allow(dead_code)]
     pub pid: u32,
     pub uid: u32,
     pub args: Vec<String>,
@@ -134,19 +134,22 @@ fn endpoint_port(endpoint: &str) -> Option<u16> {
     reqwest::Url::parse(endpoint).ok()?.port_or_known_default()
 }
 
-fn fallback_default(network: &str) -> PathBuf {
-    crate::paths::resolve_base_dir(network, None)
-}
-
-/// Visible listeners on `port` with the data dir from their argv, and whether a LISTEN
-/// socket on `port` has no identified owner process.
+/// Visible listeners on `port` with the data dir the node itself resolved, and whether a
+/// LISTEN socket on `port` has no identified owner process.
 pub fn port_listeners(port: u16) -> (Vec<SeenListener>, bool) {
     let (found, hidden) = find_listeners(port);
     let seen = found
         .into_iter()
-        .map(|l| SeenListener {
-            uid: l.uid,
-            dir: data_dir_from_args(&l.args, &fallback_default),
+        .map(|l| {
+            let env = process_env(l.pid);
+            let home = node_home(env_value(&env, "HOME").as_deref(), uid_home(l.uid));
+            let env_dir = env_value(&env, "DOLI_DATA_DIR");
+            SeenListener {
+                uid: l.uid,
+                dir: node_data_dir(&l.args, env_dir.as_deref(), home.as_deref(), &|p| {
+                    p.exists()
+                }),
+            }
         })
         .collect();
     (seen, hidden)
@@ -164,16 +167,129 @@ pub fn token_owner(_file: &Path) -> Option<u32> {
     None
 }
 
-/// Node data dir from its argv, by the rule of `bins/node/src/main.rs`:
-/// `--data-dir X` / `--data-dir=X` / `-d X`, else the default dir of `--network`.
-pub fn data_dir_from_args(args: &[String], default_dir: &dyn Fn(&str) -> PathBuf) -> PathBuf {
+/// Node data dir, in the order of `bins/node/src/main.rs`: `--data-dir`/`-d` (tilde in the
+/// node's home) > the node's `DOLI_DATA_DIR` > platform default if it exists > legacy
+/// `<home>/.doli/<net>` if it exists > platform default.
+pub fn node_data_dir(
+    args: &[String],
+    env_dir: Option<&str>,
+    home: Option<&Path>,
+    exists: &dyn Fn(&Path) -> bool,
+) -> PathBuf {
     if let Some(dir) = flag_value(args, "--data-dir", Some("-d")) {
-        return expand_tilde(&dir);
+        return match Path::new(&dir).strip_prefix("~") {
+            Ok(rest) => home.unwrap_or(Path::new(".")).join(rest),
+            Err(_) => PathBuf::from(dir),
+        };
     }
-    let net = flag_value(args, "--network", Some("-n"))
-        .unwrap_or_else(|| "mainnet".to_string())
-        .to_ascii_lowercase();
-    default_dir(&net)
+    if let Some(dir) = env_dir {
+        return PathBuf::from(dir);
+    }
+    let raw = flag_value(args, "--network", Some("-n")).unwrap_or_else(|| "mainnet".into());
+    let net = doli_core::Network::from_str(&raw)
+        .map(|n| n.data_dir_name().to_string())
+        .unwrap_or_else(|_| raw.to_ascii_lowercase());
+    let platform = if cfg!(target_os = "linux") {
+        PathBuf::from("/var/lib/doli").join(&net)
+    } else {
+        let base = home.unwrap_or(Path::new("/tmp"));
+        if cfg!(target_os = "macos") {
+            base.join("Library/Application Support/doli").join(&net)
+        } else {
+            base.join(".doli").join(&net)
+        }
+    };
+    let legacy = home.unwrap_or(Path::new(".")).join(".doli").join(&net);
+    if !exists(&platform) && exists(&legacy) {
+        legacy
+    } else {
+        platform
+    }
+}
+
+/// `dirs::home_dir` for the node: its non-empty `HOME`, else its uid's passwd home.
+pub fn node_home(env_home: Option<&str>, passwd: Option<PathBuf>) -> Option<PathBuf> {
+    env_home
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from)
+        .or(passwd)
+}
+
+/// Home field of `uid` in passwd-format lines (`getent`/`/etc/passwd`, macOS `id -P`).
+pub fn passwd_home(text: &str, uid: u32) -> Option<PathBuf> {
+    text.lines().find_map(|l| {
+        let f: Vec<&str> = l.split(':').collect();
+        (f.len() >= 7 && f[2].parse() == Ok(uid)).then(|| PathBuf::from(f[f.len() - 2]))
+    })
+}
+
+/// First `KEY=value` entry for `key` (getenv order).
+pub fn env_value(env: &[String], key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    env.iter()
+        .find_map(|e| e.strip_prefix(&prefix).map(str::to_string))
+}
+
+/// NUL-separated /proc/<pid>/environ into entries.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn environ_entries(raw: &[u8]) -> Vec<String> {
+    split_cmdline(raw)
+}
+
+/// Env entries from a `ps -E -ww -o command=` line (the env follows argv). A value runs to
+/// the next `KEY=` word; the longest existing-path prefix wins, else its first word.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+pub fn ps_env_entries(cmd: &str) -> Vec<String> {
+    let words: Vec<&str> = cmd.split_whitespace().collect();
+    let is_key = |w: &str| {
+        w.split_once('=').is_some_and(|(k, _)| {
+            !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+    };
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        if !is_key(words[i]) {
+            i += 1;
+            continue;
+        }
+        let end = (i + 1..words.len())
+            .find(|&j| is_key(words[j]))
+            .unwrap_or(words.len());
+        let take = (i + 1..=end)
+            .rev()
+            .find(|&j| {
+                let v = words[i..j].join(" ");
+                Path::new(v.split_once('=').map_or("", |(_, v)| v)).exists()
+            })
+            .unwrap_or(i + 1);
+        out.push(words[i..take].join(" "));
+        i = take;
+    }
+    out
+}
+
+/// Env of process `pid` when the caller may read it (root or the same uid), else empty.
+#[cfg(target_os = "linux")]
+fn process_env(pid: u32) -> Vec<String> {
+    std::fs::read(format!("/proc/{pid}/environ"))
+        .map_or_else(|_| Vec::new(), |b| environ_entries(&b))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn process_env(pid: u32) -> Vec<String> {
+    run(&["ps", "-E", "-ww", "-o", "command=", "-p", &pid.to_string()])
+        .map_or_else(Vec::new, |c| ps_env_entries(c.trim()))
+}
+
+#[cfg(target_os = "linux")]
+fn uid_home(uid: u32) -> Option<PathBuf> {
+    passwd_home(&std::fs::read_to_string("/etc/passwd").ok()?, uid)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn uid_home(uid: u32) -> Option<PathBuf> {
+    passwd_home(&run(&["id", "-P", &uid.to_string()])?, uid)
 }
 
 fn flag_value(args: &[String], long: &str, short: Option<&str>) -> Option<String> {
@@ -188,13 +304,6 @@ fn flag_value(args: &[String], long: &str, short: Option<&str>) -> Option<String
         }
     }
     None
-}
-
-fn expand_tilde(dir: &str) -> PathBuf {
-    match (dir.strip_prefix("~/"), dirs::home_dir()) {
-        (Some(rest), Some(home)) => home.join(rest),
-        _ => PathBuf::from(dir),
-    }
 }
 
 /// Argv from a `ps -o command=` line. ps prints argv unquoted, so a value after

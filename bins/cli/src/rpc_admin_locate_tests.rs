@@ -1,9 +1,11 @@
 //! INC-I-308 send-back 1 — locate the data dir of the node listening on a loopback port.
 //!
-//! OUTPUT CONTRACT: data_dir_from_args(args, default) -> PathBuf; token_owner(file) -> Option<u32>;
+//! OUTPUT CONTRACT: node_data_dir(args, node env dir, node home, exists) -> PathBuf (the rule of
+//!   bins/node/src/main.rs); node env/home parsers; token_owner(file) -> Option<u32>;
 //!   choose_token_dir(listeners, hidden, env dir, default, owner_of) -> TokenDir; admin_token_dir(endpoint,
 //!   fallback) -> TokenDir; loopback_hint(endpoint, env, TokenDir) -> one line; /proc + ps parsers.
-//! PATHS: --data-dir X | --data-dir=X | -d X | ~/X | no flag -> default(--network | -n | mainnet);
+//! PATHS: --data-dir X | --data-dir=X | -d X | ~/X (node home) > node DOLI_DATA_DIR > platform
+//!   default(--network | -n | mainnet) if it exists > legacy <node home>/.doli/<net> if it exists;
 //!   listener visible: candidate {DOLI_DATA_DIR | own dir | default} owned by its uid -> Owned,
 //!   other uid / absent -> Refused (no token); LISTEN socket whose owner process is unknown ->
 //!   UnknownOwner (no token); no socket -> Unidentified(env | default).
@@ -22,10 +24,6 @@ fn args(s: &[&str]) -> Vec<String> {
     s.iter().map(|a| a.to_string()).collect()
 }
 
-fn net_default(net: &str) -> PathBuf {
-    PathBuf::from("/default").join(net)
-}
-
 #[cfg(unix)]
 fn my_uid(dir: &Path) -> u32 {
     use std::os::unix::fs::MetadataExt;
@@ -34,36 +32,137 @@ fn my_uid(dir: &Path) -> u32 {
     std::fs::metadata(&probe).unwrap().uid()
 }
 
+/// Node data dir with no dir on disk, node env `env_dir`, node home `/home/node`.
+fn nd(a: &[&str], env_dir: Option<&str>) -> PathBuf {
+    node_data_dir(&args(a), env_dir, Some(Path::new("/home/node")), &|_| false)
+}
+
+/// The node's platform default dir for `net`, with node home `/home/node`.
+fn platform(net: &str) -> PathBuf {
+    if cfg!(target_os = "linux") {
+        PathBuf::from("/var/lib/doli").join(net)
+    } else if cfg!(target_os = "macos") {
+        PathBuf::from("/home/node/Library/Application Support/doli").join(net)
+    } else {
+        PathBuf::from("/home/node/.doli").join(net)
+    }
+}
+
 /// Decision: a failure means the CLI reads the token file of a different node than the
 /// one on the port (multi-node host) or of no node at all.
 #[test]
-fn data_dir_from_args_follows_the_node_rule() {
-    let d = |a: &[&str]| data_dir_from_args(&args(a), &net_default);
+fn node_data_dir_flag_forms() {
     assert_eq!(
-        d(&["doli-node", "--data-dir", "/m/n1/data", "run"]),
+        nd(&["doli-node", "--data-dir", "/m/n1/data", "run"], None),
         PathBuf::from("/m/n1/data")
     );
     assert_eq!(
-        d(&["doli-node", "--data-dir=/m/n2/data", "run"]),
+        nd(&["doli-node", "--data-dir=/m/n2/data", "run"], None),
         PathBuf::from("/m/n2/data")
     );
     assert_eq!(
-        d(&["doli-node", "-n", "testnet", "-d", "/m/n3"]),
+        nd(&["doli-node", "-n", "testnet", "-d", "/m/n3"], None),
         PathBuf::from("/m/n3")
     );
     assert_eq!(
-        d(&["doli-node", "--network", "testnet", "run"]),
-        net_default("testnet")
+        nd(&["doli-node", "--data-dir", "/m/f"], Some("/m/env")),
+        PathBuf::from("/m/f")
     );
     assert_eq!(
-        d(&["doli-node", "--network=Devnet", "run"]),
-        net_default("devnet")
+        nd(&["doli-node", "--data-dir", "~/x"], None),
+        PathBuf::from("/home/node/x")
     );
-    assert_eq!(d(&["doli-node", "-n", "testnet"]), net_default("testnet"));
-    assert_eq!(d(&["doli-node", "run"]), net_default("mainnet"));
-    let home = dirs::home_dir().unwrap();
-    assert_eq!(d(&["doli-node", "--data-dir", "~/x"]), home.join("x"));
-    assert_eq!(d(&["--data-dir"]), net_default("mainnet"));
+    assert_eq!(nd(&["--data-dir"], None), platform("mainnet"));
+}
+
+/// Decision: a failure means a node that takes its data dir from its own DOLI_DATA_DIR env
+/// is matched to the network default dir (another node's token on a shared-uid host).
+#[test]
+fn node_data_dir_uses_the_node_process_env() {
+    assert_eq!(
+        nd(&["doli-node", "run"], Some("/srv/n7")),
+        PathBuf::from("/srv/n7")
+    );
+    assert_eq!(
+        nd(&["doli-node", "-n", "testnet"], Some("/srv/t")),
+        PathBuf::from("/srv/t")
+    );
+}
+
+/// Decision: a failure means the network default dir differs from the one the node uses.
+#[test]
+fn node_data_dir_network_default() {
+    assert_eq!(
+        nd(&["doli-node", "--network", "testnet", "run"], None),
+        platform("testnet")
+    );
+    assert_eq!(
+        nd(&["doli-node", "--network=Devnet", "run"], None),
+        platform("devnet")
+    );
+    assert_eq!(nd(&["doli-node", "-n", "local"], None), platform("devnet"));
+    assert_eq!(nd(&["doli-node", "run"], None), platform("mainnet"));
+}
+
+/// Decision: a failure means the legacy `~/.doli/<net>` fallback is taken from the wrong
+/// home or when the node would not take it.
+#[test]
+fn node_data_dir_legacy_fallback_in_the_node_home() {
+    let legacy = PathBuf::from("/home/node/.doli/testnet");
+    let a = args(&["doli-node", "-n", "testnet"]);
+    let home = Some(Path::new("/home/node"));
+    let only_legacy = |p: &Path| p == legacy;
+    assert_eq!(node_data_dir(&a, None, home, &only_legacy), legacy);
+    let both = |p: &Path| p == legacy || p == platform("testnet");
+    assert_eq!(node_data_dir(&a, None, home, &both), platform("testnet"));
+    assert_eq!(
+        node_data_dir(&a, Some("/e"), home, &only_legacy),
+        PathBuf::from("/e")
+    );
+}
+
+/// Decision: a failure means the node's env or home is read wrong, so the dir rule above
+/// gets the caller's values instead of the node's.
+#[test]
+fn node_env_and_home_parsers() {
+    let environ = b"PATH=/bin\0HOME=/var/lib/doli\0DOLI_DATA_DIR=/srv/n1\0";
+    let env = environ_entries(environ);
+    assert_eq!(env_value(&env, "DOLI_DATA_DIR").as_deref(), Some("/srv/n1"));
+    assert_eq!(env_value(&env, "HOME").as_deref(), Some("/var/lib/doli"));
+    assert_eq!(env_value(&env, "NOPE"), None);
+    let passwd =
+        "root:x:0:0:root:/root:/bin/bash\ndoli:x:998:998::/var/lib/doli:/usr/sbin/nologin\n";
+    assert_eq!(
+        passwd_home(passwd, 998),
+        Some(PathBuf::from("/var/lib/doli"))
+    );
+    assert_eq!(
+        passwd_home("n:*:501:20::0:0:N:/Users/n:/bin/zsh", 501),
+        Some(PathBuf::from("/Users/n"))
+    );
+    assert_eq!(passwd_home(passwd, 5), None);
+    assert_eq!(
+        node_home(Some("/h/env"), Some(PathBuf::from("/h/pw"))),
+        Some(PathBuf::from("/h/env"))
+    );
+    assert_eq!(
+        node_home(Some(""), Some(PathBuf::from("/h/pw"))),
+        Some(PathBuf::from("/h/pw"))
+    );
+    assert_eq!(node_home(None, None), None);
+    let t = TempDir::new().unwrap();
+    let spaced = t.path().join("App Support");
+    std::fs::create_dir_all(&spaced).unwrap();
+    let ps = format!(
+        "doli-node run HOME=/Users/n DOLI_DATA_DIR={} TERM=x",
+        spaced.display()
+    );
+    let env = ps_env_entries(&ps);
+    assert_eq!(
+        env_value(&env, "DOLI_DATA_DIR"),
+        Some(spaced.display().to_string())
+    );
+    assert_eq!(env_value(&env, "HOME").as_deref(), Some("/Users/n"));
 }
 
 /// Decision: a failure means the uid check reads the wrong owner, so a squatter's uid can
@@ -306,7 +405,13 @@ fn finds_a_real_listener_and_its_data_dir() {
     let (found, _) = find_listeners(port);
     let got = {
         let (seen, hidden) = port_listeners(port);
-        choose_token_dir(&seen, hidden, None, net_default("x"), token_owner)
+        choose_token_dir(
+            &seen,
+            hidden,
+            None,
+            PathBuf::from("/default/x"),
+            token_owner,
+        )
     };
     let _ = child.kill();
     let _ = child.wait();
