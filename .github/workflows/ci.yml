@@ -50,6 +50,9 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
+          # ImageOS (ubuntu24, win25, ...) goes into the key hash: a cache made
+          # on another runner image (other glibc) is never restored here.
+          env-vars: ImageOS
           cache-on-failure: true
 
       - name: Run clippy
@@ -85,6 +88,9 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
+          # ImageOS (ubuntu24, win25, ...) goes into the key hash: a cache made
+          # on another runner image (other glibc) is never restored here.
+          env-vars: ImageOS
           cache-on-failure: true
 
       - name: Run tests
@@ -112,6 +118,9 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
+          # ImageOS (ubuntu24, win25, ...) goes into the key hash: a cache made
+          # on another runner image (other glibc) is never restored here.
+          env-vars: ImageOS
           cache-on-failure: true
 
       - name: Build release
