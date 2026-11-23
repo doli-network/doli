@@ -22,7 +22,10 @@ jobs:
   # ── Linux x86_64 ──────────────────────────────────────────────
   build-linux-x64:
     name: Build Linux x86_64
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to ubuntu-26.04 (Nov 2026); its GCC cannot
+    # compile the bundled RocksDB 8.10 (librocksdb-sys 0.16, missing <cstdint>),
+    # and a 26.04 build would also need a newer glibc than 24.04 hosts have.
+    runs-on: ubuntu-24.04
     env:
       TARGET: x86_64-unknown-linux-gnu
     steps:
@@ -258,7 +261,8 @@ jobs:
   # ── GUI: Linux x86_64 (.AppImage, .deb) ──────────────────────
   build-gui-linux:
     name: Build GUI Linux x86_64
-    runs-on: ubuntu-latest
+    # Pinned to the same image as build-linux-x64 (glibc baseline of v6.46.2).
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
