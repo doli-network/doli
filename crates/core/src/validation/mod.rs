@@ -28,6 +28,7 @@
 /// Called by both consensus (M2) and mempool (M3).
 pub mod amm;
 mod block;
+pub mod bond_backing;
 pub mod coinbase_credit;
 mod doli_value;
 mod error;
@@ -67,6 +68,7 @@ pub use amm::{verify_amm_conservation, AmmConservationResult};
 pub use block::{
     validate_block_with_mode, validate_header, verify_block_signature, verify_block_signature_at,
 };
+pub use bond_backing::check_bond_backing;
 pub use error::ValidationError;
 pub use output_authority::{check_output_placement, check_value_authority};
 pub use producer::{

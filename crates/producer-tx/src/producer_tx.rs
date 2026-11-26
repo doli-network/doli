@@ -56,13 +56,39 @@ pub fn build_registration_tx(spec: &RegistrationSpec) -> Result<Transaction, Str
         outputs,
         extra_data,
     };
+    // Defense-in-depth (bond-backing): a stock CLI builds exactly
+    // `bond_count` Bond outputs of one `bond_unit`, so this never fires here —
+    // but it guarantees this builder can NEVER emit a tx whose locked value
+    // disagrees with the declared `bond_count`, the shape the on-chain exploit
+    // used. The consensus rule (`validation::check_bond_backing`) is the real
+    // enforcement; this just stops us shipping a malformed tx in the first
+    // place. Uses checked arithmetic.
+    let locked: u64 = tx
+        .outputs
+        .iter()
+        .filter(|o| matches!(o.output_type, doli_core::transaction::OutputType::Bond))
+        .map(|o| o.amount)
+        .fold(0u64, |a, b| a.saturating_add(b));
+    let expected = u64::from(spec.reg_data.bond_count)
+        .checked_mul(spec.bond_unit)
+        .ok_or_else(|| "registration bond_count * bond_unit overflows u64".to_string())?;
+    if locked != expected {
+        return Err(format!(
+            "registration bond-backing mismatch: declared bond_count={} * bond_unit={} = {}, but Bond outputs lock {}",
+            spec.reg_data.bond_count, spec.bond_unit, expected, locked
+        ));
+    }
     push_change(&mut tx, spec.change, spec.change_to);
     Ok(tx)
 }
 
 /// Unsigned AddBond with optional change.
 pub fn build_add_bond_tx(spec: &AddBondSpec) -> Transaction {
-    let amount = spec.bond_unit * u64::from(spec.count);
+    let amount = spec.bond_unit.saturating_mul(u64::from(spec.count));
+    // Defense-in-depth (bond-backing): the locked amount is `count * bond_unit`
+    // by construction; assert it so a future edit that breaks the relation
+    // trips in debug/test before it can build a tx the consensus rule rejects.
+    debug_assert_eq!(amount, spec.bond_unit.saturating_mul(u64::from(spec.count)));
     let mut tx = Transaction::new_add_bond(
         inputs_of(&spec.inputs),
         spec.producer,

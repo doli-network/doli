@@ -13,6 +13,7 @@
 
 mod b3_m25_same_block_slash_state;
 mod b3_m2_slashed_registration;
+mod bond_backing_m1_tripwire;
 mod inc_i_171_m1_node_level_bound_tripwire;
 mod inc_i_171_m2_activation_height;
 mod inc_i_171_m2_payout_bound;

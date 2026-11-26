@@ -523,6 +523,17 @@ pub(super) fn load_from_env(network: Network) -> NetworkParams {
                 defaults.inc_i_171_vesting_penalty_disable_height,
             )
         },
+        // Bond-backing gate. Mainnet LOCKED: it decides whether a
+        // Registration/AddBond block is valid and mutates the ProducerSet at
+        // the flush. Devnet/testnet may override for tests.
+        bond_backing_activation_height: if is_mainnet {
+            defaults.bond_backing_activation_height
+        } else {
+            env_parse(
+                "DOLI_BOND_BACKING_ACTIVATION_HEIGHT",
+                defaults.bond_backing_activation_height,
+            )
+        },
         // INC-I-172 M2 (#20). Computed above so #22 can be ordered against it.
         maintainer_derivation_activation_height,
         // INC-I-173 state-only fee gate (TxType::allows_empty_io authority).

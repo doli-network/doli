@@ -1130,3 +1130,78 @@ fn test_duplicate_register_preserves_existing_producer() {
     let producer = ps.get_by_pubkey(kp.public_key()).unwrap();
     assert_eq!(producer.registered_at, 100); // Original, not 200
 }
+
+// ==================== Bond-backing clamp (state migration) ====================
+
+#[allow(deprecated)]
+fn over_declared_producer(bond_amount: u64, declared_bond_count: u32) -> ProducerInfo {
+    // Mirrors the on-chain exploit shape: lock `bond_amount`, declare
+    // `declared_bond_count` via new_with_bonds (the registration apply path).
+    let keypair = KeyPair::generate();
+    ProducerInfo::new_with_bonds(
+        *keypair.public_key(),
+        1000,
+        bond_amount,
+        (Hash::ZERO, 0),
+        0,
+        declared_bond_count,
+    )
+}
+
+#[test]
+fn clamp_neutralizes_the_exploit_weight() {
+    // Exploit: 10 DOLI locked (one bond unit), 3000 bonds declared.
+    let mut set = ProducerSet::new();
+    let cheat = over_declared_producer(BOND_UNIT, 3000);
+    let cheat_pk = cheat.public_key;
+    let _ = set.register(cheat, 1000);
+
+    // Before: weighted as a 3000-bond producer (the overpayment driver).
+    let before = set.get_by_pubkey(&cheat_pk).unwrap();
+    assert_eq!(before.bond_count, 3000);
+    assert_eq!(before.selection_weight_at(2000, 0), 3000);
+
+    // Clamp to locked.
+    let adjusted = set.clamp_bond_counts_to_locked(BOND_UNIT);
+    assert_eq!(
+        adjusted, 1,
+        "exactly the one over-declared producer is clamped"
+    );
+
+    // After: weight equals the bonds actually locked (1), so slot/reward share
+    // collapses to its real stake. This is the reward-weight assertion.
+    let after = set.get_by_pubkey(&cheat_pk).unwrap();
+    assert_eq!(after.bond_count, 1);
+    assert_eq!(after.bond_amount, BOND_UNIT);
+    assert_eq!(after.selection_weight_at(2000, 0), 1);
+}
+
+#[test]
+fn clamp_leaves_correctly_backed_producers_untouched() {
+    let mut set = ProducerSet::new();
+    // 3000 bonds, fully backed by 3000 * BOND_UNIT locked.
+    let honest = over_declared_producer(3000 * BOND_UNIT, 3000);
+    let honest_pk = honest.public_key;
+    let _ = set.register(honest, 1000);
+
+    let adjusted = set.clamp_bond_counts_to_locked(BOND_UNIT);
+    assert_eq!(adjusted, 0, "a fully-backed producer is never clamped");
+
+    let after = set.get_by_pubkey(&honest_pk).unwrap();
+    assert_eq!(after.bond_count, 3000);
+    assert_eq!(after.selection_weight_at(2000, 0), 3000);
+}
+
+#[test]
+fn clamp_is_idempotent() {
+    let mut set = ProducerSet::new();
+    let cheat = over_declared_producer(BOND_UNIT, 3000);
+    let cheat_pk = cheat.public_key;
+    let _ = set.register(cheat, 1000);
+
+    assert_eq!(set.clamp_bond_counts_to_locked(BOND_UNIT), 1);
+    // Second pass changes nothing — safe to run on every epoch boundary and on
+    // the rebuild/reorg path without diverging.
+    assert_eq!(set.clamp_bond_counts_to_locked(BOND_UNIT), 0);
+    assert_eq!(set.get_by_pubkey(&cheat_pk).unwrap().bond_count, 1);
+}
