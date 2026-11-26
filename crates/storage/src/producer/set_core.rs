@@ -197,6 +197,65 @@ impl ProducerSet {
         self.active_cache = None;
     }
 
+    /// Bond-backing state migration — clamp every producer's `bond_count` down
+    /// to the value its locked collateral actually backs.
+    ///
+    /// Run at every epoch-boundary flush at and after
+    /// `bond_backing_activation_height` (the caller owns the gate). It is the
+    /// state half of the bond-backing fix: tx validation stops NEW
+    /// over-declared registrations/add-bonds, and this stops producers that
+    /// already over-declared BELOW the gate from continuing to be scheduled and
+    /// paid for weight they never locked.
+    ///
+    /// For each producer, the locked count is `bond_amount / bond_unit`
+    /// (`bond_amount` is the summed value of its Bond outputs, the same value
+    /// the UTXO set reports). A producer is only ever adjusted DOWNWARD and
+    /// never below 1, so a correctly-backed producer is untouched:
+    ///
+    /// * `bond_count` -> `min(bond_count, max(locked, 1))`
+    /// * `bond_amount`, `bond_entries`, `additional_bonds` and `delegated_bonds`
+    ///   are trimmed to match, so the stored shape stays internally consistent.
+    ///
+    /// **Idempotent**: after one pass `bond_count == bond_amount / bond_unit`,
+    /// so a second pass is a no-op. That is what makes it safe to run on every
+    /// boundary (and on the rebuild/reorg path) instead of exactly once — every
+    /// node reaches the same ProducerSet regardless of how it got to the height.
+    ///
+    /// Returns the number of producers whose `bond_count` was reduced (for logs
+    /// and metrics; not consensus-visible).
+    pub fn clamp_bond_counts_to_locked(&mut self, bond_unit: u64) -> u64 {
+        if bond_unit == 0 {
+            return 0;
+        }
+        let mut adjusted = 0u64;
+        for info in self.producers.values_mut() {
+            let locked = (info.bond_amount / bond_unit).max(1);
+            let locked_u32 = u32::try_from(locked).unwrap_or(u32::MAX);
+            if info.bond_count <= locked_u32 {
+                continue;
+            }
+            // Over-declared: trim to the backed count.
+            info.bond_count = locked_u32;
+            info.bond_amount = locked.saturating_mul(bond_unit);
+            info.delegated_bonds = info.delegated_bonds.min(locked_u32);
+            let keep = locked_u32 as usize;
+            if info.bond_entries.len() > keep {
+                info.bond_entries.truncate(keep);
+            }
+            // `additional_bonds` holds every bond outpoint past the primary one,
+            // so it keeps `bond_count - 1` entries.
+            let keep_additional = keep.saturating_sub(1);
+            if info.additional_bonds.len() > keep_additional {
+                info.additional_bonds.truncate(keep_additional);
+            }
+            adjusted += 1;
+        }
+        if adjusted > 0 {
+            self.active_cache = None;
+        }
+        adjusted
+    }
+
     /// Check if there are pending updates waiting to be applied.
     pub fn has_pending_updates(&self) -> bool {
         !self.pending_updates.is_empty()

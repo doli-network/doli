@@ -910,6 +910,23 @@ pub struct NetworkParams {
     /// make the rule permanently unreachable.
     pub inc_i_171_vesting_penalty_disable_height: u64,
 
+    /// Bond-backing gate: a declared `bond_count` must be backed by locked value.
+    ///
+    /// At and above it (a) a `Registration` is valid only if
+    /// `bond_count * bond_unit == sum(Bond outputs)` and an `AddBond` only if
+    /// its declared `bond_count` equals both its Bond-output count and
+    /// `sum(Bond outputs) / bond_unit` (checked arithmetic — see
+    /// `validation::bond_backing`), and (b) at every epoch-boundary flush each
+    /// producer's `bond_count` is clamped to `bond_amount / bond_unit`
+    /// (`ProducerSet::clamp_bond_counts_to_locked`), so weight that was never
+    /// locked stops earning rewards and slots. Below it: byte-identical.
+    /// Q1 YES (user-submittable Registration/AddBond), Q2 YES (epoch flush),
+    /// Q3 NO (accept->reject + ProducerSet mutation) => own ACTIVATION HEIGHT
+    /// REQUIRED, never bundled. Changes the ProducerSet state root at the first
+    /// boundary >= the gate => every producer must upgrade before it. Mainnet
+    /// IMMUTABILITY (INC-I-054): once crossed, never move.
+    pub bond_backing_activation_height: u64,
+
     /// How many registered producers must exist before the maintainer trust root
     /// is seeded at all (INC-I-172 M2 review F3).
     ///

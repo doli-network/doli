@@ -152,6 +152,19 @@ pub fn validate_transaction(
         }
         TxType::AddBond => {
             validate_add_bond_data(tx)?;
+            // Bond-backing (height-gated): the declared AddBond `bond_count`
+            // must be exactly backed by the Bond value this tx locks — the
+            // same rule as Registration, closing the same amplification hole
+            // for stake increases. No-op before the activation height.
+            if let Some(ab) = tx.add_bond_data() {
+                super::check_bond_backing(
+                    ab.bond_count,
+                    ctx.network.bond_unit(),
+                    super::bond_backing::locked_bond_total(tx),
+                    ctx.current_height,
+                    ctx.network.params().bond_backing_activation_height,
+                )?;
+            }
         }
         TxType::RequestWithdrawal => {
             validate_withdrawal_request_data(tx)?;

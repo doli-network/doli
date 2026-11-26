@@ -446,6 +446,28 @@ pub enum ValidationError {
         max: u32,
     },
 
+    /// Bond-backing: a `Registration` or `AddBond` declared a `bond_count`
+    /// that its locked Bond outputs do not back.
+    ///
+    /// Emitted only at and after `bond_backing_activation_height`. The rule is
+    /// `declared_bond_count * bond_unit == locked_total` with checked
+    /// arithmetic (`None` on multiply overflow is treated as a mismatch).
+    /// Pre-activation the check is bypassed so historical blocks replay
+    /// bit-identically (the orphaned-weight was clamped at the epoch flush).
+    #[error(
+        "bond backing mismatch: declared_bond_count={declared_bond_count} bond_unit={bond_unit} locked_total={locked_total} expected_locked={expected_locked}"
+    )]
+    BondBackingMismatch {
+        /// `bond_count` declared in the tx (RegistrationData / AddBondData).
+        declared_bond_count: u32,
+        /// Network bond unit in force.
+        bond_unit: u64,
+        /// Sum of this tx's Bond output amounts actually locked.
+        locked_total: u64,
+        /// `declared_bond_count * bond_unit` (`u64::MAX` sentinel on overflow).
+        expected_locked: u64,
+    },
+
     /// [ERRBLS-001] post-AH attestation body failed verification (INC-I-178 D7).
     ///
     /// `reason` is one of the four stable labels the node also publishes as the
@@ -648,6 +670,7 @@ impl ValidationError {
             Self::DelegationCapExceeded { .. } => "DELEGATION_CAP_EXCEEDED",
             Self::DelegationSignatureInvalid { .. } => "DELEGATION_SIGNATURE_INVALID",
             Self::AddBondCapExceeded { .. } => "ADDBOND_CAP_EXCEEDED",
+            Self::BondBackingMismatch { .. } => "BOND_BACKING_MISMATCH",
             Self::AmmNotActivated { .. } => "AMM_NOT_ACTIVATED",
             Self::AmmMinimumLiquidity { .. } => "AMM_MINIMUM_LIQUIDITY",
             Self::AttestationVerifyFailed { .. } => "ATTESTATION_VERIFY_FAILED",
@@ -879,6 +902,17 @@ impl ValidationError {
                 map.insert("pending".into(), (*pending).into());
                 map.insert("requested".into(), (*requested).into());
                 map.insert("max".into(), (*max).into());
+            }
+            Self::BondBackingMismatch {
+                declared_bond_count,
+                bond_unit,
+                locked_total,
+                expected_locked,
+            } => {
+                map.insert("declared_bond_count".into(), (*declared_bond_count).into());
+                map.insert("bond_unit".into(), (*bond_unit).into());
+                map.insert("locked_total".into(), (*locked_total).into());
+                map.insert("expected_locked".into(), (*expected_locked).into());
             }
             Self::AmmNotActivated {
                 tx_type,

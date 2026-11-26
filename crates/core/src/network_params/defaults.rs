@@ -310,6 +310,15 @@ impl NetworkParams {
                 inc_i_171_vesting_penalty_activation_height: 418_000,
                 // Paired kill-switch; u64::MAX = never disabled.
                 inc_i_171_vesting_penalty_disable_height: u64::MAX,
+                // Bond-backing gate: declared bond_count must be backed by locked
+                // value. PINNED 1_051_560 on mainnet (= 2921 * 360, an epoch
+                // boundary). Tip was 1_034_251 at 2026-11-26 09:58Z, so the pin
+                // sits ~17_300 blocks (~48 h at 10s slots) ahead and no stored
+                // block crosses it — it engages forward-only. The clamp changes
+                // the ProducerSet state root at that boundary, so every producer
+                // must run the release before this height. IMMUTABLE once
+                // crossed (INC-I-054).
+                bond_backing_activation_height: 1_051_560,
 
                 // INC-I-172 M2 maintainer trust-root derivation. Gates the
                 // one-shot genesis seed (F2), the canonical
@@ -586,6 +595,9 @@ impl NetworkParams {
                 inc_i_171_vesting_penalty_activation_height: 133_640,
                 // Paired kill-switch; u64::MAX = never disabled.
                 inc_i_171_vesting_penalty_disable_height: u64::MAX,
+                // Bond-backing gate — testnet pin is a separate decision-session;
+                // u64::MAX = FROZEN until pinned (safe: never rejects, never clamps).
+                bond_backing_activation_height: u64::MAX,
 
                 // INC-I-172 M2 maintainer trust-root derivation. Pinned
                 // 2026-08-10 at live testnet tip 126_801 with ~400 blocks
@@ -860,6 +872,12 @@ impl NetworkParams {
                 inc_i_171_vesting_penalty_activation_height: u64::MAX,
                 // Paired kill-switch; u64::MAX = never disabled.
                 inc_i_171_vesting_penalty_disable_height: u64::MAX,
+                // Bond-backing gate — devnet FROZEN at u64::MAX like testnet, so
+                // the many devnet validation fixtures that feed deliberately
+                // malformed bond shapes keep their historical verdicts. A
+                // devnet/testnet test that wants the rule live sets
+                // DOLI_BOND_BACKING_ACTIVATION_HEIGHT (honored by env_loader).
+                bond_backing_activation_height: u64::MAX,
                 // INC-I-172 M2 maintainer trust-root derivation.
                 // Always active on devnet — fresh genesis each run, no history
                 // to reinterpret.

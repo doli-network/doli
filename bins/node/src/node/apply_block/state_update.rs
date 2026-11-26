@@ -204,6 +204,23 @@ impl Node {
                         0
                     };
                     producers.apply_pending_updates_with_cap(cap);
+                    // Bond-backing state migration (height-gated). Idempotent,
+                    // so running it on every boundary >= the gate converges
+                    // every node to the same ProducerSet. Closes the exploit
+                    // for producers that over-declared BELOW the gate: their
+                    // bond_count is trimmed to the collateral they actually
+                    // locked, so they stop drawing slots and rewards for unbonded
+                    // weight. A correctly-backed producer is never touched.
+                    if height >= params.bond_backing_activation_height {
+                        let adjusted =
+                            producers.clamp_bond_counts_to_locked(self.config.network.bond_unit());
+                        if adjusted > 0 {
+                            info!(
+                                "[BOND_BACKING] clamped {} over-declared producer(s) to locked bond_count at height {}",
+                                adjusted, height
+                            );
+                        }
+                    }
                     crate::metrics::BLS_ROTATIONS_APPLIED.inc_by(rotations);
                     needs_full_producer_write = true; // Many producers may have changed
                     info!(

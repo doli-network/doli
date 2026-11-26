@@ -140,6 +140,22 @@ fn validate_registration_data_inner(
         )));
     }
 
+    // Bond-backing (height-gated): the declared `bond_count` must be exactly
+    // backed by the value this registration locks. `total_bond` is the sum of
+    // the Bond outputs computed above. This closes the mainnet exploit where a
+    // producer locked one bond unit but declared `bond_count = 3000` and was
+    // then scheduled and paid as a 3000-bond producer. Pre-activation it is a
+    // no-op (replay safety); the paired epoch clamp neutralizes producers that
+    // already registered over-declared below the gate. Shared by mempool and
+    // block validation (this function is on the `validate_transaction` path).
+    super::check_bond_backing(
+        reg_data.bond_count,
+        ctx.network.bond_unit(),
+        total_bond,
+        ctx.current_height,
+        ctx.network.params().bond_backing_activation_height,
+    )?;
+
     // BLS key is mandatory -- every producer must have one (like Ethereum validators)
     if reg_data.bls_pubkey.is_empty() {
         return Err(ValidationError::InvalidRegistration(

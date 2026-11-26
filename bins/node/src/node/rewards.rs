@@ -1523,6 +1523,14 @@ impl Node {
                     0
                 };
                 producers.apply_pending_updates_with_cap(cap);
+                // Bond-backing state migration (height-gated) — MUST mirror the
+                // live apply path (apply_block/state_update.rs) exactly, or a
+                // rebuilt/reorged ProducerSet would diverge from a live one.
+                // Idempotent and downward-only; see
+                // `ProducerSet::clamp_bond_counts_to_locked`.
+                if height >= params.bond_backing_activation_height {
+                    producers.clamp_bond_counts_to_locked(self.config.network.bond_unit());
+                }
             }
 
             // Process completed unbonding periods after each block
